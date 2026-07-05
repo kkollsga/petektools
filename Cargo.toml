@@ -4,11 +4,11 @@
 members = ["py"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.88"
 license = "Apache-2.0"
-repository = "https://github.com/kkollsga/petektools"
+repository = "https://github.com/kkollsga/petektools-next"
 authors = ["Kristian dF Kollsgård <kkollsg@gmail.com>"]
 
 [package]
@@ -19,7 +19,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "Standalone numerics & geostatistics kernels for Rust: scattered-data gridding (minimum-curvature, IDW, nearest) and a curated numeric front-door. Pure leaf; PyO3 bindings planned."
+description = "Standalone numerics & geostatistics kernels for Rust: scattered-data gridding (minimum-curvature, IDW, nearest) and a curated numeric front-door. Pure leaf with PyO3 bindings."
 readme = "README.md"
 keywords = ["geostatistics", "gridding", "interpolation", "numerics", "subsurface"]
 categories = ["science", "mathematics"]
