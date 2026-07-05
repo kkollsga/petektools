@@ -6,6 +6,22 @@ All notable changes to petekTools are recorded here. Format follows
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-07-05
+
+### Fixed — broken import on Python 3.10/3.11 (0.2.0 wheel)
+- **`petektools.viewer` failed to import on Python 3.10 and 3.11** — a
+  `SyntaxError` at load, so the 0.2.0 wheel was unusable on those interpreters
+  despite the declared `requires-python >= 3.10`. Cause: `viewer/_save.py` used
+  a backslash inside an f-string expression (legal only from Python 3.12). The
+  replacement is hoisted into a plain local; the shipped `python/` tree is
+  audited clean of pre-3.12-only f-string constructs.
+- **CI matrix corrected to the 3.10 floor** (dropped 3.9 — the wheel is
+  abi3-py310) and the **Release workflow is now gated**: fmt / clippy / tests /
+  the Python smoke suite must pass on the runner before any build or publish
+  job runs. A red CI blocks the release.
+
+## [0.2.0] - 2026-07-05
+
 ### Added — `sgs_seeded` (shared-params, explicit-seed SGS for parallel-layer callers)
 - **`geostat::sgs_seeded(coords, lattice, &params, seed)`** runs [`sgs`] with an
   explicit RNG `seed` that overrides `params.seed`. `sgs(c, l, p)` is now exactly

@@ -14,8 +14,36 @@ permissions:
   contents: read
 
 jobs:
+  # CI gate: nothing builds or publishes unless the full local gate passes on
+  # the runner too. A red gate blocks the release — by design.
+  gates:
+    name: gates (fmt · clippy · test · py smoke)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: fmt
+        run: cargo fmt --all -- --check
+      - name: clippy (warnings = errors)
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: test
+        run: cargo test --workspace --all-features
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: python smoke (wheel build + pytest on the 3.10 floor)
+        run: |
+          pip install maturin pytest numpy
+          maturin build --release --out dist
+          pip install --find-links dist --no-index petektools
+          pytest python/tests/ -q
+
   publish-crate:
     name: crates.io
+    needs: gates
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -34,6 +62,7 @@ jobs:
 
   sdist:
     name: build sdist
+    needs: gates
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -48,6 +77,7 @@ jobs:
 
   wheels:
     name: build wheels ${{ matrix.runner }} ${{ matrix.target }}
+    needs: gates
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false

@@ -50,7 +50,10 @@ def save_view(
     html = (_ASSETS / "index.html").read_text()
 
     def inline_code(code: str) -> str:
-        return f"<script>\n{code.replace('</script>', '<\\/script>')}\n</script>"
+        # Hoisted out of the f-string: a backslash inside an f-string expression
+        # is a SyntaxError before Python 3.12, and our floor is 3.10.
+        safe_code = code.replace("</script>", "<\\/script>")
+        return f"<script>\n{safe_code}\n</script>"
 
     def inline(script_name: str) -> str:
         return inline_code((_ASSETS / script_name).read_text())

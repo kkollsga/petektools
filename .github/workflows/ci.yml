@@ -32,15 +32,15 @@ jobs:
   wheels:
     # Build the abi3 wheel and import + run it across a Python matrix so a
     # toolchain regression (a pyo3 that can't link a new CPython) surfaces here,
-    # not with users. abi3-py39 means one wheel spans 3.9+, but we still build
+    # not with users. abi3-py310 means one wheel spans 3.10+, but we still build
     # AND import on each interpreter so a per-version link/ABI break shows up.
     name: wheel build + smoke (py ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        # 3.9 = oldest abi3 floor; through the latest stable CPython.
-        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
+        # 3.10 = the abi3 floor (abi3-py310); through the latest stable CPython.
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
