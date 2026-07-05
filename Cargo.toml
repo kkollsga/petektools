@@ -1,0 +1,68 @@
+[workspace]
+# The `py/` member is the PyO3 wheel source (built by maturin) — mirrors the
+# petekio layout. It is `publish = false`; the publishable crate is this one.
+members = ["py"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+license = "Apache-2.0"
+repository = "https://github.com/kkollsga/petektools"
+authors = ["Kristian dF Kollsgård <kkollsg@gmail.com>"]
+
+[package]
+name = "petektools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Standalone numerics & geostatistics kernels for Rust: scattered-data gridding (minimum-curvature, IDW, nearest) and a curated numeric front-door. Pure leaf; PyO3 bindings planned."
+readme = "README.md"
+keywords = ["geostatistics", "gridding", "interpolation", "numerics", "subsurface"]
+categories = ["science", "mathematics"]
+# Keep the published crate lean — the Python wheel sources + CI live in the repo
+# but aren't part of the Rust library. (Workspace member `py/` is auto-excluded.)
+exclude = ["/py", "/python", "/pyproject.toml", "/.github", "/.claude", "/dist"]
+
+[dependencies]
+thiserror = "2"
+ndarray = "0.17"
+rstar = "0.13" # areal R*-tree neighbour search (nearest)
+# `container`: a domain-agnostic single-file section container (magic + JSON
+# header + per-section `zstd` blobs). Lifted from petekio's `.pproj` framing.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+zstd = "0.13"
+# `store`: the chunked mmap lane store — the spill-to-disk backing for
+# larger-than-memory models (out-of-core ruling R1). memmap2 for the mapping;
+# bytemuck for safe byte<->typed-slice casts (so the only unsafe in the crate is
+# the two map calls). No HDF5/Arrow/parquet — fixed-stride lanes, no compression.
+memmap2 = "0.9"
+bytemuck = "1"
+# Curated numeric front-door (see dev-docs/designs/roadmap.md):
+statrs = "0.18"     # `stats`: descriptive statistics we curate (weighted family is ours)
+rand = "0.10"       # `sampling`: RNG + seeded reproducible streams
+rand_distr = "0.6"  # `sampling`: distribution variate algorithms
+# Kept off the manifest until used so the leaf stays minimal:
+#   kiddo = "*"   # KD-tree neighbour search
+# NB: ordinary kriging's small dense solve is an in-crate LU (see
+# gridding/kriging/solve.rs) — no `faer`/LAPACK dependency for the pure leaf.
+
+[dev-dependencies]
+approx = "0.5"
+criterion = "0.5"
+
+[[bench]]
+name = "gridding"
+harness = false
+
+[[bench]]
+name = "geostat"
+harness = false
+
+[[bench]]
+name = "store"
+harness = false

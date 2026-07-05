@@ -1,0 +1,31 @@
+[package]
+name = "petektools-py"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "PyO3 bindings for petektools — the source of the `petektools` Python wheel (built by maturin). Rust users depend on the `petektools` crate directly."
+# Not for crates.io: this crate is the wheel source; the publishable library is
+# the sibling `petektools` crate. Publishing this would be redundant + confusing.
+publish = false
+
+[lib]
+name = "_petektools"
+crate-type = ["cdylib"]
+
+[dependencies]
+petektools = { path = "..", version = "0.1.0" }
+# Only to reshape the kriging/SGS `Array2<f64>` fields at the boundary — same
+# version the library uses (no numpy on the Python side).
+ndarray = "0.17"
+# Zero-copy f64<->byte cast for the FLAT grid crossing (one memcpy instead of a
+# boxed list-of-lists of ~1M Python floats). Same crate the library already uses.
+bytemuck = "1"
+rand = "0.10" # the `Rng` pyclass holds the library's `StdRng` stream type.
+# abi3-py39 → one wheel for CPython 3.9+ (proven against 3.14 by peteksim).
+# extension-module → the wheel is a Python extension (python symbols resolved at
+# runtime, not linked), so a plain `cargo build`/`cargo test` of the workspace
+# still compiles this cdylib without a linked libpython.
+pyo3 = { version = "0.29", features = ["abi3-py39", "extension-module"] }

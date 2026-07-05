@@ -1,0 +1,342 @@
+# The generic render schema — the petekTools viewer contract
+
+The viewer unit (`petektools.viewer`) renders **one typed JSON payload**. This is
+the contract between it and every consumer: petekStatic `StaticModel` views,
+petekIO logs/crossplots, peteksim MC charts — each maps its domain bundle onto
+these shapes and hands the result to `serve()` / `save_view()`. The renderer
+carries no domain knowledge; it draws exactly what the payload declares (names,
+units, value ranges included).
+
+This document **codifies what the JS reads today** — it is extracted from the
+renderer, not a redesign. Fields the renderer ignores are not part of the
+contract. Additive fields are non-breaking; renaming or removing one is a
+breaking change to this contract.
+
+Coordinates are a consumer-chosen world frame (all layers of one payload must
+share it). Depths are positive-down. A `range` is `{"min": float, "max": float}`.
+
+**Display names (additive, everywhere).** Any named entity — a `ScalarLayer`, a
+`Contact`, a `WellTrack`, a tornado bar, a distribution series — may carry an
+optional `display_name: str`. The viewer renders `display_name` when present, and
+otherwise beautifies the raw internal `name`: a scoped `"A::B"` name reads as
+`"A (B)"`. The **identity key** (the categorical colour slot) always uses the raw
+`name`, so adding a `display_name` never re-colours an entity. Consumers set
+`display_name` to disambiguate internal names (e.g. a property level shift
+`"PORO level shift"` vs a box draw `"porosity (draw)"`).
+
+## Top-level payload
+
+| field | type | rendered as |
+|---|---|---|
+| `schema_version` | int | metadata (bump on a breaking change; **4** adds the `wells_logs` bundle + section `horizon_traces` + `WellTrack.ties`; **3** the v3 volume — exterior shell + binary blocks; **2** the `charts` bundle) |
+| `kind` | str | title prefix (`"<kind> · <property> viewer"`) |
+| `property` | str | the active render property (volume colour, title) |
+| `properties` | list[str] | metadata (the set of populated properties) |
+| `summary` | object \| null | a free-form `key → value` panel (numbers formatted) |
+| `map` | MapBundle \| null | the **Map** tab (areal raster) |
+| `volume` | VolumeBundle \| null | the **Volume** tab (3-D mesh) |
+| `sections` | list[SectionBundle] | the **Intersection** tab (pre-computed sections) |
+| `section_labels` | list[str] | one display label per `sections` entry |
+| `wells` | list[WellTrack] | map markers + click-to-section targets |
+| `wells_logs` | WellLogBundle \| null | the **Wells** tab (multi-well log correlation; v4) |
+| `charts` | list[ChartBundle] | the **Charts** tab (analytics marks; see below) |
+
+A tab renders only if its bundle is present; an empty payload shows an empty
+state. `sections` may be empty (live mode adds them via `/section`).
+
+## MapBundle — the areal raster (Map tab)
+
+| field | type | notes |
+|---|---|---|
+| `frame` | Frame | the georeferenced lattice (below) |
+| `outline` | list[Ring] | boundary rings; `Ring` = list of `[x, y]` |
+| `horizons` | list[ScalarLayer] | selectable depth/field layers |
+| `zone_averages` | list[ScalarLayer] | selectable property layers |
+| `k_slices` | list[ScalarLayer] | optional per-k property slices |
+| `contacts` | list[Contact] | translucent subcrop-mask overlays |
+
+**Frame:** `{origin_x, origin_y, spacing_x, spacing_y, ncol, nrow}`. Node `(i, j)`
+sits at `(origin_x + i·spacing_x, origin_y + j·spacing_y)`.
+
+**ScalarLayer:** `{name: str, units: str, values: float[ncol·nrow], range,
+display_name?: str}`. `values` are **row-major** (`values[j·ncol + i]`);
+`null`/non-finite cells render transparent. Continuous fields use a
+perceptually-uniform colormap.
+
+**Contact:** `{kind: str, depth_m: float, crossing: bool[ncol·nrow],
+display_name?: str}` — `crossing` marks the columns the contact plane cuts
+(row-major). `kind` is a categorical identity (fixed colour slot). The map paints
+the crossing region with a translucent identity fill, a diagonal hatch (45°/135°
+alternating per contact) and a 2px identity outline.
+
+The map reads **top-level** `wells` (not `map.wells`) for markers. The raster is
+**clipped to the outline polygon** by default (a panel toggle exposes the
+unclipped raster for QC). Co-located wells that share a wellhead (sidetracks)
+render as **one shared marker with a bore-count badge** and radially-offset,
+leader-lined bore labels.
+
+## SectionBundle — a vertical cross-section (Intersection tab)
+
+| field | type | notes |
+|---|---|---|
+| `property` | str | the coloured property (fill; `null` → plain fill) |
+| `top_name` | str | identity label for the top-horizon trace |
+| `base_name` | str | identity label for the base-horizon trace |
+| `columns` | list[Column] | ordered by `distance_m` |
+| `horizon_traces` | list[HorizonTrace] | **v4:** interior-horizon polylines (see below) |
+| `contacts` | list[{kind, depth_m}] | flat depth lines |
+| `sugar_cube` | bool? | **v4-additive:** `true` forces the flat-rect cell render (below) |
+| `zones` | list[Zone]? | **additive:** zone identities for the **Color by: zone** fill mode (below) |
+
+**Column:** `{distance_m, i, j, x, y, layer_tops: float[nk], layer_bases: float[nk],
+values: float[nk], path_z: float | null, zone_ids?: (int | null)[nk]}`. Each layer
+`k` is filled from `layer_tops[k]` to `layer_bases[k]`, coloured by `values[k]`
+against the volume value range. `path_z` (when non-null) overlays an along-bore
+depth trace; all `nk` must match across the bundle's columns. `zone_ids` (additive)
+is the per-`k` zone index into the bundle's `zones`, **aligned / NaN-gapped exactly
+like `values`** (a `null`/non-finite entry is a gapped cell — recessive fill).
+
+**Color-by-zone (additive).** When the bundle carries `zones` and its columns
+carry `zone_ids`, the Intersection tab shows a **Color by: property | zone** select
+that swaps each cell's FILL source; the **trapezoid / sugar-cube geometry is
+unchanged**. **Zone:** `{name: str, color?: str | null}` — `color` is an optional
+consumer-declared hex. A declared hex **wins** over the automatic palette; a zone
+without one takes the **fixed categorical identity slot for its `name`** — the same
+slot the volume/wells zone legend uses (identity follows the entity across views).
+In zone mode the legend swaps to zone chips and hover reads the zone name + the
+property value. A payload without `zone_ids` hides the select and stays on the
+property colormap (graceful). User-declared hexes are applied as-declared and are
+**not** palette-validated (the owner's choice wins; the viewer logs a `console.info`).
+
+**Cell-edge arrays (v4-additive; the sugar-cube ruling).** A column may also
+carry `layer_tops_l`, `layer_tops_r`, `layer_bases_l`, `layer_bases_r` (each
+`float[nk]`, NaN/`null`-gapped exactly like `layer_tops`): the cell interval at
+the column's **left/right fence edges**. When all four are present and the
+bundle does **not** declare `sugar_cube: true`, each cell renders as a
+**trapezoid** `(d0, top_l)–(d1, top_r)–(d1, bot_r)–(d0, bot_l)` — fill and the
+top/base traces follow the zone-edge dip *within* each column (the default).
+`sugar_cube: true`, or a payload without the edge arrays, keeps the flat-rect
+("sugar cube") render. The **centroid** `layer_tops`/`layer_bases` stay
+authoritative for hover; a cell whose edge entries are non-finite falls back to
+its centroid rect. The depth frame includes the edge extremes.
+
+The section's depth axis frames the **reservoir envelope** — the `layer_tops` /
+`layer_bases` / `contacts` extent plus a margin — not the full surface→TD bore
+path (which would squash the reservoir to a sliver). The `path_z` trace is clamped
+into that window; an off-scale arrow marks where the true bore exits it.
+
+**HorizonTrace (v4):** `{name: str, depths: float[len(columns)]}`. One polyline per
+*interior* framework horizon (every zone-bounding horizon strictly between the
+structural top and base — `N − 2` for an `N`-horizon stack; the structural
+top/base are drawn from `top_name`/`base_name`, not repeated here). `depths` runs
+**parallel to `columns`** (`depths[c]` is that horizon's depth at `columns[c]`);
+a non-finite / `null` entry is a **gap** — the line breaks where a column doesn't
+reach the horizon. Each trace takes the horizon's categorical identity slot and is
+labelled once at its right end (the section idiom). On a long (~16 km) fence the
+right-edge labels are decluttered by the slot ledger — a vertical slot plus a
+horizontal stagger (leader-lined) and a fade for a heavily-displaced label. A
+single-zone model emits an empty `horizon_traces` (backward-compatible).
+
+## VolumeBundle — the exterior-shell mesh (Volume tab)
+
+Two wire generations, version-switched on the bundle's own `schema_version`:
+
+**v3 (current) — exterior shell + binary blocks.** Only faces bordering an
+inactive/absent neighbour or the grid boundary are emitted (O(surface), not
+O(volume)); shared vertices are deduplicated, and the per-cell arrays are
+compacted to the shell cells with a `tri_cell` index per triangle recovering cell
+identity. The big arrays travel as raw **little-endian, tightly-packed** binary
+blocks (a JSON envelope keeps names/units/ranges human-readable), so the viewer
+reads them straight into typed arrays — no JS-array materialization, no V8 string
+wall. **petekStatic's `API.md` "Binary-block payload spec" is the authoritative
+wire contract; this is the viewer's decode view of it.**
+
+| envelope field | type | notes |
+|---|---|---|
+| `schema_version` | int | `3` |
+| `kind` | str | `"volume"` |
+| `property` | str | the coloured property |
+| `cell_count` | int | total grid cells `N` |
+| `shell_cell_count` | int | compact shell cells `C` (= `cell_values.len`) |
+| `vertex_count` | int | deduped shell verts `V` |
+| `triangle_count` | int | shell triangles `T` |
+| `zone_names` | list[str] | zone identities (toggles + legend) |
+| `value_range` | range | colour + threshold domain (over the shell cells) |
+| `encoding` | str | `"base64"` (self-contained) or `"sidecar"` (offset/length manifest + a companion `model.bin`) |
+| `blocks` | object | the five binary blocks below |
+
+**Blocks** (each `{dtype, shape, <payload>}`; `dtype` ∈ `f32`/`u32`/`u16`; a NaN
+f32 is canonical `0x7FC00000`; block order = C-order flatten of `shape`; payload
+is `"data": "<base64>"` for `base64`, or `"offset"/"length"` bytes into `model.bin`
+for `sidecar`):
+
+| block | dtype | shape | notes |
+|---|---|---|---|
+| `positions` | f32 | `[V, 3]` | deduped shell verts, grid-LOCAL `[x, y, z]` |
+| `indices` | u32 | `[T, 3]` | 3/triangle into the vertex list |
+| `tri_cell` | u32 | `[T]` | compact shell-cell index per triangle (→ `cell_values`/`zone_ids`) |
+| `cell_values` | f32 | `[C]` | per shell cell — threshold filter + flat colour |
+| `zone_ids` | u16 | `[C]` | per shell cell — index into `zone_names` |
+
+The viewer decodes off the UI thread (an inline Web Worker), renders the shell as
+a NON-indexed `BufferGeometry` (deduped verts re-expanded per triangle so each
+face **flat-shades in its own `tri_cell` colour**, `DoubleSide` material), and
+filters the threshold + zone toggles by rebuilding a visible-triangle index
+(client-side, exterior only). z-exaggeration is a `mesh.scale.y`. Beyond a
+declared **triangle budget** (5M; overridable via `window.PETEK_TRI_BUDGET`) the
+viewer **auto-degrades**: the worker decimates the shell to a 1-in-*stride*
+preview (bounded render buffer + heap) and a loud banner states what was
+decimated and why — it never refuses-to-nothing, crashes, or blanks. A payload
+whose inline blocks exceed the hard memory cap (can't even be read) refuses
+gracefully and points at sidecar mode. True interior exposure at a cutoff is a **server re-cut** — the
+pluggable `/volume` provider (peteksim implements it). The i/j/k clip of the v2
+soup is not offered for the shell (`tri_cell` is a compact index with no linear
+grid id).
+
+**v2 (legacy fallback) — corner-point soup (JSON arrays).** Rendered unchanged
+when the bundle carries `positions`/`indices`/`vertex_values`/`active` as JSON
+arrays (`positions` float[N·8·3], `indices` int[N·36] into `cell·8 + corner`,
+`vertex_values` float[N·8], `cell_values`/`zone_ids`/`active` length `N`). Cell
+ordering `i` fastest then `j` then `k`; the viewer applies threshold / zone /
+i-j-k clip over these arrays.
+
+## WellTrack
+
+`{id: str, x: float, y: float, trajectory: [[x, y, tvd], …], display_name?: str,
+ties?: [{horizon: str, residual_m: float}, …]}`. `id` is a categorical identity
+(fixed colour slot across all tabs). The surface marker sits at `(x, y)`; a click
+sections along the bore (live) or resolves to a pre-computed bore section by
+matching `id` against `section_labels` (file mode). `ties` (optional) are the
+per-horizon surface-tie residuals (`pick − surface`, m) the map shows on well
+hover and in the layer panel's per-bore entries.
+
+**Tie-quality glyph (v4).** A well carrying `ties` gets a small 3-pip glyph beside
+its marker: the pips fill by tie-quality tier binned on the **mean absolute
+residual** — `≤ 2 m` good (3 pips), `≤ 5 m` fair (2), else poor (1). The glyph
+wears **text tokens** (it reads a residual; it is not a categorical entity), never
+a series identity hue. Hover adds a `mean |tie|` + tier row above the per-horizon
+residuals.
+
+## WellLogBundle — multi-well log correlation (Wells tab, v4)
+
+`wells_logs` is a `WellLogBundle` (`kind: "wells_logs"`, `schema_version: 4`) — N
+wells side-by-side on a **shared inverted depth axis** (depth increases downward),
+each with a set of tracks (a flag strip + continuous curve tracks). Two hanging
+modes: **TVD** (absolute depth) and **flatten-on-pick** (each well shifted so a
+chosen horizon aligns at Δ = 0 — the transform is **viewer-side**; the payload
+carries picks, not transforms). A well with no top for the chosen pick is *parked*
+(shown at absolute TVD, dashed frame + tag). Curve colour is identity **by track**
+(mnemonic), never by well — PHIE is one colour across every well.
+
+| field | type | notes |
+|---|---|---|
+| `kind` | str | `"wells_logs"` |
+| `schema_version` | int | `4` |
+| `flatten_default` | str \| null | the pick pre-selected in flatten mode (else the first pick) |
+| `wells` | list[LogWell] | one per bore, in display order (reorderable in the panel) |
+
+The **numeric lanes** (`md_m`, `tvd_m`, curve `values`) are **v3-style f32 binary
+blocks** — `{dtype:"f32", shape:[n], data:"<base64>"}`, little-endian,
+`NaN`=`0x7FC00000` — decoded on the **same** kernel the volume blocks use
+(`PETEK_DECODE`). They are tiny, so the viewer decodes them synchronously (no
+worker); no special casing.
+
+**LogWell:** `{id, display_name?: str, x, y: float, datum_m: float, md_m: lane,
+tvd_m: lane, curves: [Curve], tops: [{horizon: str, tvd_m: float}], zones:
+[{name: str, top_tvd_m, base_tvd_m: float}], ties?: [{horizon, residual_m}]}`.
+`datum_m` is the KB/RT elevation (the header shows it; family z is negative-down).
+`tvd_m` is TVD-SS (positive-down, the display axis); `md_m` is measured depth. `tops`
+are top→down (a top drives a cross-track line, labelled once; also the flatten pick
+menu). `zones` shade the band between their top/base in the zone's identity colour.
+
+**Curve:** `{mnemonic: str, display_name?: str, unit: str, kind: "continuous"|
+"flag", values: lane, range?: {min,max}, cutoff?: float, codes?: {"<int>": label}}`.
+`values` is a lane sampled on `md_m` (`NaN` = null → the curve breaks). `range`
+(optional) fixes the track's hi–lo header scale; else it is auto-ranged.
+A **continuous** curve draws as a polyline; if it declares a `cutoff` (e.g. PHIE
+net cutoff) the view draws the cutoff reference line + a reservoir fill where
+`value ≥ cutoff`. A **flag** curve renders as a categorical **strip**: the zero /
+"off" code reads recessive (grid), a non-zero code takes an identity slot (`codes`
+supplies the labels — e.g. `{"0":"shale","1":"net sand"}`). Boxed per-track
+headers (name + hi–lo scale) replace legend boxes; hover reads depth (TVD, and
+Δ-vs-pick in flatten mode) + every curve's value at that sample.
+
+## ChartBundle — an analytics mark (Charts tab)
+
+`charts` is a list of typed mark bundles, each tagged by `mark`. The Charts tab
+shows one at a time (a picker in the panel); the renderer is **strictly
+render-only** — every number (tornado pivots, histogram bins, exceedance points,
+regression coefficients) arrives in the payload. Nothing is fit or binned in the
+viewer. Every mark is theme-aware, hover-default, and legended. Added in
+`schema_version` 2 (additive: a payload with no `charts` key renders exactly as
+before).
+
+Common fields: `mark` (`"tornado"|"scatter"|"distribution"`), `title` (str).
+
+### `mark: "tornado"` — ranked sensitivity, nested bars around a base line
+
+| field | type | notes |
+|---|---|---|
+| `units` | str | output units of the swung metric (axis + labels) |
+| `base` | float | the base value; bars anchor on it, axis is symmetric around it |
+| `bars` | list[TornadoBar] | one row per input |
+| `fold_count` | int \| null | rank by swing; bars beyond this fold into an "N others" row |
+| `fold_threshold` | float \| null | fold bars whose swing is `< fold_threshold · \|base\|` into the "N others" row (default `0.005` = 0.5%); a flat pivot carries no information |
+
+**TornadoBar:** `{param: str, out_lo, out_hi: float, in_lo, in_hi: float|null,
+out_min, out_max: float|null, swing: float|null, display_name: str|null}`.
+`display_name` disambiguates the input dimension (e.g. `"PORO level shift"` vs
+`"porosity (draw)"`); the viewer falls back to `param`. `out_lo`/`out_hi` are the metric
+with the input at its low/high pivot (absolute output units) — the **inner**
+(P90→P10) band. `out_min`/`out_max`, when present, draw the **outer** (full min→max)
+band at low opacity (the nested-bar signature); omit them for inner-only. `in_lo`/
+`in_hi` are the pivot **input** values (hover). Rows rank by `swing` (else
+`|out_hi−out_lo|`), largest on top. Below-base swing uses the diverging low hue,
+above-base the high hue.
+
+### `mark: "scatter"` — crossplot, optional log axes, color-by-third
+
+| field | type | notes |
+|---|---|---|
+| `x`, `y` | Axis | `{name: str, units: str, log: bool, range?: range}` |
+| `color_by` | ColorBy \| null | `{name: str, kind: "categorical"|"continuous", range?, units?}` |
+| `groups` | list[str] | categorical identities present (fixed colour slots, in order) |
+| `points` | list[Point] | `{x, y: float, c: float|str}` — `c` is the colour value |
+| `trends` | list[Trend] | render-only regression lines (endpoints + coefficients) |
+
+Continuous `color_by` → the sequential ramp + a colorbar (`c` a float in
+`color_by.range`); categorical → the fixed identity palette + legend (`c` a group
+name). Log axes are per-axis (`log: true`; toggleable in the panel). **Trend:**
+`{group: str|null, kind: str, x0, y0, x1, y1: float, slope, intercept, r2: float,
+equation: str}` — drawn as a dashed line from `(x0,y0)` to `(x1,y1)` in data space;
+the coefficients are computed by the consumer (no fitting in the viewer).
+
+### `mark: "distribution"` — histogram + exceedance CDF, two stacked panels
+
+| field | type | notes |
+|---|---|---|
+| `units` | str | value-axis units (MSm³ oil / bcm gas) |
+| `series` | list[Series] | one or more overlaid distributions (identity palette) |
+
+Rendered as **two stacked panels sharing the x-axis** (the dual-axis twinx overlay
+is intentionally *not* used): top = frequency histogram, bottom = exceedance curve.
+**Series:** `{name: str, display_name?: str, bins: list[{lo, hi: float, count:
+int}], cdf: list[{x: float, exceedance: float}], markers: {p90, p50, p10: float}}`.
+`exceedance` is the fraction (0..1) of realizations ≥ `x`. The exceedance panel
+carries 0/25/50/75/100 % y-ticks; a **single**-series distribution drops the
+legend box (the title names it). Histogram bars are drawn with a 2px surface gap. Markers use the **reservoir convention**
+(P90 = low / pessimistic, P10 = high) and are drawn across both panels. Bins are
+pre-computed by the consumer (the deterministic binning rule lives in the plumbing,
+not the viewer).
+
+## Colour discipline (rendered, not declared)
+
+Two colour jobs, never conflated: **continuous fields** (rasters, section fills,
+the volume) use a perceptually-uniform scientific colormap (viridis default);
+**categorical identity** (wells, horizons, contacts, zones, scatter groups,
+distribution series) uses the fixed token slots, assigned by entity and stable
+across tabs/theme. The payload supplies names, units and ranges; the renderer owns
+the palette. **Signed data** (tornado swings around the base line) uses the
+validated **diverging pair** (blue↔red, gray midpoint) — below-base = low hue,
+above-base = high hue. The chart marks reuse this one colour system; a consumer
+never sends hex.

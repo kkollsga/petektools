@@ -1,0 +1,45 @@
+[build-system]
+requires = ["maturin>=1.4,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "petektools"
+description = "Standalone numerics & geostatistics kernels: reproducible sampling, curated descriptive/weighted statistics, realization-set aggregation, and a geostatistics front-door (experimental variogram, fit, local kriging, sequential Gaussian simulation)."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Kristian dF Kollsgård", email = "kkollsg@gmail.com" }]
+keywords = ["geostatistics", "gridding", "interpolation", "numerics", "subsurface"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Topic :: Scientific/Engineering",
+    "Operating System :: OS Independent",
+]
+dynamic = ["version"]
+
+# numpy is optional: vector inputs accept any Python sequence (lists *or* numpy
+# arrays via the iteration protocol) with no numpy dependency, and outputs are
+# plain floats/lists. `pip install petektools[numpy]` only if a caller wants
+# numpy installed alongside for its own `np.array(...)` wrapping of results.
+[project.optional-dependencies]
+numpy = ["numpy"]
+
+[project.urls]
+Repository = "https://github.com/kkollsga/petektools"
+Issues = "https://github.com/kkollsga/petektools/issues"
+
+[tool.maturin]
+# The cdylib that becomes the wheel's extension lives in py/; the importable
+# Python package is python/petektools/ (re-exports the extension).
+manifest-path = "py/Cargo.toml"
+module-name = "petektools._petektools"
+python-source = "python"
+# The viewer unit ships as wheel package data (the JS assets are not .py files,
+# so maturin needs them named explicitly). The crates.io Rust crate excludes
+# `/python` entirely (Cargo.toml `exclude`), so these never bloat the kernel crate.
+include = ["python/petektools/viewer/assets/**/*"]

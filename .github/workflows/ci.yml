@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  gate:
+    name: build · fmt · clippy · test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: fmt
+        run: cargo fmt --all -- --check
+      # `--workspace` also lints/builds the `py/` PyO3 cdylib (extension-module
+      # links fine on Linux); the wheel job below builds + imports it for real.
+      - name: clippy (warnings = errors)
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: build
+        run: cargo build --workspace --all-features --verbose
+      - name: test
+        run: cargo test --workspace --all-features --verbose
+
+  wheels:
+    # Build the abi3 wheel and import + run it across a Python matrix so a
+    # toolchain regression (a pyo3 that can't link a new CPython) surfaces here,
+    # not with users. abi3-py39 means one wheel spans 3.9+, but we still build
+    # AND import on each interpreter so a per-version link/ABI break shows up.
+    name: wheel build + smoke (py ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.9 = oldest abi3 floor; through the latest stable CPython.
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          allow-prereleases: true
+      - name: install maturin + pytest + numpy
+        run: pip install maturin pytest numpy
+      - name: build release wheel
+        run: maturin build --release --out dist
+      - name: install wheel + run smoke/parity suite
+        run: |
+          pip install --find-links dist --no-index petektools
+          pytest python/tests/ -q
