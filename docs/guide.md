@@ -1,0 +1,169 @@
+# petekTools guide
+
+**Scattered-data gridding & geostatistics kernels for Rust** — the numerics
+layer the ecosystem was missing, plus a small curated front-door over mature
+numeric crates and a domain-agnostic bundle viewer.
+
+## What it is (the gap it fills)
+
+Rust already has excellent crates for linear algebra (`faer`), statistics and
+distributions (`statrs`, `rand_distr`), FFT (`rustfft`), and spatial indexing
+(`kiddo`, `rstar`). What it has lacked is a production-grade way to turn
+**scattered `(x, y, z)` observations into a regular grid** — minimum-curvature
+surfaces, inverse-distance weighting, nearest-neighbour fills. petekTools fills
+exactly that gap, and curates the rest behind one small door.
+
+If you have points and need a surface — a depth grid from well picks, a property
+map from samples, any scattered field on a regular lattice — this is the crate.
+It is a **pure leaf**: it depends only on general-purpose numeric crates, never on
+a domain model, and stays usable standalone (and, via a thin PyO3 wheel, from
+Python).
+
+Design principles that shape the whole surface:
+
+- **One job.** Scattered-data gridding / geostatistics — the gap. Everything else
+  (linear algebra, stats, neighbour search) is *curated* from mature crates,
+  never reimplemented.
+- **Type-agnostic kernels.** A kernel speaks a plain [`Lattice`] + `[[f64; 3]]`
+  rows and returns `ndarray::Array2<f64>` — never a caller's domain type. Adoption
+  is a conversion at the call site, not a rewrite.
+- **Numerical honesty.** Deterministic, documented to a stated tolerance, with
+  analytic cases asserted as tests (a linear trend is the exact minimum-curvature
+  solution; IDW is exact at coincident samples). No silent clamping, no magic
+  defaults — locked constants (e.g. IDW `p = 2`) are named and cited.
+
+## Gridding methods
+
+The `grid(points, lattice, method)` dispatcher takes `[x, y, z]` rows and a
+target lattice and returns an `ncol × nrow` `Array2<f64>` (undefined nodes are
+`NaN`). Pick the method with the `GridMethod` enum:
+
+| `GridMethod`        | What it does                                                             |
+| ------------------- | ------------------------------------------------------------------------ |
+| `Nearest`           | Each node takes its areally-closest sample's `z` (blocky, exact at data). |
+| `InverseDistance`   | Global IDW with `p = 2`; exact at coincident samples.                    |
+| `MinimumCurvature`  | Briggs biharmonic SOR — smooth, honours the samples.                     |
+
+```rust
+use petektools::{grid, GridMethod, Lattice};
+
+// A 100×80 grid, 25 m spacing, origin at (1000, 2000).
+let lattice = Lattice::regular(1000.0, 2000.0, 25.0, 25.0, 100, 80);
+let points  = [[1010.0, 2008.0, 12.5], [1240.0, 2300.0, 18.1], [1880.0, 3100.0, 9.4]];
+let surface = grid(&points, &lattice, GridMethod::MinimumCurvature).unwrap();
+```
+
+## Warm-start & `ConvergentGridder`
+
+Editing a surface point-by-point? Re-solving minimum curvature from scratch on
+every nudge is wasteful. Seed the solver from the prior field and it converges in
+a fraction of the iterations to the **same** field — measured **~4–7× faster** on
+a typical structural edit, rising to **~250×** in the near-converged incremental
+limit. A `None` or wrong-shape seed simply falls back to a cold solve.
+
+```rust
+use petektools::{grid, grid_min_curvature_seeded, GridMethod, Lattice};
+
+let lattice = Lattice::regular(0.0, 0.0, 1.0, 1.0, 64, 64);
+let points  = [[1.0, 1.0, 10.0], [60.0, 60.0, 40.0]];
+let cold = grid(&points, &lattice, GridMethod::MinimumCurvature).unwrap();
+// After nudging the data: relax from the prior field instead of cold-starting.
+let warm = grid_min_curvature_seeded(&points, &lattice, Some(&cold)).unwrap();
+```
+
+For interactive, one-control-at-a-time refinement the stateful `ConvergentGridder`
+keeps the field between edits so each new control is cheap:
+
+```rust
+use petektools::{ConvergentGridder, Lattice};
+
+let lattice = Lattice::regular(0.0, 0.0, 1.0, 1.0, 64, 64);
+let points  = [[1.0, 1.0, 10.0], [60.0, 60.0, 40.0]];
+let mut gridder = ConvergentGridder::new(&points, &lattice).unwrap();
+let field = gridder.add_control(32, 40, 25.0); // pin a node, re-solve incrementally
+```
+
+## Geometry: `Lattice`
+
+A regular, **rotatable** areal lattice (the IRAP/RMS model): origin, spacing,
+node counts, CCW rotation, and an optional y-flip. It carries the forward map
+`node_xy(i, j)`, its inverse `xy_to_ij(x, y)`, and a `bbox()` — everything a
+kernel needs to place a sample on the grid. Kernels never take a caller's grid
+type; they take a `Lattice`, so any regular areal grid maps on field-for-field.
+
+## Geostatistics
+
+Beyond deterministic gridding, petekTools ships a geostatistics front-door: an
+omnidirectional **experimental variogram**, a fitted **`Variogram`** model
+(`Nugget` / `Spherical` / `Exponential` / `Gaussian`), moving-neighbourhood
+**ordinary kriging** (estimate + variance), and **sequential Gaussian
+simulation** for conditioned stochastic realizations. Kriging and SGS both solve
+small dense neighbourhoods (up to `max_neighbours` samples within a `radius`) and
+run with the GIL released from Python. See the `01_geostat_tour` notebook for the
+full experimental-variogram → fit → krige → simulate walk-through.
+
+## The curated front-doors: units, stats, sampling
+
+These modules are deliberately *thin* — they curate a mature crate behind a small,
+named surface rather than reinvent it.
+
+- **`units`** — a domain-agnostic SI/metric reporting layer: `km2 ↔ m2`,
+  `m3 ↔ mcm / msm3 / bcm`, `scf ↔ Sm³`, `stb ↔ Sm³`, and `format_volume` for
+  human-readable output. (`Sm³` is a scale label, not PVT.)
+- **`stats`** — descriptive statistics with an Excel-parity `percentile`
+  (type-7): `mean` / `variance` / `std` / `median` / `percentile`, plus the full
+  weighted family (`weighted_mean`, `weighted_percentile`, …). Realization-set
+  helpers `reservoir_summary` (the P90 = low exceedance digest, `p90 ≤ p50 ≤ p10`)
+  and `aggregate` (per-segment sum under a correlation assumption) sit here too.
+- **`sampling`** — validated distribution samplers (`uniform` / `normal` /
+  `lognormal` / `triangular` / `truncated_normal`) drawn through a seeded `Rng`
+  for bit-for-bit reproducibility, plus a `.clamped(lo, hi)` hard-limiter
+  combinator. Same seed + params reproduces the identical stream every time.
+
+## Synthetic generators
+
+A family of **seeded, believable synthetic-data** generators — for tests,
+demos, tutorials, and benchmarking without any real dataset. All are
+bit-reproducible from their seed, and fractions live in `[0, 1]`.
+
+- **Surfaces & maps** — `synth_dome_surface` (an elliptical four-way closure with
+  tilt and correlated noise), `synth_isochore` (a thickness map), `synth_trend_map`
+  (a `[0, 1]` depositional trend, optionally correlated with another field).
+- **Wells & outlines** — `place_wells` / `place_wells_in_polygon` (seeded well
+  heads), `closure_outline` (the largest closed contour of a surface at a spill
+  level), `study_area_outline` (a rounded-rectangle extent), `tops_from_surface`
+  (pick a top per well with a residual draw).
+- **Trajectories** — `synth_trajectory` (vertical) and `synth_trajectory_profile`
+  (`build_hold` / `build_hold_drop` directional wells by the minimum-curvature
+  relation), with `max_dogleg_severity` as a believability yardstick.
+- **Petrophysics** — `synth_facies_series` (binary sand/shale), `synth_log_series`
+  (a zoned, depth-autocorrelated log over a `ZoneSpec` stack), and
+  `synth_por_with_facies` (porosity coupled onto a facies series).
+- **`Georef`** — a fictional world-frame origin that builds a world-placed
+  `Lattice` and translates locally-built points into the same frame.
+
+The `02_synthetic_data_tour` notebook builds a whole synthetic asset — structure,
+outline, wells, trajectories, and coupled petrophysical curves — from these.
+
+## The viewer unit (brief)
+
+petekTools also ships the **viewer** — a packaged, domain-agnostic inspection
+viewer (`petektools.viewer`, wheel-only; excluded from the crates.io Rust crate so
+the kernel stays lean). Any library that maps its data onto the
+[generic render schema](../python/petektools/viewer/SCHEMA.md) can drive it:
+build a typed JSON payload of map raster layers, section columns, and/or a
+corner-point mesh, then `serve()` it (a live local server) or `save_view()` it
+(one self-contained HTML file, all JS + data inlined, zero external network
+fetches). It is **strictly bundle-driven** — it renders exactly what the payload
+declares and computes nothing itself; new cross-sections come from a consumer's
+`section_provider` callback (live) or are pre-computed into the payload (file).
+The viewer is horizontal capability: it serves every layer of the ecosystem, so
+it lives here. The full guide is in `VIEWER.md`.
+
+## Where to go next
+
+- **`API.md`** — the locked public contract (the *what*).
+- **`SPEC.md`** — the design constitution (the *why* and *how*).
+- **`examples/notebooks/01_geostat_tour.ipynb`** — variogram → kriging → SGS.
+- **`examples/notebooks/02_synthetic_data_tour.ipynb`** — a full synthetic asset.
+- **`VIEWER.md`** — the viewer unit in full.

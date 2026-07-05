@@ -5,6 +5,10 @@
 node_modules/
 __pycache__/
 
+# Docs-notebook build venv (local; created for executing example notebooks)
+/.venv-docs-nb/
+.ipynb_checkpoints/
+
 # Local working folders (mirrors the petekio / peteksim convention):
 /inbox/
 /dev-docs/
