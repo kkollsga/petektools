@@ -8,7 +8,7 @@ version = "0.2.0"
 edition = "2021"
 rust-version = "1.88"
 license = "Apache-2.0"
-repository = "https://github.com/kkollsga/petektools-next"
+repository = "https://github.com/kkollsga/petektools"
 authors = ["Kristian dF Kollsgård <kkollsg@gmail.com>"]
 
 [package]

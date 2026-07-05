@@ -3,7 +3,7 @@ name: Release
 # Tag-triggered publish (v* tags): crates.io (token) + PyPI (trusted publishing).
 # The tag should match the Cargo.toml version (vX.Y.Z). No PyPI secret — PyPI
 # upload uses OIDC trusted publishing (configure a pending publisher on PyPI:
-# project `petektools`, owner kkollsga, repo petektools-next, workflow release.yml,
+# project `petektools`, owner kkollsga, repo petektools, workflow release.yml,
 # environment pypi). crates.io still uses the CARGO_REGISTRY_TOKEN repo secret.
 on:
   push:

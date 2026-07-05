@@ -30,8 +30,8 @@ dynamic = ["version"]
 numpy = ["numpy"]
 
 [project.urls]
-Repository = "https://github.com/kkollsga/petektools-next"
-Issues = "https://github.com/kkollsga/petektools-next/issues"
+Repository = "https://github.com/kkollsga/petektools"
+Issues = "https://github.com/kkollsga/petektools/issues"
 
 [tool.maturin]
 # The cdylib that becomes the wheel's extension lives in py/; the importable
