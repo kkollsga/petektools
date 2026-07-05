@@ -21,7 +21,7 @@ map from samples, any scattered field on a regular lattice — this is the crate
 - **Warm-start / incremental re-gridding.** Editing a surface point-by-point?
   Re-solving from scratch each time is wasteful. Seed the solver from the prior
   field and it converges in a fraction of the iterations — **~4–7× faster** on a
-  typical structural edit, rising to **~250×** in the near-converged incremental
+  typical structural edit, rising to **~114×** in the near-converged incremental
   limit (measured: 1.55 ms → 13.6 µs, 64 points → 40×40), converging to the same
   field. A stateful [`ConvergentGridder`] makes interactive,
   one-control-at-a-time refinement cheap.
