@@ -13,6 +13,15 @@ fills exactly that gap, and curates the rest behind one small front-door.
 If you have points and need a surface — a depth grid from well picks, a property
 map from samples, any scattered field on a regular lattice — this is the crate.
 
+## Documentation
+
+The canonical docs for the whole petek family live on the **petekSuite site**
+— petekTools' pages there:
+
+- **[Library guide](https://peteksuite.readthedocs.io/en/latest/libraries/petektools/)** — the petekTools guide.
+- **Tutorials** — [Synthetic data & testing](https://peteksuite.readthedocs.io/en/latest/tutorials/synthetic-testing/) · [Visualization](https://peteksuite.readthedocs.io/en/latest/tutorials/visualization/) (the viewer unit ships in this wheel).
+- **[Notebooks](https://peteksuite.readthedocs.io/en/latest/notebooks/)** — executed examples: [geostat tour](https://peteksuite.readthedocs.io/en/latest/notebooks/petektools/01_geostat_tour/) · [synthetic-data tour](https://peteksuite.readthedocs.io/en/latest/notebooks/petektools/02_synthetic_data_tour/).
+
 ## Why reach for it
 
 - **Real gridding methods, not toys.** Briggs minimum-curvature (biharmonic SOR),

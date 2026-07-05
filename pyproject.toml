@@ -30,6 +30,8 @@ dynamic = ["version"]
 numpy = ["numpy"]
 
 [project.urls]
+# The petekSuite site is the canonical docs home for the whole family.
+Documentation = "https://peteksuite.readthedocs.io/en/latest/libraries/petektools/"
 Repository = "https://github.com/kkollsga/petektools"
 Issues = "https://github.com/kkollsga/petektools/issues"
 
