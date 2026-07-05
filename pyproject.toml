@@ -6,7 +6,7 @@ build-backend = "maturin"
 name = "petektools"
 description = "Standalone numerics & geostatistics kernels: reproducible sampling, curated descriptive/weighted statistics, realization-set aggregation, and a geostatistics front-door (experimental variogram, fit, local kriging, sequential Gaussian simulation)."
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
 authors = [{ name = "Kristian dF Kollsgård", email = "kkollsg@gmail.com" }]
 keywords = ["geostatistics", "gridding", "interpolation", "numerics", "subsurface"]
