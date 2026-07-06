@@ -6,6 +6,8 @@ All notable changes to petekTools are recorded here. Format follows
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-07-06
+
 ### Added — `petektools.synth_asset` owns the synthetic export fixture
 - Rehomed the synthetic Petrel-export composer into the petekTools Python wheel
   as `petektools.synth_asset`, with public single-file writers for IRAP, CPS-3,
