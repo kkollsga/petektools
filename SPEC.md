@@ -41,6 +41,14 @@ locally relaxed, for the two `memmap2` map calls only (each carries a `SAFETY`
 note). No heavy deps (`memmap2` + `bytemuck`; no HDF5/Arrow/parquet), fixed
 strides, no compression.
 
+**Carve-out — the `asset` unit (`petektools.synth_asset`, wheel-only).** A
+deliberate pure-Python test-data writer for synthetic Petrel-export-shaped
+trees and single-file format fixtures. It lives in the wheel, not the Rust
+crate: the Rust core still owns only generators over `Lattice` + plain arrays.
+The writer emits vendor formats so downstream loaders can prove the ingest seam,
+but it carries no domain model and no confidential data. `spill_recipe` remains
+in petekSim because it depends on the static-model live-set formula.
+
 **Carve-out — the `viewer` unit (`petektools.viewer`, wheel-only).** A third
 deliberate exception, in the same spirit: a *domain-agnostic* renderer of **typed
 JSON bundles** — map raster layers, section columns, a corner-point mesh (and,

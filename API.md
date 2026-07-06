@@ -573,7 +573,7 @@ pub fn reservoir_summary(data: &[f64]) -> Result<ReservoirSummary>;
 pub fn aggregate(segments: &[&[f64]], corr: Correlation) -> Vec<f64>;
 ```
 
-## synth — believable synthetic data (added; namespaced, not root-re-exported)
+## synth — believable synthetic data (added; Rust namespaced, Python re-exported)
 
 Seeded, deterministic generators for a whole synthetic subsurface asset — a
 stand-in for a real (confidential) dataset. Built on two documented primitives (an
@@ -746,6 +746,18 @@ g    = pt.Georef()                                                           # f
 lat  = g.lattice(xinc, yinc, ncol, nrow)                                     # world-placed Lattice; g.place_point([x,y]) etc.
 ring = pt.closure_outline(surface, lat, spill_depth)                         # -> [[x,y]] (largest closed ring)
 ring = pt.study_area_outline(xmin, ymin, xmax, ymax, corner_radius, arc_steps)
+
+# asset — wheel-only synthetic Petrel-export writer/composer. Format dissolves
+# at load; these are test-data writers, not petekTools domain I/O.
+pt.write_irap_grid(path, field, lat, negate=True)
+pt.write_irap_points(path, field, lat)
+pt.write_earthvision_grid(path, field, lat)
+pt.write_cps3_grid(path, field, lat, negate=True)
+pt.write_cps3_lines(path, rings)
+pt.write_wellpath(path, trajectory, kb)
+pt.write_las2(path, well, md, por, ntg, sw)
+pt.write_petrel_tops(path, horizon_picks, contact_rows=[])
+m = pt.synth_asset(root, seed=20260704, n_wells=8, ncol=41)  # returns planted-truth manifest
 
 # units — SI/metric reporting (family standard); Sm³ is a scale label, not PVT.
 pt.m3_to_mcm(v); pt.mcm_to_m3(v)          # m³  <-> mcm  (1e6)

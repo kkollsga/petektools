@@ -135,8 +135,9 @@ the locked public contract.
 The public contract — `Lattice`, `GridMethod`, `grid`, the warm-start entries —
 is **locked and analytically tested**. Also shipped: ordinary kriging behind a
 `Gridder` trait, the curated `stats` / `sampling` front-doors over `statrs` /
-`rand_distr`, and the `units` / `container` modules. On the roadmap: a PyO3
-wheel (and RBF backends if a need appears).
+`rand_distr`, the `units` / `container` modules, the PyO3 wheel, the generic
+viewer unit, and the wheel-only synthetic asset writer/composer. On the roadmap:
+RBF backends if a need appears.
 
 ## License
 

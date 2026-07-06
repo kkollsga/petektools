@@ -56,6 +56,26 @@ impl Lattice {
     fn nrow(&self) -> usize {
         self.inner.nrow
     }
+    /// Origin x of node `(0, 0)` (world units).
+    #[getter]
+    fn xori(&self) -> f64 {
+        self.inner.xori
+    }
+    /// Origin y of node `(0, 0)` (world units).
+    #[getter]
+    fn yori(&self) -> f64 {
+        self.inner.yori
+    }
+    /// Node spacing along the column/x axis (world units).
+    #[getter]
+    fn xinc(&self) -> f64 {
+        self.inner.xinc
+    }
+    /// Node spacing along the row/y axis (world units).
+    #[getter]
+    fn yinc(&self) -> f64 {
+        self.inner.yinc
+    }
 
     fn __repr__(&self) -> String {
         format!(

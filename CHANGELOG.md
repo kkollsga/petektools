@@ -6,6 +6,14 @@ All notable changes to petekTools are recorded here. Format follows
 
 ## [Unreleased]
 
+### Added — `petektools.synth_asset` owns the synthetic export fixture
+- Rehomed the synthetic Petrel-export composer into the petekTools Python wheel
+  as `petektools.synth_asset`, with public single-file writers for IRAP, CPS-3,
+  EarthVision, LAS 2.0, wellpath, and Petrel well-tops fixtures. The Rust crate
+  remains format-I/O-free; this is a wheel-only test-data unit.
+- Added a Python API-lock test for `petektools.__all__` and smoke tests for the
+  writer markers plus a small deterministic synthetic tree.
+
 ## [0.2.1] - 2026-07-05
 
 ### Fixed — broken import on Python 3.10/3.11 (0.2.0 wheel)
