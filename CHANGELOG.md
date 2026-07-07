@@ -6,6 +6,17 @@ All notable changes to petekTools are recorded here. Format follows
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-07-07
+
+### Changed
+- Updated CI and release workflows to current action versions.
+- Release publishing now uses the Actions-owned flow: the release workflow
+  accepts a release ref and expected version, runs gates, creates or reuses the
+  matching `v<version>` tag on the same commit, then publishes crates.io, PyPI,
+  and the GitHub Release.
+- Aligned the internal Python binding crate's self-dependency floor with the
+  workspace release version.
+
 ## [0.2.3] - 2026-07-07
 
 ### Added — domain-free formula expressions
