@@ -9,7 +9,10 @@
 
 use petektools::geostat::{experimental_variogram as rs_expvar, sgs as rs_sgs, SgsParams};
 use petektools::geostat::{ExperimentalVariogram as RsExpVar, LocalKriging};
-use petektools::{Lattice as RsLattice, Variogram as RsVariogram, VariogramModel};
+use petektools::{
+    AnisotropicVariogram as RsAnisotropicVariogram, Lattice as RsLattice,
+    SpatialVariogram as RsSpatialVariogram, Variogram as RsVariogram, VariogramModel,
+};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyList};
@@ -29,6 +32,18 @@ fn parse_model(s: &str) -> PyResult<VariogramModel> {
             "unknown variogram model '{other}' (expected 'nugget', 'spherical', 'exponential', or 'gaussian')"
         ))),
     }
+}
+
+fn extract_spatial_variogram(obj: &Bound<'_, PyAny>) -> PyResult<RsSpatialVariogram> {
+    if let Ok(v) = obj.extract::<PyRef<'_, Variogram>>() {
+        return Ok(RsSpatialVariogram::from(v.inner));
+    }
+    if let Ok(v) = obj.extract::<PyRef<'_, AnisotropicVariogram>>() {
+        return Ok(RsSpatialVariogram::from(v.inner));
+    }
+    Err(PyValueError::new_err(
+        "expected Variogram or AnisotropicVariogram",
+    ))
 }
 
 /// A regular 2-D lattice — the target grid geometry. `Lattice(xori, yori, xinc,
@@ -145,6 +160,93 @@ impl Variogram {
         format!(
             "Variogram(nugget={}, sill={}, range={})",
             self.inner.nugget, self.inner.sill, self.inner.range
+        )
+    }
+}
+
+/// Directional variogram with horizontal major/minor ranges, vertical range,
+/// and major-axis azimuth in degrees clockwise from north.
+#[pyclass(name = "AnisotropicVariogram", frozen)]
+pub struct AnisotropicVariogram {
+    pub(crate) inner: RsAnisotropicVariogram,
+}
+
+#[pymethods]
+impl AnisotropicVariogram {
+    #[new]
+    #[pyo3(signature = (model, major, minor, vertical, azimuth, sill=1.0, nugget=0.0))]
+    fn new(
+        model: &str,
+        major: f64,
+        minor: f64,
+        vertical: f64,
+        azimuth: f64,
+        sill: f64,
+        nugget: f64,
+    ) -> PyResult<AnisotropicVariogram> {
+        let m = parse_model(model)?;
+        RsAnisotropicVariogram::new(m, nugget, sill, major, minor, vertical, azimuth)
+            .map(|inner| AnisotropicVariogram { inner })
+            .map_err(to_pyerr)
+    }
+
+    #[staticmethod]
+    fn isotropic(
+        model: &str,
+        nugget: f64,
+        sill: f64,
+        range: f64,
+    ) -> PyResult<AnisotropicVariogram> {
+        let m = parse_model(model)?;
+        RsAnisotropicVariogram::isotropic(m, nugget, sill, range)
+            .map(|inner| AnisotropicVariogram { inner })
+            .map_err(to_pyerr)
+    }
+
+    #[getter]
+    fn nugget(&self) -> f64 {
+        self.inner.nugget
+    }
+    #[getter]
+    fn sill(&self) -> f64 {
+        self.inner.sill
+    }
+    #[getter]
+    fn major(&self) -> f64 {
+        self.inner.major
+    }
+    #[getter]
+    fn minor(&self) -> f64 {
+        self.inner.minor
+    }
+    #[getter]
+    fn vertical(&self) -> f64 {
+        self.inner.vertical
+    }
+    #[getter]
+    fn azimuth(&self) -> f64 {
+        self.inner.azimuth
+    }
+
+    #[pyo3(signature = (dx, dy, dz=0.0))]
+    fn anisotropic_distance(&self, dx: f64, dy: f64, dz: f64) -> f64 {
+        self.inner.anisotropic_distance(dx, dy, dz)
+    }
+
+    #[pyo3(signature = (dx, dy, dz=0.0))]
+    fn gamma_offset(&self, dx: f64, dy: f64, dz: f64) -> f64 {
+        self.inner.gamma_offset(dx, dy, dz)
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "AnisotropicVariogram(major={}, minor={}, vertical={}, azimuth={}, nugget={}, sill={})",
+            self.inner.major,
+            self.inner.minor,
+            self.inner.vertical,
+            self.inner.azimuth,
+            self.inner.nugget,
+            self.inner.sill
         )
     }
 }
@@ -281,12 +383,13 @@ pub fn sgs(
     py: Python<'_>,
     coords: Vec<[f64; 3]>,
     lattice: &Lattice,
-    variogram: &Variogram,
+    variogram: &Bound<'_, PyAny>,
     max_neighbours: usize,
     radius: f64,
     seed: u64,
 ) -> PyResult<Vec<Vec<f64>>> {
-    let params = SgsParams::new(variogram.inner, max_neighbours, radius, seed).map_err(to_pyerr)?;
+    let variogram = extract_spatial_variogram(variogram)?;
+    let params = SgsParams::new(variogram, max_neighbours, radius, seed).map_err(to_pyerr)?;
     let lat = lattice.inner.clone();
     let field = py
         .detach(|| rs_sgs(&coords, &lat, &params))
@@ -303,12 +406,13 @@ pub fn sgs_flat<'py>(
     py: Python<'py>,
     coords: Vec<[f64; 3]>,
     lattice: &Lattice,
-    variogram: &Variogram,
+    variogram: &Bound<'_, PyAny>,
     max_neighbours: usize,
     radius: f64,
     seed: u64,
 ) -> PyResult<(Bound<'py, PyBytes>, (usize, usize))> {
-    let params = SgsParams::new(variogram.inner, max_neighbours, radius, seed).map_err(to_pyerr)?;
+    let variogram = extract_spatial_variogram(variogram)?;
+    let params = SgsParams::new(variogram, max_neighbours, radius, seed).map_err(to_pyerr)?;
     let lat = lattice.inner.clone();
     let field = py
         .detach(|| rs_sgs(&coords, &lat, &params))

@@ -12,6 +12,7 @@ import petektools as pt
 
 def test_public_api_lock():
     assert sorted(pt.__all__) == [
+        "AnisotropicVariogram",
         "Clamped",
         "ExperimentalVariogram",
         "Georef",
@@ -26,8 +27,10 @@ def test_public_api_lock():
         "aggregate",
         "bcm_to_m3",
         "closure_outline",
+        "evaluate_formula",
         "experimental_variogram",
         "format_volume",
+        "formula_info",
         "km2_to_m2",
         "local_kriging_grid",
         "local_kriging_grid_flat",

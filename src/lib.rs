@@ -27,6 +27,8 @@
 //! - [`store`] — a domain-agnostic chunked, memory-mapped lane store: the
 //!   spill-to-disk backing for larger-than-memory models (k-slab-major lanes,
 //!   `f32`/`f64`/`u16`/`u32`, deterministic layout, zero-copy views).
+//! - [`formula`] — domain-free assignment parsing, dependency ordering, and
+//!   vectorized scalar/array expression evaluation.
 //! - [`foundation`] — the shared vocabulary ([`Lattice`], [`BBox`],
 //!   [`AlgoError`]).
 //!
@@ -77,6 +79,7 @@
 #![deny(unsafe_code)]
 
 pub mod container;
+pub mod formula;
 pub mod foundation;
 pub mod geostat;
 pub mod gridding;
@@ -90,7 +93,8 @@ pub mod units;
 // stay namespaced under `units` to keep the numeric front-door uncluttered.)
 pub use foundation::{AlgoError, BBox, Lattice, Result};
 pub use gridding::{
-    grid, grid_min_curvature_conditioned, grid_min_curvature_seeded, resample, Conditioning,
-    ConvergentGridder, GridMethod, Gridder, MinCurvatureOperator, OrdinaryKriging, ResampleMethod,
-    Variogram, VariogramModel,
+    grid, grid_min_curvature_conditioned, grid_min_curvature_seeded, resample,
+    AnisotropicVariogram, Conditioning, ConvergentGridder, GridMethod, Gridder,
+    MinCurvatureOperator, OrdinaryKriging, ResampleMethod, SpatialVariogram, Variogram,
+    VariogramModel,
 };

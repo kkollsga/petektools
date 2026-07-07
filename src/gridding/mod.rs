@@ -32,7 +32,9 @@ pub use gridder::Gridder;
 pub use mincurv_operator::MinCurvatureOperator;
 // `Conditioning` and `grid_min_curvature_conditioned` are defined in this module
 // (below) and re-exported at the crate root via `lib.rs`.
-pub use kriging::{OrdinaryKriging, Variogram, VariogramModel};
+pub use kriging::{
+    AnisotropicVariogram, OrdinaryKriging, SpatialVariogram, Variogram, VariogramModel,
+};
 pub use resample::{resample, ResampleMethod};
 
 use crate::foundation::{AlgoError, Lattice, Result};

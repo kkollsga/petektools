@@ -144,6 +144,55 @@ pub fn km2_to_m2(km2: f64) -> f64; pub fn m2_to_km2(m2: f64) -> f64;    // km² 
 pub fn format_volume(v_m3: f64) -> String;   // "12.4 mcm" / "4.0 bcm" / "950.0 m³" by magnitude
 ```
 
+## formula
+
+A domain-free assignment-expression module for vectorized calculations over
+named arrays. It has no grid/static-model semantics: `$name` is a scalar runtime
+parameter, and a bare symbol is either an input property array or a prior
+assignment in the same block.
+
+Supported operators: `+`, `-`, `*`, `/`, `**`; comparisons `==`, `!=`, `<`,
+`<=`, `>`, `>=` returning `1.0` or `0.0`; unary `+`/`-`; parentheses; and
+functions `sqrt`, `pow`, `log`, `log10`, `exp`, `min`, `max`, `clip`, `abs`,
+and vectorized `if(condition, true_value, false_value)`. Scalars broadcast over
+arrays; arrays must be equal length. Missing params/properties, cycles, shape
+mismatches, invalid assignment lhs, unsupported functions, and parse errors fail
+loudly through `AlgoError`.
+
+```rust
+pub struct Assignment { /* private fields */ }
+impl Assignment {
+    pub fn parse(text: &str) -> Result<Self>;
+    pub fn lhs(&self) -> &str;
+    pub fn params(&self) -> std::collections::BTreeSet<String>;     // no `$`
+    pub fn variables(&self) -> std::collections::BTreeSet<String>;  // bare symbols
+}
+
+pub struct FormulaBlock { /* private fields */ }
+impl FormulaBlock {
+    pub fn parse<S: AsRef<str>>(lines: &[S]) -> Result<Self>;
+    pub fn assignments(&self) -> &[Assignment];
+    pub fn outputs(&self) -> Vec<String>;            // source order
+    pub fn evaluation_order(&self) -> Vec<String>;   // dependency order
+    pub fn params(&self) -> std::collections::BTreeSet<String>;
+    pub fn property_dependencies(&self) -> std::collections::BTreeSet<String>;
+    pub fn evaluate(&self,
+        properties: &std::collections::HashMap<String, Vec<f64>>,
+        params: &std::collections::HashMap<String, f64>)
+        -> Result<std::collections::HashMap<String, Vec<f64>>>;
+}
+
+pub fn evaluation_order(assignments: &[Assignment]) -> Result<Vec<usize>>;
+pub fn evaluate_assignments(assignments: &[Assignment],
+    properties: &std::collections::HashMap<String, Vec<f64>>,
+    params: &std::collections::HashMap<String, f64>)
+    -> Result<std::collections::HashMap<String, Vec<f64>>>;
+pub fn evaluate_formulas<S: AsRef<str>>(lines: &[S],
+    properties: &std::collections::HashMap<String, Vec<f64>>,
+    params: &std::collections::HashMap<String, f64>)
+    -> Result<std::collections::HashMap<String, Vec<f64>>>;
+```
+
 ## container
 
 A **domain-agnostic** single-file section container: file magic + a JSON header
@@ -707,6 +756,11 @@ pt.weighted_percentile(values, weights, p)
 # realization-set helpers.
 r = pt.reservoir_summary(data)             # r.p90 <= r.p50 <= r.p10, r.mean; r.to_dict()
 pt.aggregate(segments, correlation="independent" | "comonotonic") -> list[float]
+
+# formula — domain-free assignment expressions over named vectors.
+pt.formula_info(["RQI = $lambda * sqrt(PermXY_BC / PorE_BC)"])
+# -> {"outputs": [...], "order": [...], "params": [...], "properties": [...]}
+pt.evaluate_formula(assignments, properties, params=None) -> dict[str, list[float]]
 
 # geostat front-door — coords are [x,y,z] rows (list-of-3-lists or (n,3) ndarray).
 exp = pt.experimental_variogram(coords, lag, n_lags)     # .lags/.semivariances/.counts

@@ -6,7 +6,7 @@ use crate::foundation::Lattice;
 use crate::geostat::local_kriging::{simple_kriging_with, SkNeighbour};
 use crate::geostat::neighbourhood::Neighbourhood;
 use crate::geostat::nscore::NormalScore;
-use crate::gridding::kriging::Variogram;
+use crate::gridding::kriging::SpatialVariogram;
 use crate::sampling::seeded_rng;
 use ndarray::Array2;
 use rand::RngExt;
@@ -34,7 +34,7 @@ use rand_distr::{Distribution, Normal};
 #[allow(clippy::too_many_arguments)]
 pub(super) fn simulate_scores(
     lattice: &Lattice,
-    variogram: &Variogram,
+    variogram: &SpatialVariogram,
     max_neighbours: usize,
     radius: f64,
     secondary: Option<&(Array2<f64>, f64)>,
@@ -91,11 +91,12 @@ pub(super) fn simulate_scores(
             .nb
             .nearest_into([x, y], max_neighbours, radius, &mut scratch.near);
         scratch.neighbours.clear();
-        for &(pidx, d) in &scratch.near {
+        for &(pidx, _) in &scratch.near {
+            let pos = scratch.inf_pos[pidx];
             scratch.neighbours.push(SkNeighbour {
-                pos: scratch.inf_pos[pidx],
+                pos,
                 value: scratch.inf_val[pidx],
-                dist_to_target: d,
+                offset_to_target: [pos[0] - x, pos[1] - y],
             });
         }
 

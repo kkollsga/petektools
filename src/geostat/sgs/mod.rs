@@ -54,7 +54,7 @@ mod sweep;
 
 use crate::foundation::{AlgoError, Lattice, Result};
 use crate::geostat::nscore::NormalScore;
-use crate::gridding::kriging::Variogram;
+use crate::gridding::kriging::SpatialVariogram;
 use ndarray::Array2;
 
 use collocated::standardize;
@@ -68,7 +68,7 @@ pub use session::SgsSession;
 pub struct SgsParams {
     /// Spatial-continuity model, **fitted on the normal-score data** (so its total
     /// sill is ~1). Its correlogram drives the per-node simple kriging.
-    pub variogram: Variogram,
+    pub variogram: SpatialVariogram,
     /// Maximum conditioning nodes (data + simulated) per node's local solve.
     pub max_neighbours: usize,
     /// Search radius for the moving neighbourhood (world units).
@@ -86,7 +86,7 @@ impl SgsParams {
     /// A plain (no-secondary) parameter set. Errors unless `max_neighbours ≥ 1`
     /// and `radius > 0` (finite).
     pub fn new(
-        variogram: Variogram,
+        variogram: impl Into<SpatialVariogram>,
         max_neighbours: usize,
         radius: f64,
         seed: u64,
@@ -97,7 +97,7 @@ impl SgsParams {
             ));
         }
         Ok(SgsParams {
-            variogram,
+            variogram: variogram.into(),
             max_neighbours,
             radius,
             seed,
@@ -198,15 +198,18 @@ pub fn sgs_seeded(
 ///
 /// Deutsch & Journel 1998, *GSLIB* §VI.2; Goovaerts 1997 §8.4 — the
 /// *unconditional* case of the same algorithm.
-pub fn sgs_unconditional(
+pub fn sgs_unconditional<V>(
     lattice: &Lattice,
     mean: f64,
     variance: f64,
-    variogram: &Variogram,
+    variogram: &V,
     max_neighbours: usize,
     radius: f64,
     seed: u64,
-) -> Result<Array2<f64>> {
+) -> Result<Array2<f64>>
+where
+    for<'a> SpatialVariogram: From<&'a V>,
+{
     if max_neighbours == 0 || !radius.is_finite() || radius <= 0.0 {
         return Err(AlgoError::InvalidArgument(
             "sgs_unconditional: need max_neighbours >= 1 and radius > 0".to_string(),
@@ -220,10 +223,11 @@ pub fn sgs_unconditional(
     if variance == 0.0 {
         return Ok(Array2::from_elem((lattice.ncol, lattice.nrow), mean));
     }
+    let variogram = SpatialVariogram::from(variogram);
     let mut scratch = SgsScratch::default();
     let sim = simulate_scores(
         lattice,
-        variogram,
+        &variogram,
         max_neighbours,
         radius,
         None,

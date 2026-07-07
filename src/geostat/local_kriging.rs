@@ -34,7 +34,7 @@ use crate::foundation::{AlgoError, Lattice, Result};
 use crate::geostat::neighbourhood::Neighbourhood;
 use crate::gridding::kriging::prep::{dedup_coincident, dist2d};
 use crate::gridding::kriging::solve::{lu_factor_in_place, lu_solve_into};
-use crate::gridding::kriging::Variogram;
+use crate::gridding::kriging::{SpatialVariogram, Variogram};
 use ndarray::Array2;
 
 /// A moving-neighbourhood ordinary-kriging gridder: at most `max_neighbours`
@@ -182,16 +182,16 @@ struct OkScratch {
     sol: Vec<f64>,
 }
 
-/// One neighbour for a [`simple_kriging`] solve: its value and its distance to
-/// the estimation target.
+/// One neighbour for a [`simple_kriging`] solve: its value and offset to the
+/// estimation target.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SkNeighbour {
     /// Position `[x, y]` (for the pairwise neighbour–neighbour covariances).
     pub pos: [f64; 2],
     /// The (normal-score) value at this neighbour.
     pub value: f64,
-    /// Distance `|xᵢ − x₀|` to the estimation target.
-    pub dist_to_target: f64,
+    /// Offset `(xᵢ - x₀, yᵢ - y₀)` to the estimation target.
+    pub offset_to_target: [f64; 2],
 }
 
 /// **Simple kriging** of a zero-mean (normal-score) field at a target, with an
@@ -223,7 +223,8 @@ pub(crate) fn simple_kriging(
     collocated: Option<(f64, f64)>,
 ) -> (f64, f64) {
     let mut scratch = SkScratch::default();
-    simple_kriging_with(neighbours, variogram, collocated, &mut scratch)
+    let spatial = SpatialVariogram::from(variogram);
+    simple_kriging_with(neighbours, &spatial, collocated, &mut scratch)
 }
 
 /// Reusable solver scratch for [`simple_kriging_with`]: the correlogram matrix,
@@ -255,19 +256,11 @@ pub(crate) struct SkScratch {
 #[allow(clippy::needless_range_loop)]
 pub(crate) fn simple_kriging_with(
     neighbours: &[SkNeighbour],
-    variogram: &Variogram,
+    variogram: &SpatialVariogram,
     collocated: Option<(f64, f64)>,
     scratch: &mut SkScratch,
 ) -> (f64, f64) {
     let s = variogram.total_sill();
-    // Correlogram from the variogram: ρ₁(h) = 1 − γ(h)/S ∈ [0, 1].
-    let rho1 = |h: f64| -> f64 {
-        if s <= 0.0 {
-            0.0
-        } else {
-            1.0 - variogram.gamma(h) / s
-        }
-    };
 
     let n = neighbours.len();
     let has_sec = collocated.is_some();
@@ -288,16 +281,21 @@ pub(crate) fn simple_kriging_with(
     scratch.rhs.resize(dim, 0.0);
     for i in 0..n {
         for j in 0..n {
-            scratch.mat[i * dim + j] = rho1(dist2d(neighbours[i].pos, neighbours[j].pos));
+            scratch.mat[i * dim + j] =
+                1.0 - variogram.gamma_between_2d(neighbours[i].pos, neighbours[j].pos) / s;
         }
-        scratch.rhs[i] = rho1(neighbours[i].dist_to_target);
+        scratch.rhs[i] = 1.0
+            - variogram.gamma_offset_2d(
+                neighbours[i].offset_to_target[0],
+                neighbours[i].offset_to_target[1],
+            ) / s;
     }
     if has_sec {
         let s_idx = n; // secondary unknown is the last row/col
         for i in 0..n {
             // Markov-1 cross primary_i ↔ collocated secondary at x₀:
             // ρ₁₂(|xᵢ − x₀|) = ρ · ρ₁(|xᵢ − x₀|).
-            let cross = rho * rho1(neighbours[i].dist_to_target);
+            let cross = rho * scratch.rhs[i];
             scratch.mat[i * dim + s_idx] = cross;
             scratch.mat[s_idx * dim + i] = cross;
         }
@@ -408,7 +406,7 @@ mod tests {
         SkNeighbour {
             pos,
             value,
-            dist_to_target: dist2d(pos, target),
+            offset_to_target: [pos[0] - target[0], pos[1] - target[1]],
         }
     }
 

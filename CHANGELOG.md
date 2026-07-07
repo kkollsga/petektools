@@ -6,6 +6,19 @@ All notable changes to petekTools are recorded here. Format follows
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-07-07
+
+### Added — domain-free formula expressions
+- Added `formula::{Assignment, FormulaBlock, evaluate_formulas}` for parsing
+  assignment strings, separating `$params` from bare property variables,
+  topologically ordering intra-block dependencies, and evaluating vectorized
+  scalar/property expressions over equal-length arrays. Supported operators:
+  `+ - * / **`, comparisons, and `sqrt`/`pow`/`log`/`log10`/`exp`/`min`/`max`/
+  `clip`/`abs`/vectorized `if`.
+- Exposed Python helpers `petektools.formula_info(...)` and
+  `petektools.evaluate_formula(...)`. The module is domain-free and does not
+  encode static-model/grid semantics.
+
 ## [0.2.2] - 2026-07-06
 
 ### Added — `petektools.synth_asset` owns the synthetic export fixture

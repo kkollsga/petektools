@@ -129,6 +129,40 @@ def test_geostat_end_to_end():
     assert len(f1) == 5 and len(f1[0]) == 5
 
 
+def test_anisotropic_variogram_validation_and_directional_distance():
+    vg = pt.AnisotropicVariogram(
+        "spherical", major=1500.0, minor=700.0, vertical=20.0, azimuth=395.0, sill=1.0, nugget=0.05
+    )
+    assert vg.major == 1500.0
+    assert vg.minor == 700.0
+    assert vg.vertical == 20.0
+    assert abs(vg.azimuth - 35.0) < 1e-12
+    assert vg.sill == 1.0
+    assert vg.nugget == 0.05
+
+    # Azimuth 90 means the major axis is +x; the same physical lag has lower
+    # semivariance along major than minor.
+    directional = pt.AnisotropicVariogram("spherical", 100.0, 25.0, 10.0, 90.0)
+    assert directional.gamma_offset(30.0, 0.0) < directional.gamma_offset(0.0, 30.0)
+
+    try:
+        pt.AnisotropicVariogram("spherical", major=0.0, minor=700.0, vertical=20.0, azimuth=35.0)
+        assert False, "expected invalid major range"
+    except ValueError as e:
+        assert "ranges must be positive" in str(e)
+
+
+def test_anisotropic_sgs_accepts_isotropic_equivalent():
+    coords = [[float(x), float(y), float(x + y)] for x in range(4) for y in range(4)]
+    lat = pt.Lattice(0.0, 0.0, 1.0, 1.0, 5, 5)
+    scalar = pt.Variogram("spherical", 0.0, 1.0, 4.0)
+    aniso = pt.AnisotropicVariogram.isotropic("spherical", 0.0, 1.0, 4.0)
+    f_scalar = pt.sgs(coords, lat, scalar, max_neighbours=8, radius=6.0, seed=23)
+    f_aniso = pt.sgs(coords, lat, aniso, max_neighbours=8, radius=6.0, seed=23)
+    max_abs = max(abs(a - b) for ca, cb in zip(f_scalar, f_aniso) for a, b in zip(ca, cb))
+    assert max_abs < 1e-10
+
+
 def test_resample_grid_to_grid():
     """Grid → grid resample honours world coords; bilinear exact on a plane."""
     # Affine source field z = 3 + 0.5x - 0.25y on a 5×5 lattice (spacing 10).

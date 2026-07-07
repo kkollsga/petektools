@@ -6,7 +6,7 @@ use super::scratch::SgsScratch;
 use super::sweep::{simulate_scores, snap_fixed};
 use crate::foundation::{AlgoError, Lattice, Result};
 use crate::geostat::nscore::NormalScore;
-use crate::gridding::kriging::Variogram;
+use crate::gridding::kriging::SpatialVariogram;
 use ndarray::Array2;
 
 /// A **reusable sequential-Gaussian-simulation context** over a fixed lattice /
@@ -48,7 +48,7 @@ use ndarray::Array2;
 /// ```
 pub struct SgsSession {
     lattice: Lattice,
-    variogram: Variogram,
+    variogram: SpatialVariogram,
     max_neighbours: usize,
     radius: f64,
     scratch: SgsScratch,
@@ -63,7 +63,7 @@ impl SgsSession {
     /// [`SgsParams::new`](super::SgsParams::new).
     pub fn new(
         lattice: Lattice,
-        variogram: Variogram,
+        variogram: impl Into<SpatialVariogram>,
         max_neighbours: usize,
         radius: f64,
     ) -> Result<SgsSession> {
@@ -74,7 +74,7 @@ impl SgsSession {
         }
         Ok(SgsSession {
             lattice,
-            variogram,
+            variogram: variogram.into(),
             max_neighbours,
             radius,
             scratch: SgsScratch::default(),
@@ -87,7 +87,7 @@ impl SgsSession {
     }
 
     /// The variogram this session kriges with.
-    pub fn variogram(&self) -> &Variogram {
+    pub fn variogram(&self) -> &SpatialVariogram {
         &self.variogram
     }
 

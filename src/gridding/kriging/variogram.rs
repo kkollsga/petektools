@@ -149,6 +149,199 @@ impl Variogram {
     }
 }
 
+/// A variogram with directional ranges in a right-handed `(x, y, z)` frame.
+///
+/// `major` and `minor` are horizontal ranges, `vertical` is the vertical range,
+/// and `azimuth` is degrees clockwise from north for the major axis. The scalar
+/// model family, nugget, and partial sill use the same conventions as
+/// [`Variogram`].
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AnisotropicVariogram {
+    /// Structured-component family.
+    pub model: VariogramModel,
+    /// Nugget effect `c₀ ≥ 0` — the discontinuity at the origin.
+    pub nugget: f64,
+    /// Structured partial sill `c ≥ 0` — the correlated variance.
+    pub sill: f64,
+    /// Horizontal major-axis range `> 0`.
+    pub major: f64,
+    /// Horizontal minor-axis range `> 0`.
+    pub minor: f64,
+    /// Vertical range `> 0`.
+    pub vertical: f64,
+    /// Major-axis azimuth, normalized to `[0, 360)` degrees clockwise from north.
+    pub azimuth: f64,
+}
+
+impl AnisotropicVariogram {
+    /// Build an anisotropic variogram, validating ranges, sills, and azimuth.
+    pub fn new(
+        model: VariogramModel,
+        nugget: f64,
+        sill: f64,
+        major: f64,
+        minor: f64,
+        vertical: f64,
+        azimuth: f64,
+    ) -> crate::foundation::Result<AnisotropicVariogram> {
+        use crate::foundation::AlgoError;
+        if ![nugget, sill, major, minor, vertical, azimuth]
+            .into_iter()
+            .all(f64::is_finite)
+        {
+            return Err(AlgoError::InvalidArgument(
+                "anisotropic variogram: nugget, sill, ranges and azimuth must be finite"
+                    .to_string(),
+            ));
+        }
+        if nugget < 0.0 || sill < 0.0 {
+            return Err(AlgoError::InvalidArgument(
+                "anisotropic variogram: nugget and sill must be non-negative".to_string(),
+            ));
+        }
+        let effective_sill = match model {
+            VariogramModel::Nugget => nugget,
+            _ => nugget + sill,
+        };
+        if effective_sill <= 0.0 {
+            return Err(AlgoError::InvalidArgument(
+                match model {
+                    VariogramModel::Nugget => {
+                        "anisotropic variogram: the Nugget model uses only its nugget (sill is ignored), so nugget must be positive"
+                    }
+                    _ => "anisotropic variogram: total sill (nugget + sill) must be positive",
+                }
+                .to_string(),
+            ));
+        }
+        if major <= 0.0 || minor <= 0.0 || vertical <= 0.0 {
+            return Err(AlgoError::InvalidArgument(
+                "anisotropic variogram: major, minor and vertical ranges must be positive"
+                    .to_string(),
+            ));
+        }
+        Ok(AnisotropicVariogram {
+            model,
+            nugget,
+            sill,
+            major,
+            minor,
+            vertical,
+            azimuth: azimuth.rem_euclid(360.0),
+        })
+    }
+
+    /// Convenience constructor for an isotropic-equivalent anisotropic model.
+    pub fn isotropic(
+        model: VariogramModel,
+        nugget: f64,
+        sill: f64,
+        range: f64,
+    ) -> crate::foundation::Result<AnisotropicVariogram> {
+        Self::new(model, nugget, sill, range, range, range, 0.0)
+    }
+
+    /// Total sill `c₀ + c`.
+    pub fn total_sill(&self) -> f64 {
+        self.nugget + self.sill
+    }
+
+    /// Anisotropic lag distance for an offset `(dx, dy, dz)`.
+    ///
+    /// The horizontal offset is rotated into major/minor coordinates, then
+    /// minor and vertical components are stretched into major-range units. A
+    /// point one `major` away along the major axis, one `minor` away along the
+    /// minor axis, or one `vertical` away vertically all yield an effective lag
+    /// of `major`.
+    pub fn anisotropic_distance(&self, dx: f64, dy: f64, dz: f64) -> f64 {
+        let az = self.azimuth.to_radians();
+        let (sin_az, cos_az) = az.sin_cos();
+        // x is east, y is north; azimuth is clockwise from north.
+        let h_major = dx * sin_az + dy * cos_az;
+        let h_minor = dx * cos_az - dy * sin_az;
+        let minor_scaled = h_minor * self.major / self.minor;
+        let vertical_scaled = dz * self.major / self.vertical;
+        (h_major * h_major + minor_scaled * minor_scaled + vertical_scaled * vertical_scaled).sqrt()
+    }
+
+    /// Semivariance at an anisotropic offset.
+    pub fn gamma_offset(&self, dx: f64, dy: f64, dz: f64) -> f64 {
+        let h = self.anisotropic_distance(dx, dy, dz);
+        Variogram {
+            model: self.model,
+            nugget: self.nugget,
+            sill: self.sill,
+            range: self.major,
+        }
+        .gamma(h)
+    }
+}
+
+/// Spatial-continuity model accepted by local geostatistical kernels.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum SpatialVariogram {
+    /// Existing scalar-range variogram behaviour.
+    Isotropic(Variogram),
+    /// Directional range variogram.
+    Anisotropic(AnisotropicVariogram),
+}
+
+impl SpatialVariogram {
+    /// Total sill `c₀ + c`.
+    pub fn total_sill(&self) -> f64 {
+        match self {
+            SpatialVariogram::Isotropic(v) => v.total_sill(),
+            SpatialVariogram::Anisotropic(v) => v.total_sill(),
+        }
+    }
+
+    /// Semivariance at a 2-D offset.
+    pub fn gamma_offset_2d(&self, dx: f64, dy: f64) -> f64 {
+        match self {
+            SpatialVariogram::Isotropic(v) => v.gamma((dx * dx + dy * dy).sqrt()),
+            SpatialVariogram::Anisotropic(v) => v.gamma_offset(dx, dy, 0.0),
+        }
+    }
+
+    /// Semivariance between two 2-D points.
+    pub fn gamma_between_2d(&self, a: [f64; 2], b: [f64; 2]) -> f64 {
+        self.gamma_offset_2d(a[0] - b[0], a[1] - b[1])
+    }
+
+    /// Semivariance at a scalar lag, preserving the old isotropic API where
+    /// anisotropic callers intentionally pass a pre-transformed lag.
+    pub fn gamma(&self, h: f64) -> f64 {
+        match self {
+            SpatialVariogram::Isotropic(v) => v.gamma(h),
+            SpatialVariogram::Anisotropic(v) => v.gamma_offset(h, 0.0, 0.0),
+        }
+    }
+}
+
+impl From<Variogram> for SpatialVariogram {
+    fn from(value: Variogram) -> Self {
+        SpatialVariogram::Isotropic(value)
+    }
+}
+
+impl From<&Variogram> for SpatialVariogram {
+    fn from(value: &Variogram) -> Self {
+        SpatialVariogram::Isotropic(*value)
+    }
+}
+
+impl From<AnisotropicVariogram> for SpatialVariogram {
+    fn from(value: AnisotropicVariogram) -> Self {
+        SpatialVariogram::Anisotropic(value)
+    }
+}
+
+impl From<&AnisotropicVariogram> for SpatialVariogram {
+    fn from(value: &AnisotropicVariogram) -> Self {
+        SpatialVariogram::Anisotropic(*value)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -245,5 +438,85 @@ mod tests {
     fn gamma_is_symmetric_in_lag_sign() {
         let v = Variogram::new(VariogramModel::Gaussian, 0.2, 1.0, 5.0).unwrap();
         assert_eq!(v.gamma(3.0), v.gamma(-3.0));
+    }
+
+    #[test]
+    fn anisotropic_rejects_invalid_parameters_and_normalizes_azimuth() {
+        assert!(AnisotropicVariogram::new(
+            VariogramModel::Spherical,
+            0.0,
+            1.0,
+            0.0,
+            10.0,
+            5.0,
+            0.0
+        )
+        .is_err());
+        assert!(AnisotropicVariogram::new(
+            VariogramModel::Spherical,
+            0.0,
+            1.0,
+            20.0,
+            -10.0,
+            5.0,
+            0.0
+        )
+        .is_err());
+        assert!(AnisotropicVariogram::new(
+            VariogramModel::Spherical,
+            0.0,
+            1.0,
+            20.0,
+            10.0,
+            f64::NAN,
+            0.0
+        )
+        .is_err());
+        assert!(AnisotropicVariogram::new(
+            VariogramModel::Spherical,
+            0.0,
+            0.0,
+            20.0,
+            10.0,
+            5.0,
+            0.0
+        )
+        .is_err());
+        let v =
+            AnisotropicVariogram::new(VariogramModel::Spherical, 0.05, 1.0, 20.0, 10.0, 5.0, 395.0)
+                .unwrap();
+        assert_relative_eq!(v.azimuth, 35.0, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn isotropic_anisotropic_distance_matches_scalar_distance() {
+        let iso = Variogram::new(VariogramModel::Spherical, 0.05, 1.0, 25.0).unwrap();
+        let aniso =
+            AnisotropicVariogram::isotropic(VariogramModel::Spherical, 0.05, 1.0, 25.0).unwrap();
+        let d = (3.0_f64 * 3.0 + 4.0 * 4.0 + 12.0 * 12.0).sqrt();
+        assert_relative_eq!(
+            aniso.anisotropic_distance(3.0, 4.0, 12.0),
+            d,
+            epsilon = 1e-12
+        );
+        assert_relative_eq!(
+            aniso.gamma_offset(3.0, 4.0, 12.0),
+            iso.gamma(d),
+            epsilon = 1e-12
+        );
+    }
+
+    #[test]
+    fn anisotropic_continuity_is_longer_along_major_after_rotation() {
+        let v =
+            AnisotropicVariogram::new(VariogramModel::Spherical, 0.0, 1.0, 100.0, 25.0, 10.0, 90.0)
+                .unwrap();
+        // Azimuth 90° puts the major axis along +x and the minor along y.
+        let major_gamma = v.gamma_offset(30.0, 0.0, 0.0);
+        let minor_gamma = v.gamma_offset(0.0, 30.0, 0.0);
+        assert!(
+            major_gamma < minor_gamma,
+            "same lag should be more continuous along major: {major_gamma} !< {minor_gamma}"
+        );
     }
 }

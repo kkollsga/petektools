@@ -1,5 +1,5 @@
 use super::*;
-use crate::gridding::kriging::VariogramModel;
+use crate::gridding::kriging::{AnisotropicVariogram, Variogram, VariogramModel};
 use crate::stats::{mean, std_dev};
 
 fn unit_spherical(range: f64) -> Variogram {
@@ -289,15 +289,20 @@ fn session_validates_and_errors() {
 /// Mean lag-1 autocorrelation of a field along the column (i) axis — a cheap
 /// proxy for "is the variogram range visible in the field's continuity".
 fn lag1_autocorr(field: &Array2<f64>) -> f64 {
+    lag_autocorr(field, 1, 0)
+}
+
+/// Mean autocorrelation at a positive grid lag.
+fn lag_autocorr(field: &Array2<f64>, di: usize, dj: usize) -> f64 {
     let flat: Vec<f64> = field.iter().cloned().collect();
     let m = mean(&flat).unwrap();
     let v = flat.iter().map(|x| (x - m).powi(2)).sum::<f64>() / flat.len() as f64;
     let (ncol, nrow) = field.dim();
     let mut cov = 0.0;
     let mut n = 0.0;
-    for j in 0..nrow {
-        for i in 0..ncol - 1 {
-            cov += (field[[i, j]] - m) * (field[[i + 1, j]] - m);
+    for j in 0..nrow.saturating_sub(dj) {
+        for i in 0..ncol.saturating_sub(di) {
+            cov += (field[[i, j]] - m) * (field[[i + di, j + dj]] - m);
             n += 1.0;
         }
     }
@@ -328,6 +333,37 @@ fn unconditional_bit_reproducible() {
     let a = sgs_unconditional(&lattice, 0.2, 0.04, &vg, 16, 12.0, 99).unwrap();
     let b = sgs_unconditional(&lattice, 0.2, 0.04, &vg, 16, 12.0, 99).unwrap();
     assert_eq!(a, b, "same seed must reproduce the field exactly");
+}
+
+#[test]
+fn isotropic_anisotropic_equivalent_matches_scalar_sgs() {
+    let lattice = Lattice::regular(0.0, 0.0, 1.0, 1.0, 24, 24);
+    let data = sample_data();
+    let scalar = unit_spherical(9.0);
+    let aniso = AnisotropicVariogram::isotropic(VariogramModel::Spherical, 0.0, 1.0, 9.0).unwrap();
+
+    let scalar_field = sgs(
+        &data,
+        &lattice,
+        &SgsParams::new(scalar, 18, 14.0, 123).unwrap(),
+    )
+    .unwrap();
+    let aniso_field = sgs(
+        &data,
+        &lattice,
+        &SgsParams::new(aniso, 18, 14.0, 123).unwrap(),
+    )
+    .unwrap();
+
+    let max_abs = scalar_field
+        .iter()
+        .zip(aniso_field.iter())
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0_f64, f64::max);
+    assert!(
+        max_abs < 1e-10,
+        "isotropic-equivalent anisotropic SGS diverged from scalar SGS by {max_abs}"
+    );
 }
 
 #[test]
@@ -375,5 +411,19 @@ fn unconditional_range_visible_in_autocorrelation() {
     assert!(
         rw.abs() < 0.2,
         "nugget field should be ~white: lag-1 corr {rw}"
+    );
+}
+
+#[test]
+fn anisotropic_unconditional_is_smoother_along_major_axis() {
+    let lattice = Lattice::regular(0.0, 0.0, 1.0, 1.0, 50, 50);
+    let vg = AnisotropicVariogram::new(VariogramModel::Spherical, 0.0, 1.0, 30.0, 5.0, 5.0, 90.0)
+        .unwrap();
+    let field = sgs_unconditional(&lattice, 0.0, 1.0, &vg, 28, 40.0, 17).unwrap();
+    let x_corr = lag_autocorr(&field, 5, 0);
+    let y_corr = lag_autocorr(&field, 0, 5);
+    assert!(
+        x_corr > y_corr + 0.15,
+        "azimuth 90° major-axis continuity should exceed minor-axis continuity: x={x_corr}, y={y_corr}"
     );
 }

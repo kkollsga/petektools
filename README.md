@@ -43,6 +43,9 @@ The canonical docs for the whole petek family live on the **petekSuite site**
   minimum-curvature solution, IDW is exact at coincident samples.
 - **A pure leaf.** Depends only on general-purpose numeric crates. No I/O, no
   domain model, no heavy framework to adopt — drop it in.
+- **Small formula engine.** Parse assignment strings, bind scalar `$params`,
+  order intra-block dependencies, and evaluate vectorized expressions over named
+  arrays without pulling in any static-model semantics.
 - **Binding-friendly.** Owned inputs, no public lifetimes on kernels; PyO3
   bindings are a planned thin layer over this same surface.
 
@@ -135,9 +138,9 @@ the locked public contract.
 The public contract — `Lattice`, `GridMethod`, `grid`, the warm-start entries —
 is **locked and analytically tested**. Also shipped: ordinary kriging behind a
 `Gridder` trait, the curated `stats` / `sampling` front-doors over `statrs` /
-`rand_distr`, the `units` / `container` modules, the PyO3 wheel, the generic
-viewer unit, and the wheel-only synthetic asset writer/composer. On the roadmap:
-RBF backends if a need appears.
+`rand_distr`, the `units` / `container` / `formula` modules, the PyO3 wheel, the
+generic viewer unit, and the wheel-only synthetic asset writer/composer. On the
+roadmap: RBF backends if a need appears.
 
 ## License
 

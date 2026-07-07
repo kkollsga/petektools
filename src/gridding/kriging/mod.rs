@@ -19,4 +19,4 @@ pub(crate) mod solve;
 mod variogram;
 
 pub use ordinary::OrdinaryKriging;
-pub use variogram::{Variogram, VariogramModel};
+pub use variogram::{AnisotropicVariogram, SpatialVariogram, Variogram, VariogramModel};

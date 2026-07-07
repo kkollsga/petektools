@@ -9,6 +9,8 @@ A thin Python surface over the Rust ``petektools`` library:
   ``PERCENTILE`` parity) / ``median`` and the weighted family.
 - **realization-set helpers** — ``reservoir_summary`` (the P90=low digest) and
   ``aggregate`` (per-segment sum under a correlation assumption).
+- **formula** — ``formula_info`` and ``evaluate_formula`` for domain-free
+  assignment expressions over named vectors and scalar ``$params``.
 - **geostat** — ``experimental_variogram``, ``Variogram`` (fit + params),
   ``local_kriging_grid`` and ``sgs`` over a regular ``Lattice``.
 - **resample** — grid → grid resampling of a native regular grid onto a foreign
@@ -24,6 +26,7 @@ See https://github.com/kkollsga/petektools.
 """
 
 from ._petektools import (
+    AnisotropicVariogram,
     Clamped,
     ExperimentalVariogram,
     Georef,
@@ -38,7 +41,9 @@ from ._petektools import (
     aggregate,
     bcm_to_m3,
     closure_outline,
+    evaluate_formula,
     experimental_variogram,
+    formula_info,
     format_volume,
     km2_to_m2,
     local_kriging_grid,
@@ -101,6 +106,7 @@ from .asset import (
 
 __all__ = [
     "Clamped",
+    "AnisotropicVariogram",
     "ExperimentalVariogram",
     "Georef",
     "Lattice",
@@ -114,7 +120,9 @@ __all__ = [
     "aggregate",
     "bcm_to_m3",
     "closure_outline",
+    "evaluate_formula",
     "experimental_variogram",
+    "formula_info",
     "format_volume",
     "km2_to_m2",
     "local_kriging_grid",

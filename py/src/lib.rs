@@ -17,6 +17,7 @@
 //! `reservoir_summary` docstring.
 
 mod aggregate;
+mod formula;
 mod geostat;
 mod grid;
 mod resample;
@@ -61,9 +62,14 @@ fn _petektools(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(aggregate::reservoir_summary, m)?)?;
     m.add_function(wrap_pyfunction!(aggregate::aggregate, m)?)?;
 
+    // formula — domain-free expression parsing/evaluation
+    m.add_function(wrap_pyfunction!(formula::formula_info, m)?)?;
+    m.add_function(wrap_pyfunction!(formula::evaluate_formula, m)?)?;
+
     // geostat + geometry
     m.add_class::<geostat::Lattice>()?;
     m.add_class::<geostat::Variogram>()?;
+    m.add_class::<geostat::AnisotropicVariogram>()?;
     m.add_class::<geostat::ExperimentalVariogram>()?;
     m.add_function(wrap_pyfunction!(geostat::experimental_variogram, m)?)?;
     m.add_function(wrap_pyfunction!(geostat::local_kriging_grid, m)?)?;
