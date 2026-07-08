@@ -60,6 +60,12 @@ def view2d_payload(
 
         pts = _points(item)
         if pts:
+            topology_lines, topology_summary = _topology_grid_lines(
+                item, max_grid_lines, max_line_points
+            )
+            if topology_lines:
+                grid_lines.extend(topology_lines)
+                summary.update(topology_summary)
             if point_limit is not None and len(pts) > point_limit:
                 step = max(1, math.ceil(len(pts) / point_limit))
                 pts = pts[::step]
@@ -152,6 +158,20 @@ def _is_geometry(obj: Any) -> bool:
 
 
 def _frame_from_geometry(geom: Any) -> dict[str, float | int]:
+    if not all(hasattr(geom, name) for name in ("xori", "yori", "xinc", "yinc")):
+        bbox = _bbox(geom)
+        if bbox is not None:
+            xmin, ymin, xmax, ymax = bbox
+            ncol = int(getattr(geom, "ncol"))
+            nrow = int(getattr(geom, "nrow"))
+            return {
+                "origin_x": xmin,
+                "origin_y": ymin,
+                "spacing_x": (xmax - xmin) / max(1, ncol - 1),
+                "spacing_y": (ymax - ymin) / max(1, nrow - 1),
+                "ncol": ncol,
+                "nrow": nrow,
+            }
     return {
         "origin_x": float(getattr(geom, "xori", 0.0)),
         "origin_y": float(getattr(geom, "yori", 0.0)),
@@ -227,6 +247,104 @@ def _points(obj: Any) -> list[list[float]]:
     return out
 
 
+def _topology_grid_lines(
+    obj: Any, max_lines: int, max_line_points: int
+) -> tuple[list[list[list[float]]], dict[str, Any]]:
+    """Gridlines from point-set ``column``/``row`` topology, if available.
+
+    This is intentionally duck-typed so petekTools stays domain-agnostic: a
+    producer object only has to expose ``xyz()`` and ``attr(name)``. The line
+    coordinates are the points' actual XY values, which is what Petrel-shifted
+    point exports need for visual QC.
+    """
+    if not hasattr(obj, "xyz") or not hasattr(obj, "attr"):
+        return [], {}
+    points = _points(obj)
+    cols = _attr_any(obj, ("column", "col"))
+    rows = _attr_any(obj, ("row",))
+    if not points or cols is None or rows is None:
+        return [], {}
+    if len(cols) != len(points) or len(rows) != len(points):
+        return [], {}
+
+    by_index: dict[tuple[int, int], list[float]] = {}
+    for pt, c_raw, r_raw in zip(points, cols, rows):
+        col = _integer_index(c_raw)
+        row = _integer_index(r_raw)
+        if col is None or row is None:
+            continue
+        by_index.setdefault((col, row), [pt[0], pt[1]])
+    if len(by_index) < 4:
+        return [], {}
+
+    col_values = sorted({c for c, _ in by_index})
+    row_values = sorted({r for _, r in by_index})
+    if len(col_values) < 2 or len(row_values) < 2:
+        return [], {}
+
+    line_stride = max(1, math.ceil((len(col_values) + len(row_values)) / max(1, max_lines)))
+    sampled_cols = _sample_by_position(col_values, line_stride)
+    sampled_rows = _sample_by_position(row_values, line_stride)
+    col_point_stride = max(1, math.ceil(len(col_values) / max(2, max_line_points)))
+    row_point_stride = max(1, math.ceil(len(row_values) / max(2, max_line_points)))
+    line_cols = _sample_by_position(col_values, col_point_stride)
+    line_rows = _sample_by_position(row_values, row_point_stride)
+
+    lines: list[list[list[float]]] = []
+    for row in sampled_rows:
+        lines.extend(_contiguous_segments([by_index.get((col, row)) for col in line_cols]))
+    for col in sampled_cols:
+        lines.extend(_contiguous_segments([by_index.get((col, row)) for row in line_rows]))
+
+    return lines, {
+        "point_topology_grid": f"{len(col_values)} x {len(row_values)}",
+        "point_topology_grid_lines": len(lines),
+    }
+
+
+def _attr_any(obj: Any, names: tuple[str, ...]) -> list[float] | None:
+    for name in names:
+        try:
+            values = obj.attr(name)
+        except Exception:
+            values = None
+        if values is not None:
+            try:
+                return [float(v) for v in values]
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def _integer_index(value: float) -> int | None:
+    if not math.isfinite(value):
+        return None
+    rounded = round(value)
+    if abs(value - rounded) > 1e-6:
+        return None
+    return int(rounded)
+
+
+def _sample_by_position(values: Sequence[int], stride: int) -> list[int]:
+    idx = _sampled_indices(len(values), stride)
+    return [values[i] for i in idx]
+
+
+def _contiguous_segments(points: Sequence[list[float] | None]) -> list[list[list[float]]]:
+    segments: list[list[list[float]]] = []
+    current: list[list[float]] = []
+    for pt in points:
+        if pt is None:
+            if len(current) >= 2:
+                segments.append(current)
+            current = []
+        else:
+            current.append(pt)
+    if len(current) >= 2:
+        segments.append(current)
+    return segments
+
+
 def _rings(obj: Any) -> list[list[list[float]]]:
     if hasattr(obj, "rings"):
         rows = obj.rings()
@@ -269,6 +387,21 @@ def _xy(row: Any) -> list[float]:
     return [float(vals[0]), float(vals[1])]
 
 
+def _bbox(obj: Any) -> tuple[float, float, float, float] | None:
+    if not hasattr(obj, "bbox"):
+        return None
+    try:
+        b = obj.bbox()
+    except TypeError:
+        b = obj.bbox
+    except Exception:
+        return None
+    try:
+        return (float(b.xmin), float(b.ymin), float(b.xmax), float(b.ymax))
+    except Exception:
+        return None
+
+
 def _extent(
     points: list[list[float]],
     grid_lines: list[list[list[float]]],
@@ -298,4 +431,3 @@ def _rect_outline_from_frame(frame: dict[str, float | int]) -> list[list[list[fl
     x1 = x0 + float(frame["spacing_x"]) * (int(frame["ncol"]) - 1)
     y1 = y0 + float(frame["spacing_y"]) * (int(frame["nrow"]) - 1)
     return [[[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]]]
-

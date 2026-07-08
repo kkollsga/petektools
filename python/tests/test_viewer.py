@@ -184,6 +184,43 @@ def test_view2d_payload_accepts_points_and_geometry():
     assert p["summary"]["grid"] == "3 x 2"
 
 
+def test_view2d_payload_extracts_pointset_topology_grid():
+    class Geom:
+        xori = 0.0
+        yori = 0.0
+        xinc = 10.0
+        yinc = 10.0
+        ncol = 2
+        nrow = 2
+
+        def node_xy(self, i, j):
+            return (self.xori + i * self.xinc, self.yori + j * self.yinc)
+
+    class TopologyPoints:
+        def xyz(self):
+            return [
+                [0.0, 0.0, 100.0],
+                [10.0, 0.0, 101.0],
+                [0.0, 10.0, 102.0],
+                [12.0, 10.0, 103.0],
+            ]
+
+        def attr(self, name):
+            if name == "column":
+                return [1.0, 2.0, 1.0, 2.0]
+            if name == "row":
+                return [1.0, 1.0, 2.0, 2.0]
+            return None
+
+    p = viewer.view2d_payload([Geom(), TopologyPoints()], title="Top Agat QA")
+
+    assert p["summary"]["grid"] == "2 x 2"
+    assert p["summary"]["point_topology_grid"] == "2 x 2"
+    assert p["summary"]["point_topology_grid_lines"] == 4
+    assert [12.0, 10.0] in [pt for line in p["map"]["grid_lines"] for pt in line]
+    assert [12.0, 10.0, 103.0] in p["map"]["points"]
+
+
 # --- the generic chart-mark schema (Charts tab) ------------------------------
 def test_schema_version_bumped(payload):
     assert payload["schema_version"] == 3  # v3: volume exterior-shell + binary blocks

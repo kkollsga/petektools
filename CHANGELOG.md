@@ -6,6 +6,14 @@ All notable changes to petekTools are recorded here. Format follows
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-07-08
+
+### Changed
+- `petektools.view2d(...)` / `view2d_payload(...)` now extract grid lines
+  directly from point-set `column`/`row` topology when present. This lets the
+  2-D QA viewer show Petrel/EarthVision shifted surface grids using the actual
+  point XY positions instead of only an affine inferred `GridGeometry`.
+
 ## [0.2.5] - 2026-07-08
 
 ### Added

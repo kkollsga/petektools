@@ -183,6 +183,11 @@ declares and computes nothing itself; new cross-sections come from a consumer's
 The viewer is horizontal capability: it serves every layer of the ecosystem, so
 it lives here. The full guide is in `VIEWER.md`.
 
+For lightweight map QC, `petektools.view2d([...])` accepts point-like objects
+and geometry-like objects. When a point set exposes `column`/`row` topology, the
+payload includes grid lines built from the actual point XY positions, so locally
+shifted Petrel/EarthVision surface grids can be checked directly.
+
 ## Where to go next
 
 - **`API.md`** — the locked public contract (the *what*).
