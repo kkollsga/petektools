@@ -50,6 +50,8 @@ state. `sections` may be empty (live mode adds them via `/section`).
 |---|---|---|
 | `frame` | Frame | the georeferenced lattice (below) |
 | `outline` | list[Ring] | boundary rings; `Ring` = list of `[x, y]` |
+| `grid_lines` | list[Line] | optional 2-D QA overlay; `Line` = list of `[x, y]` |
+| `points` | list[Point] | optional 2-D QA overlay; `Point` = `[x, y, z?]` |
 | `horizons` | list[ScalarLayer] | selectable depth/field layers |
 | `zone_averages` | list[ScalarLayer] | selectable property layers |
 | `k_slices` | list[ScalarLayer] | optional per-k property slices |

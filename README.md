@@ -46,6 +46,8 @@ The canonical docs for the whole petek family live on the **petekSuite site**
 - **Small formula engine.** Parse assignment strings, bind scalar `$params`,
   order intra-block dependencies, and evaluate vectorized expressions over named
   arrays without pulling in any static-model semantics.
+- **Shared 1-D interpolation.** `interp1d` covers log-style resampling with
+  nearest/step/linear methods and a natural cubic spline implemented in Rust.
 - **Binding-friendly.** Owned inputs, no public lifetimes on kernels; PyO3
   bindings are a planned thin layer over this same surface.
 

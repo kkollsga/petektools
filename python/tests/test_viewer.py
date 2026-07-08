@@ -37,7 +37,7 @@ SCATTER_AXIS_KEYS = {"name", "units", "log"}
 DIST_SERIES_KEYS = {"name", "bins", "cdf", "markers"}
 MAP_KEYS = {
     "schema_version", "frame", "outline", "horizons",
-    "zone_averages", "k_slices", "contacts", "wells",
+    "zone_averages", "k_slices", "contacts", "wells", "grid_lines", "points",
 }
 # v3 VolumeBundle envelope (exterior shell + binary blocks) — petekStatic API.md.
 VOLUME_KEYS = {
@@ -142,6 +142,46 @@ def test_map_layer_lengths(payload):
     assert len(m["horizons"][0]["values"]) == ncell
     assert len(m["zone_averages"][0]["values"]) == ncell
     assert len(m["contacts"][0]["crossing"]) == ncell
+
+
+def test_view2d_payload_accepts_points_and_geometry():
+    class Geom:
+        xori = 100.0
+        yori = 200.0
+        xinc = 10.0
+        yinc = 20.0
+        ncol = 3
+        nrow = 2
+        rotation_deg = 0.0
+
+        def node_xy(self, i, j):
+            return (self.xori + i * self.xinc, self.yori + j * self.yinc)
+
+        @property
+        def edge(self):
+            return self
+
+        def rings(self):
+            return [[
+                [100.0, 200.0],
+                [120.0, 200.0],
+                [120.0, 220.0],
+                [100.0, 220.0],
+                [100.0, 200.0],
+            ]]
+
+    class Points:
+        def xyz(self):
+            return [[100.0, 200.0, -10.0], [110.0, 210.0, -11.0]]
+
+    p = viewer.view2d_payload([Points(), Geom()], title="Top QA")
+    assert p["kind"] == "2D"
+    assert p["property"] == "Top QA"
+    assert p["map"]["schema_version"] == 2
+    assert len(p["map"]["points"]) == 2
+    assert p["map"]["grid_lines"]
+    assert p["map"]["outline"][0][0] == [100.0, 200.0]
+    assert p["summary"]["grid"] == "3 x 2"
 
 
 # --- the generic chart-mark schema (Charts tab) ------------------------------

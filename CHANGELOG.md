@@ -6,6 +6,21 @@ All notable changes to petekTools are recorded here. Format follows
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-07-08
+
+### Added
+- Added shared 1-D interpolation/resampling kernels: Rust `interp1d`,
+  `Interp1dMethod`, and `CubicSpline1d`, plus Python
+  `petektools.interp1d(...)`. Supported methods are nearest/closest,
+  previous/ffill, next/bfill, linear, and natural cubic spline.
+- Added `petektools.view2d(...)` and `view2d_payload(...)` for lightweight
+  browser-based 2-D QA of point clouds and grid geometries, with viewer schema
+  support for `points` and `grid_lines` map overlays.
+
+### Changed
+- Documented that the cubic interpolation method is a clean-room natural cubic
+  spline (`S'' = 0` endpoints), not SciPy's default not-a-knot spline.
+
 ## [0.2.4] - 2026-07-07
 
 ### Changed

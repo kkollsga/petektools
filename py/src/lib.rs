@@ -20,6 +20,7 @@ mod aggregate;
 mod formula;
 mod geostat;
 mod grid;
+mod interp;
 mod resample;
 mod sampling;
 mod stats;
@@ -76,6 +77,9 @@ fn _petektools(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(geostat::local_kriging_grid_flat, m)?)?;
     m.add_function(wrap_pyfunction!(geostat::sgs, m)?)?;
     m.add_function(wrap_pyfunction!(geostat::sgs_flat, m)?)?;
+
+    // interp/resample
+    m.add_function(wrap_pyfunction!(interp::interp1d, m)?)?;
 
     // resample (grid → grid over the Lattice geometry)
     m.add_function(wrap_pyfunction!(resample::resample, m)?)?;

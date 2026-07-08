@@ -62,6 +62,35 @@ pub fn grid(coords: &[[f64; 3]], lattice: &Lattice, method: GridMethod)
 The three methods mirror petekio's so its `PointSet::to_surface(geom, method)`
 can later delegate here by mapping `GridGeometry → Lattice`.
 
+## interp — 1-D resampling kernels
+
+```rust
+pub enum Interp1dMethod { Nearest, Previous, Next, Linear, CubicNatural }
+
+pub struct CubicSpline1d { /* private: knots, values, natural second derivatives */ }
+
+impl CubicSpline1d {
+    pub fn new(x: &[f64], y: &[f64]) -> Result<CubicSpline1d>;
+    pub fn evaluate(&self, q: f64, extrapolate: bool) -> f64;
+    pub fn evaluate_many(&self, query: &[f64], extrapolate: bool) -> Vec<f64>;
+}
+
+pub fn interp1d(
+    x: &[f64],
+    y: &[f64],
+    query: &[f64],
+    method: Interp1dMethod,
+    extrapolate: bool,
+) -> Result<Vec<f64>>;
+```
+
+`x` must be finite, strictly increasing, and match `y.len()`. `CubicNatural` is
+a clean-room natural cubic spline (`S'' = 0` at both endpoints), not SciPy's
+default not-a-knot boundary condition. Python exposes this as
+`pt.interp1d(x, y, query, method="linear", extrapolate=False)` with method names
+`nearest`/`closest`, `previous`/`ffill`, `next`/`bfill`, `linear`, and
+`cubic`/`spline`.
+
 ## gridding — grid → grid resample (added; additive/non-breaking)
 
 Resample a native regular grid (values on a georeferencing `Lattice`) onto a

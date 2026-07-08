@@ -18,6 +18,8 @@
     var ylo = Math.min(e.y0, e.y1), yhi = Math.max(e.y0, e.y1);
     function ext(x, y) { if (x < xlo) xlo = x; if (x > xhi) xhi = x; if (y < ylo) ylo = y; if (y > yhi) yhi = y; }
     (App.payload.map.outline || []).forEach(function (ring) { ring.forEach(function (pt) { ext(pt[0], pt[1]); }); });
+    (App.payload.map.grid_lines || []).forEach(function (line) { line.forEach(function (pt) { ext(pt[0], pt[1]); }); });
+    (App.payload.map.points || []).forEach(function (pt) { ext(pt[0], pt[1]); });
     (App.payload.wells || []).forEach(function (w) { ext(w.x, w.y); });
     return { x0: xlo, y0: ylo, x1: xhi, y1: yhi };
   }
@@ -140,6 +142,20 @@
     var layer = S.mapLayers[S.mapLayerIdx];
     if (layer) drawWindowedRaster(ctx, cv, f, layer);
 
+    // regular-geometry gridlines (2-D QA payloads)
+    if (S.showGridLines && App.payload.map.grid_lines) {
+      ctx.strokeStyle = token("--muted");
+      ctx.globalAlpha = 0.32;
+      ctx.lineWidth = 1;
+      App.payload.map.grid_lines.forEach(function (line) {
+        if (!line.length) return;
+        ctx.beginPath();
+        line.forEach(function (pt, i) { var s = w2s(pt[0], pt[1]); if (i === 0) ctx.moveTo(s[0], s[1]); else ctx.lineTo(s[0], s[1]); });
+        ctx.stroke();
+      });
+      ctx.globalAlpha = 1;
+    }
+
     // outline rings
     if (S.showOutline && App.payload.map.outline) {
       ctx.strokeStyle = token("--text-secondary"); ctx.lineWidth = 2; ctx.lineJoin = "round";
@@ -148,6 +164,22 @@
         ring.forEach(function (pt, i) { var s = w2s(pt[0], pt[1]); if (i === 0) ctx.moveTo(s[0], s[1]); else ctx.lineTo(s[0], s[1]); });
         ctx.stroke();
       });
+    }
+
+    // point cloud overlay
+    if (S.showPoints && App.payload.map.points) {
+      var pts = App.payload.map.points;
+      var r = Math.max(1.5, Math.min(3.5, mapView.scale < 0.05 ? 1.5 : 2.5));
+      ctx.fillStyle = token("--accent");
+      ctx.globalAlpha = pts.length > 20000 ? 0.45 : 0.7;
+      pts.forEach(function (pt) {
+        var s = w2s(pt[0], pt[1]);
+        if (s[0] < -r || s[1] < -r || s[0] > cv.width + r || s[1] > cv.height + r) return;
+        ctx.beginPath();
+        ctx.arc(s[0], s[1], r, 0, 6.2832);
+        ctx.fill();
+      });
+      ctx.globalAlpha = 1;
     }
 
     // contact subcrop masks (crossed columns): a translucent identity fill,
@@ -339,6 +371,21 @@
       showReadout(ev, wrows);
       return;
     }
+    var hitP = null, hitD = Infinity;
+    if (S.showPoints && App.payload.map.points) {
+      (App.payload.map.points || []).forEach(function (pt, pi) {
+        var s = w2s(pt[0], pt[1]);
+        var d = Math.hypot(s[0] - px[0], s[1] - px[1]);
+        if (d <= 8 && d < hitD) { hitD = d; hitP = { point: pt, index: pi }; }
+      });
+      if (hitP) {
+        var hp = hitP.point;
+        var rows = [["", "point " + hitP.index], ["x", fmt(hp[0], "m")], ["y", fmt(hp[1], "m")]];
+        if (hp.length > 2 && isFinite(hp[2])) rows.push(["z", fmt(hp[2], "m")]);
+        showReadout(ev, rows);
+        return;
+      }
+    }
     var i = Math.round((w[0] - f.origin_x) / f.spacing_x);
     var j = Math.round((w[1] - f.origin_y) / f.spacing_y);
     if (i < 0 || j < 0 || i >= f.ncol || j >= f.nrow || !layer) { hideReadout(); return; }
@@ -369,4 +416,3 @@
     requestSection({ line: pts }, "Fence");
     buildPanel();
   }
-

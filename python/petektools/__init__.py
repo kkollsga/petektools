@@ -13,6 +13,8 @@ A thin Python surface over the Rust ``petektools`` library:
   assignment expressions over named vectors and scalar ``$params``.
 - **geostat** — ``experimental_variogram``, ``Variogram`` (fit + params),
   ``local_kriging_grid`` and ``sgs`` over a regular ``Lattice``.
+- **interp1d** — 1-D interpolation / log resampling kernels
+  (``linear`` / ``nearest`` / ``previous`` / ``next`` / natural ``cubic``).
 - **resample** — grid → grid resampling of a native regular grid onto a foreign
   ``Lattice`` (``"bilinear"`` / ``"nearest"``, null- and extent-aware).
 - **units** — the SI/metric reporting layer (``m3_to_mcm`` / ``m3_to_msm3`` /
@@ -45,6 +47,7 @@ from ._petektools import (
     experimental_variogram,
     formula_info,
     format_volume,
+    interp1d,
     km2_to_m2,
     local_kriging_grid,
     local_kriging_grid_flat,
@@ -103,6 +106,7 @@ from .asset import (
     write_petrel_tops,
     write_wellpath,
 )
+from .viewer import view2d, view2d_payload
 
 __all__ = [
     "Clamped",
@@ -124,6 +128,7 @@ __all__ = [
     "experimental_variogram",
     "formula_info",
     "format_volume",
+    "interp1d",
     "km2_to_m2",
     "local_kriging_grid",
     "local_kriging_grid_flat",
@@ -166,6 +171,8 @@ __all__ = [
     "synth_trend_map_flat",
     "tops_from_surface",
     "variance",
+    "view2d",
+    "view2d_payload",
     "weighted_mean",
     "weighted_percentile",
     "weighted_std",

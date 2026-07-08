@@ -200,6 +200,8 @@
     S.colormap = "viridis";
     S.showOutline = true;
     S.clipRaster = true; // clip the areal raster to the outline polygon (QC toggle)
+    S.showGridLines = true;
+    S.showPoints = true;
     S.contactVis = (m.contacts || []).map(function () { return true; });
     S.wellVis = (p.wells || []).map(function () { return true; });
 
@@ -280,4 +282,3 @@
     if (!isFinite(r)) return 8;
     return Math.min(20, Math.max(4, Math.round(r)));
   }
-

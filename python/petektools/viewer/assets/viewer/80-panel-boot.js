@@ -10,14 +10,22 @@
     if (App.payload.summary) body.appendChild(summaryGroup());
   }
   function buildMapPanel(body) {
-    var g = group("Field");
-    g.appendChild(selectRow("Layer", S.mapLayers.map(function (l) { return l.display; }), S.mapLayerIdx, function (i) { S.mapLayerIdx = i; renderMap(); }));
-    g.appendChild(colormapRow());
-    body.appendChild(g);
+    if (S.mapLayers.length) {
+      var g = group("Field");
+      g.appendChild(selectRow("Layer", S.mapLayers.map(function (l) { return l.display; }), S.mapLayerIdx, function (i) { S.mapLayerIdx = i; renderMap(); }));
+      g.appendChild(colormapRow());
+      body.appendChild(g);
+    }
 
     var t = group("Layers");
     t.appendChild(toggleRow("Outline", S.showOutline, token("--text-secondary"), true, function (v) { S.showOutline = v; renderMap(); }));
-    if (App.payload.map.outline && App.payload.map.outline.length) {
+    if (App.payload.map.grid_lines && App.payload.map.grid_lines.length) {
+      t.appendChild(toggleRow("Grid lines", S.showGridLines, token("--muted"), true, function (v) { S.showGridLines = v; renderMap(); }));
+    }
+    if (App.payload.map.points && App.payload.map.points.length) {
+      t.appendChild(toggleRow("Points", S.showPoints, token("--accent"), false, function (v) { S.showPoints = v; renderMap(); }));
+    }
+    if (S.mapLayers.length && App.payload.map.outline && App.payload.map.outline.length) {
       t.appendChild(toggleRow("Unclipped raster", !S.clipRaster, null, false, function (v) { S.clipRaster = !v; renderMap(); }));
     }
     (App.payload.map.contacts || []).forEach(function (c, i) {
@@ -33,15 +41,17 @@
     });
     body.appendChild(t);
 
-    var f = group("Section tools");
-    var draw = el("button", "btn"); draw.textContent = S.fence.drawing ? "Finish fence (dbl-click)" : "Draw fence line";
-    if (App.mode !== "server") { draw.className = "btn secondary"; draw.disabled = true; draw.title = "Live fence drawing needs model.view() (server mode)."; }
-    draw.onclick = function () { if (S.fence.drawing) finishFence(); else { S.fence.drawing = true; S.fence.pts = []; buildPanel(); renderMap(); } };
-    f.appendChild(draw);
-    f.appendChild(el("div", "hint", App.mode === "server"
-      ? "Click points on the map to define a fence, then double-click (or Finish) to cut it. Click a well marker to section along its bore."
-      : "This is a self-contained file export: pre-computed sections only. Open with model.view() for live fence-draw + click-a-well."));
-    body.appendChild(f);
+    if (S.mapLayers.length || (App.payload.wells || []).length) {
+      var f = group("Section tools");
+      var draw = el("button", "btn"); draw.textContent = S.fence.drawing ? "Finish fence (dbl-click)" : "Draw fence line";
+      if (App.mode !== "server") { draw.className = "btn secondary"; draw.disabled = true; draw.title = "Live fence drawing needs model.view() (server mode)."; }
+      draw.onclick = function () { if (S.fence.drawing) finishFence(); else { S.fence.drawing = true; S.fence.pts = []; buildPanel(); renderMap(); } };
+      f.appendChild(draw);
+      f.appendChild(el("div", "hint", App.mode === "server"
+        ? "Click points on the map to define a fence, then double-click (or Finish) to cut it. Click a well marker to section along its bore."
+        : "This is a self-contained file export: pre-computed sections only. Open with model.view() for live fence-draw + click-a-well."));
+      body.appendChild(f);
+    }
   }
   function buildSectionPanel(body) {
     if (S.sections.length) {

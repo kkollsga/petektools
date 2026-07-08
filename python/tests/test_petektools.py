@@ -188,6 +188,25 @@ def test_resample_grid_to_grid():
     assert math.isnan(edge[0][0])
 
 
+def test_interp1d_methods_and_natural_cubic():
+    x = [0.0, 1.0, 2.0, 4.0]
+    y = [0.0, 2.0, 1.0, 3.0]
+
+    assert pt.interp1d(x, y, x, "cubic") == y
+    assert pt.interp1d([0.0, 2.0], [10.0, 20.0], [1.0], "spline") == [15.0]
+    assert pt.interp1d(x, y, [0.4, 1.6, 4.0], "previous") == [0.0, 2.0, 3.0]
+    assert pt.interp1d(x, y, [0.4, 1.6, 4.0], "next") == [2.0, 1.0, 3.0]
+    assert pt.interp1d(x, y, [0.4, 1.6, 3.5], "nearest") == [0.0, 1.0, 3.0]
+
+    out = pt.interp1d(x, y, [-1.0, 0.5, 5.0], "linear")
+    assert math.isnan(out[0])
+    assert out[1] == 1.0
+    assert math.isnan(out[2])
+
+    ext = pt.interp1d([0.0, 1.0], [1.0, 3.0], [-1.0, 2.0], "linear", extrapolate=True)
+    assert ext == [-1.0, 5.0]
+
+
 def test_units_si_reporting():
     """SI reporting scales + scf/stb ↔ Sm³ conversions + format_volume."""
     assert pt.m3_to_mcm(2.5e6) == 2.5

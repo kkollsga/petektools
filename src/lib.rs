@@ -83,6 +83,7 @@ pub mod formula;
 pub mod foundation;
 pub mod geostat;
 pub mod gridding;
+pub mod interp;
 pub mod sampling;
 pub mod stats;
 pub mod store;
@@ -98,3 +99,4 @@ pub use gridding::{
     MinCurvatureOperator, OrdinaryKriging, ResampleMethod, SpatialVariogram, Variogram,
     VariogramModel,
 };
+pub use interp::{interp1d, CubicSpline1d, Interp1dMethod};

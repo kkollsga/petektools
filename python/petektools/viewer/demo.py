@@ -70,6 +70,8 @@ def build_demo_payload(ni: int = 6, nj: int = 5, nk: int = 3) -> Dict[str, Any]:
         }],
         "k_slices": [],
         "contacts": [{"kind": "OWC", "depth_m": contact_depth, "crossing": crossing}],
+        "grid_lines": [],
+        "points": [],
         "wells": [],
     }
 

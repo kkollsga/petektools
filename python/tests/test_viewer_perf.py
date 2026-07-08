@@ -148,7 +148,7 @@ def _build_scale_view(scale: str, tmp_path: Path) -> Path:
                 "outline": [[[0, 0], [(ncol - 1) * 25, 0], [(ncol - 1) * 25, (nrow - 1) * 25],
                              [0, (nrow - 1) * 25], [0, 0]]],
                 "horizons": [{"name": "Top", "units": "m", "values": vals, "range": rng}],
-                "zone_averages": [], "k_slices": [], "contacts": [], "wells": []},
+                "zone_averages": [], "k_slices": [], "contacts": [], "grid_lines": [], "points": [], "wells": []},
         "sections": [], "section_labels": [], "wells": [], "charts": [],
     }
     out = tmp_path / f"view_{scale}.html"
