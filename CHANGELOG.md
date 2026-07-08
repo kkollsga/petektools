@@ -6,6 +6,15 @@ All notable changes to petekTools are recorded here. Format follows
 
 ## [Unreleased]
 
+### Changed
+- `petektools.view2d(...)` / `view2d_payload(...)` now render point-like inputs
+  as points only. Topology-bearing point sets no longer implicitly draw grid
+  lines; pass an explicit geometry or structured surface when the grid should be
+  visible.
+- Geometry grid-line overlays are clipped to `geometry.edge` when an edge polygon
+  is available, so inferred grids and structured surfaces display inside their
+  selected modelling outline.
+
 ## [0.2.6] - 2026-07-08
 
 ### Changed

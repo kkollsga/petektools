@@ -32,6 +32,10 @@ def view2d_payload(
     - points: ``xyz()``/``xy()`` or a sequence of ``[x, y]``/``[x, y, z]`` rows
     - geometry: ``node_xy(i, j)``, ``ncol``, ``nrow`` and optional ``edge``
     - outline: ``rings()`` returning rings of ``[x, y]`` or ``[x, y, z]`` rows
+
+    Point objects are rendered as points only. Topology-bearing point sets do
+    not imply grid-line rendering; pass a geometry or structured surface when
+    the grid itself should be visible.
     """
     scene_items = _scene_items(items)
     points: list[list[float]] = []
@@ -42,15 +46,24 @@ def view2d_payload(
 
     for item in scene_items:
         if _is_geometry(item):
-            frame = _frame_from_geometry(item)
-            grid_lines.extend(_grid_lines(item, max_grid_lines, max_line_points))
             edge = getattr(item, "edge", None)
+            edge_rings = _rings(edge) if edge is not None else []
+            grid_lines.extend(
+                _grid_lines(
+                    item,
+                    max_grid_lines,
+                    max_line_points,
+                    clip_rings=edge_rings,
+                )
+            )
             if edge is not None:
-                outlines.extend(_rings(edge))
+                outlines.extend(edge_rings)
             summary["grid"] = f"{int(getattr(item, 'ncol'))} x {int(getattr(item, 'nrow'))}"
             rot = getattr(item, "rotation_deg", None)
             if rot is not None:
                 summary["rotation_deg"] = float(rot)
+            if not edge_rings:
+                frame = _frame_from_geometry(item)
             continue
 
         rings = _rings(item)
@@ -60,12 +73,6 @@ def view2d_payload(
 
         pts = _points(item)
         if pts:
-            topology_lines, topology_summary = _topology_grid_lines(
-                item, max_grid_lines, max_line_points
-            )
-            if topology_lines:
-                grid_lines.extend(topology_lines)
-                summary.update(topology_summary)
             if point_limit is not None and len(pts) > point_limit:
                 step = max(1, math.ceil(len(pts) / point_limit))
                 pts = pts[::step]
@@ -203,7 +210,13 @@ def _frame_from_extent(extent: tuple[float, float, float, float]) -> dict[str, f
     }
 
 
-def _grid_lines(geom: Any, max_lines: int, max_line_points: int) -> list[list[list[float]]]:
+def _grid_lines(
+    geom: Any,
+    max_lines: int,
+    max_line_points: int,
+    *,
+    clip_rings: list[list[list[float]]] | None = None,
+) -> list[list[list[float]]]:
     ncol = int(getattr(geom, "ncol"))
     nrow = int(getattr(geom, "nrow"))
     if ncol <= 0 or nrow <= 0:
@@ -219,6 +232,8 @@ def _grid_lines(geom: Any, max_lines: int, max_line_points: int) -> list[list[li
         lines.append([_xy(geom.node_xy(i, j)) for i in i_points])
     for i in i_vals:
         lines.append([_xy(geom.node_xy(i, j)) for j in j_points])
+    if clip_rings:
+        return _clip_lines_to_rings(lines, clip_rings)
     return lines
 
 
@@ -247,102 +262,68 @@ def _points(obj: Any) -> list[list[float]]:
     return out
 
 
-def _topology_grid_lines(
-    obj: Any, max_lines: int, max_line_points: int
-) -> tuple[list[list[list[float]]], dict[str, Any]]:
-    """Gridlines from point-set ``column``/``row`` topology, if available.
-
-    This is intentionally duck-typed so petekTools stays domain-agnostic: a
-    producer object only has to expose ``xyz()`` and ``attr(name)``. The line
-    coordinates are the points' actual XY values, which is what Petrel-shifted
-    point exports need for visual QC.
-    """
-    if not hasattr(obj, "xyz") or not hasattr(obj, "attr"):
-        return [], {}
-    points = _points(obj)
-    cols = _attr_any(obj, ("column", "col"))
-    rows = _attr_any(obj, ("row",))
-    if not points or cols is None or rows is None:
-        return [], {}
-    if len(cols) != len(points) or len(rows) != len(points):
-        return [], {}
-
-    by_index: dict[tuple[int, int], list[float]] = {}
-    for pt, c_raw, r_raw in zip(points, cols, rows):
-        col = _integer_index(c_raw)
-        row = _integer_index(r_raw)
-        if col is None or row is None:
+def _clip_lines_to_rings(
+    lines: Sequence[Sequence[list[float]]],
+    rings: Sequence[Sequence[list[float]]],
+) -> list[list[list[float]]]:
+    clipped: list[list[list[float]]] = []
+    for line in lines:
+        if len(line) < 2:
             continue
-        by_index.setdefault((col, row), [pt[0], pt[1]])
-    if len(by_index) < 4:
-        return [], {}
-
-    col_values = sorted({c for c, _ in by_index})
-    row_values = sorted({r for _, r in by_index})
-    if len(col_values) < 2 or len(row_values) < 2:
-        return [], {}
-
-    line_stride = max(1, math.ceil((len(col_values) + len(row_values)) / max(1, max_lines)))
-    sampled_cols = _sample_by_position(col_values, line_stride)
-    sampled_rows = _sample_by_position(row_values, line_stride)
-    col_point_stride = max(1, math.ceil(len(col_values) / max(2, max_line_points)))
-    row_point_stride = max(1, math.ceil(len(row_values) / max(2, max_line_points)))
-    line_cols = _sample_by_position(col_values, col_point_stride)
-    line_rows = _sample_by_position(row_values, row_point_stride)
-
-    lines: list[list[list[float]]] = []
-    for row in sampled_rows:
-        lines.extend(_contiguous_segments([by_index.get((col, row)) for col in line_cols]))
-    for col in sampled_cols:
-        lines.extend(_contiguous_segments([by_index.get((col, row)) for row in line_rows]))
-
-    return lines, {
-        "point_topology_grid": f"{len(col_values)} x {len(row_values)}",
-        "point_topology_grid_lines": len(lines),
-    }
+        current: list[list[float]] = []
+        for a, b in zip(line, line[1:]):
+            mid = [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5]
+            if _point_in_rings(mid, rings):
+                if not current:
+                    current.append(a)
+                current.append(b)
+            else:
+                if len(current) >= 2:
+                    clipped.append(current)
+                current = []
+        if len(current) >= 2:
+            clipped.append(current)
+    return clipped
 
 
-def _attr_any(obj: Any, names: tuple[str, ...]) -> list[float] | None:
-    for name in names:
-        try:
-            values = obj.attr(name)
-        except Exception:
-            values = None
-        if values is not None:
-            try:
-                return [float(v) for v in values]
-            except (TypeError, ValueError):
-                return None
-    return None
+def _point_in_rings(point: Sequence[float], rings: Sequence[Sequence[list[float]]]) -> bool:
+    return any(_point_in_ring(point, ring) for ring in rings)
 
 
-def _integer_index(value: float) -> int | None:
-    if not math.isfinite(value):
-        return None
-    rounded = round(value)
-    if abs(value - rounded) > 1e-6:
-        return None
-    return int(rounded)
+def _point_in_ring(point: Sequence[float], ring: Sequence[list[float]]) -> bool:
+    if len(ring) < 3:
+        return False
+    x, y = float(point[0]), float(point[1])
+    inside = False
+    prev = ring[-1]
+    for cur in ring:
+        x0, y0 = float(prev[0]), float(prev[1])
+        x1, y1 = float(cur[0]), float(cur[1])
+        if _point_on_segment(x, y, x0, y0, x1, y1):
+            return True
+        crosses = (y0 > y) != (y1 > y)
+        if crosses:
+            x_at_y = x0 + (y - y0) * (x1 - x0) / (y1 - y0)
+            if x_at_y >= x:
+                inside = not inside
+        prev = cur
+    return inside
 
 
-def _sample_by_position(values: Sequence[int], stride: int) -> list[int]:
-    idx = _sampled_indices(len(values), stride)
-    return [values[i] for i in idx]
-
-
-def _contiguous_segments(points: Sequence[list[float] | None]) -> list[list[list[float]]]:
-    segments: list[list[list[float]]] = []
-    current: list[list[float]] = []
-    for pt in points:
-        if pt is None:
-            if len(current) >= 2:
-                segments.append(current)
-            current = []
-        else:
-            current.append(pt)
-    if len(current) >= 2:
-        segments.append(current)
-    return segments
+def _point_on_segment(
+    px: float, py: float, x0: float, y0: float, x1: float, y1: float
+) -> bool:
+    dx = x1 - x0
+    dy = y1 - y0
+    seg2 = dx * dx + dy * dy
+    if seg2 <= 1e-24:
+        return math.hypot(px - x0, py - y0) <= 1e-9
+    cross = (px - x0) * dy - (py - y0) * dx
+    tol = max(1e-9, math.sqrt(seg2) * 1e-9)
+    if abs(cross) > tol:
+        return False
+    dot = (px - x0) * dx + (py - y0) * dy
+    return -tol <= dot <= seg2 + tol
 
 
 def _rings(obj: Any) -> list[list[list[float]]]:
