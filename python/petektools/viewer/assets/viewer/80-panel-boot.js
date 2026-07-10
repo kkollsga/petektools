@@ -3,6 +3,7 @@
     var body = document.getElementById("panel-body"); body.innerHTML = "";
     if (App.tab === "map") buildMapPanel(body);
     else if (App.tab === "section") buildSectionPanel(body);
+    else if (App.tab === "scene3d") buildScene3dPanel(body);
     else if (App.tab === "charts") buildChartsPanel(body);
     else if (App.tab === "wells") buildWellsPanel(body);
     else buildVolumePanel(body);
@@ -29,6 +30,14 @@
       }
       if (!S.mapLayers.length) fg.appendChild(colormapRow());
       body.appendChild(fg);
+    }
+
+    // value-coloured points with no raster layer and no fill still need the
+    // colormap selector (the ramp colours the point cloud + its legend).
+    if (!S.mapLayers.length && !fills.length && App.payload.map.point_color) {
+      var pg = group("Points");
+      pg.appendChild(colormapRow());
+      body.appendChild(pg);
     }
 
     var t = group("Layers");

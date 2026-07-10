@@ -79,6 +79,7 @@
     var t0 = (typeof performance !== "undefined") ? performance.now() : 0;
     if (App.tab === "map") renderMap();
     else if (App.tab === "section") renderSection();
+    else if (App.tab === "scene3d") renderScene3d();
     else if (App.tab === "charts") renderCharts();
     else if (App.tab === "wells") renderWells();
     else renderVolume();
@@ -118,8 +119,8 @@
     return lab;
   }
   function colormapRow() {
-    return selectRow("Colormap", ["viridis", "magma", "grays"], ["viridis", "magma", "grays"].indexOf(S.colormap), function (i) {
-      S.colormap = ["viridis", "magma", "grays"][i]; renderActive();
+    return selectRow("Colormap", COLORMAP_NAMES, COLORMAP_NAMES.indexOf(S.colormap), function (i) {
+      S.colormap = COLORMAP_NAMES[i]; renderActive();
     });
   }
 

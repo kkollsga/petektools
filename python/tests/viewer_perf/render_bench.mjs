@@ -17,6 +17,11 @@
  *   --screenshot=PATH   write a full-page PNG (of whatever tab we end on)
  *   --tab=NAME          end on this tab (map|section|volume|charts) for the shot
  *   --expect-degraded   assert the volume shows a decimated-preview banner (exit 5)
+ *   --drag-events=N     synthetic map drag: N mousemove events at ~3/frame; measures
+ *                       the rAF-coalesced per-frame repaint cost + frame count and
+ *                       a non-drag hover sweep. Asserts repaints coalesced to at
+ *                       most one per animation frame (else exit 8)
+ *   --drag-frame-cap-ms=N  assert the median drag repaint < N ms (else exit 9)
  *
  * Prints one JSON line with every measurement. Exit 0 = all assertions passed.
  * The viewer exposes no hook, so "decode done" is the tri-count badge appearing;
@@ -42,6 +47,8 @@ const flag = (name, def) => {
 };
 const heapCapMB = flag("heap-cap-mb", null);
 const frameCapMs = flag("frame-cap-ms", null);
+const dragEvents = flag("drag-events", null);
+const dragFrameCapMs = flag("drag-frame-cap-ms", null);
 const triBudget = flag("tri-budget", null);
 const screenshot = flag("screenshot", null);
 const endTab = flag("tab", null);
@@ -102,7 +109,58 @@ const result = await page.evaluate(async (opts) => {
   if (themeBtn) themeBtn.click();
   await sleep(30);
 
-  // 4) End on the requested tab (for a screenshot).
+  // 4) Optional synthetic map drag + hover sweep (the 200k-point leg). Drag
+  //    dispatches ~3 mousemove events per animation frame — the rAF-coalesced
+  //    map path must repaint AT MOST once per frame (window.__PETEK_MAP_FRAME_MS
+  //    / __PETEK_MAP_FRAME_COUNT, set by scheduleRenderMap). The hover sweep is
+  //    non-drag mousemoves (the grid-bucketed point hit-test + readout).
+  let drag = null;
+  if (opts.dragEvents) {
+    clickTab("map"); await sleep(40);
+    const cv = document.getElementById("map-canvas");
+    const rect = cv.getBoundingClientRect();
+    let cx = rect.left + rect.width * 0.5, cy = rect.top + rect.height * 0.5;
+    cv.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, clientX: cx, clientY: cy }));
+    window.__PETEK_MAP_FRAME_COUNT = 0;
+    const samples = [];
+    const raf = () => new Promise((r) => requestAnimationFrame(r));
+    for (let i = 0; i < opts.dragEvents; i++) {
+      cx += (i % 2 ? 3 : -2); cy += (i % 3 ? 2 : -3);
+      cv.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: cx, clientY: cy }));
+      if (i % 3 === 2) {
+        await raf();
+        if (window.__PETEK_MAP_FRAME_MS != null) samples.push(window.__PETEK_MAP_FRAME_MS);
+      }
+    }
+    await raf(); await raf(); // let the last scheduled repaint land
+    window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    samples.sort((a, b) => a - b);
+    // hover sweep: one warm-up move (builds the point grid), then timed moves
+    cv.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: rect.left + 30, clientY: rect.top + 30 }));
+    const nHover = 30;
+    const th0 = performance.now();
+    for (let i = 0; i < nHover; i++) {
+      cv.dispatchEvent(new MouseEvent("mousemove", {
+        bubbles: true,
+        clientX: rect.left + 20 + ((i * 37) % (rect.width - 40)),
+        clientY: rect.top + 20 + ((i * 23) % (rect.height - 40)),
+      }));
+    }
+    const hoverAvgMs = (performance.now() - th0) / nHover;
+    // deterministic hit probe: the canvas centre sits over the fitted content
+    cv.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: rect.left + rect.width * 0.5, clientY: rect.top + rect.height * 0.5 }));
+    await sleep(20);
+    drag = {
+      dragEvents: opts.dragEvents,
+      dragFrames: window.__PETEK_MAP_FRAME_COUNT,
+      dragFrameMsMedian: samples.length ? +samples[(samples.length / 2) | 0].toFixed(2) : null,
+      dragFrameMsMax: samples.length ? +samples[samples.length - 1].toFixed(2) : null,
+      hoverAvgMs: +hoverAvgMs.toFixed(3),
+      hoverReadout: !document.getElementById("readout").hidden, // a point was hit + read out
+    };
+  }
+
+  // 5) End on the requested tab (for a screenshot).
   if (opts.endTab) { clickTab(opts.endTab); await sleep(120); }
 
   if (window.gc) window.gc();
@@ -114,8 +172,9 @@ const result = await page.evaluate(async (opts) => {
     usedJSHeapMB: heap != null ? +(heap / 1048576).toFixed(1) : null,
     volBadge,
     degradedBanner,
+    ...(drag || {}),
   };
-}, { endTab });
+}, { endTab, dragEvents: dragEvents != null && dragEvents !== true ? parseInt(dragEvents, 10) : 0 });
 
 if (screenshot && screenshot !== true) {
   await page.screenshot({ path: screenshot, fullPage: false });
@@ -135,6 +194,15 @@ if (frameCapMs != null && frameCapMs !== true &&
 if (expectDegraded && !(result.degradedBanner && /Decimated preview/i.test(result.degradedBanner)))
   fail(5, "expected a decimated-preview banner, none shown");
 if (!/tris/.test(result.volBadge || "")) fail(7, "volume never rendered (no tri badge)");
+if (result.dragEvents) {
+  // ~3 events/frame → repaints must have coalesced to at most one per frame
+  // (generous ceiling: half the event count still proves coalescing engaged).
+  if (result.dragFrames > Math.ceil(result.dragEvents / 2))
+    fail(8, `drag repaints did not coalesce: ${result.dragFrames} frames for ${result.dragEvents} events`);
+  if (dragFrameCapMs != null && dragFrameCapMs !== true &&
+      result.dragFrameMsMedian != null && result.dragFrameMsMedian > parseFloat(dragFrameCapMs))
+    fail(9, `drag repaint median ${result.dragFrameMsMedian} ms > cap ${dragFrameCapMs} ms`);
+}
 
 console.log(JSON.stringify(result));
 await browser.close?.();

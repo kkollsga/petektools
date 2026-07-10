@@ -205,6 +205,83 @@ def test_render_auto_degrades_over_budget(tmp_path):
     assert not r.get("consoleErrors"), r["consoleErrors"]
 
 
+# --- 200k-point map overlay: batched/baked/rAF-coalesced point path ------------
+# The worst case that made view2d unusable: a 200k-point cloud with point_color
+# set (per-point colormap lookup) plus an inferred-geometry grid-line overlay.
+# The old per-point beginPath/arc/fill path cost ~145 ms/frame and re-rendered
+# synchronously per wheel/drag DOM event (~139 ms/event → a 90-event drag took
+# 12.5 s). Budgets: the full map render (includes the offscreen point bake) and
+# the median rAF-coalesced drag repaint must land well under a 60 Hz frame; the
+# drag must coalesce to at most one repaint per animation frame; the grid-bucket
+# hover sweep must stay cheap (the old O(n) scan cost ~2.6 ms/event).
+POINTS_N = 200_000
+POINTS_FRAME_CAP_MS = 16.0       # full map render incl. point bake (was ~145 ms)
+POINTS_DRAG_CAP_MS = 8.0         # median coalesced drag repaint (was ~139 ms/event)
+POINTS_HOVER_CAP_MS = 5.0        # avg non-drag hover event (was ~2.6 ms of scan alone)
+
+
+def _build_points_view(tmp_path: Path, npts: int = POINTS_N) -> Path:
+    """A save_view HTML with a `npts` colored point cloud + a grid-line geometry
+    overlay (and a tiny v3 volume so the harness's volume leg still passes)."""
+    import random
+
+    rng = random.Random(7)
+    ncol = nrow = 241
+    sp = 25.0
+    w = (ncol - 1) * sp
+    pts = []
+    for _ in range(npts):
+        x, y = rng.uniform(0, w), rng.uniform(0, w)
+        z = -2600.0 + 60.0 * (x / w) - 40.0 * (y / w) ** 2 + rng.uniform(-5, 5)
+        if rng.random() < 0.01:
+            z = None  # non-finite z → the accent-fallback bin
+        pts.append([round(x, 2), round(y, 2), None if z is None else round(z, 2)])
+    zs = [p[2] for p in pts if p[2] is not None]
+    grid_lines = []
+    for k in range(0, ncol, 3):  # inferred-geometry overlay: ~160 lattice lines
+        c = k * sp
+        grid_lines.append([[0.0, c], [w, c]])
+        grid_lines.append([[c, 0.0], [c, w]])
+    env, _bin = _v3.build_v3_volume(50, 50, 4)
+    payload = {
+        "schema_version": 3, "kind": "points-perf", "property": "z", "properties": ["z"],
+        "summary": {"cells": 50 * 50 * 4}, "volume": env,
+        "map": {"schema_version": 1,
+                "frame": {"origin_x": 0, "origin_y": 0, "spacing_x": sp, "spacing_y": sp,
+                          "ncol": ncol, "nrow": nrow},
+                "outline": [[[0, 0], [w, 0], [w, w], [0, w], [0, 0]]],
+                "horizons": [], "zone_averages": [], "k_slices": [], "contacts": [],
+                "grid_lines": grid_lines, "points": pts, "wells": [],
+                "point_color": {"by": "z", "range": [min(zs), max(zs)]}},
+        "sections": [], "section_labels": [], "wells": [], "charts": [],
+    }
+    out = tmp_path / "points_200k.html"
+    save_view(payload, out)
+    return out
+
+
+@pytest.mark.skipif(not _HAVE_PW, reason="playwright + chromium not available (browser leg)")
+def test_render_200k_points_pan_hover_budget(tmp_path):
+    view = _build_points_view(tmp_path)
+    r = _run_render(view, f"--frame-cap-ms={POINTS_FRAME_CAP_MS}", "--drag-events=90",
+                    f"--drag-frame-cap-ms={POINTS_DRAG_CAP_MS}", timeout=240)
+    print(f"\n[points] 200k: map render {r.get('mapRenderMs')} ms | "
+          f"drag {r.get('dragFrames')} frames / {r.get('dragEvents')} events, "
+          f"median {r.get('dragFrameMsMedian')} ms (max {r.get('dragFrameMsMax')}) | "
+          f"hover {r.get('hoverAvgMs')} ms/event | heap {r.get('usedJSHeapMB')} MB")
+    assert r["rc"] == 0, r.get("failure") or r.get("stderr")
+    assert not r.get("consoleErrors"), r["consoleErrors"]
+    # full map render (incl. the offscreen point bake) inside a 60 Hz frame
+    assert r["mapRenderMs"] < POINTS_FRAME_CAP_MS
+    # pan/zoom: at most one repaint per animation frame (~3 events dispatched/frame)
+    assert r["dragFrames"] <= (r["dragEvents"] // 2), r
+    assert r["dragFrameMsMedian"] < POINTS_DRAG_CAP_MS, r
+    # hover: grid-bucketed hit-test, never an all-points scan — and it still HITS
+    # (the readout showed a point under the sweep's final position)
+    assert r["hoverAvgMs"] < POINTS_HOVER_CAP_MS, r
+    assert r["hoverReadout"] is True, r
+
+
 # --- the Wells correlation tab + v4 obligations (Playwright) ------------------
 # Drives the correlation-view path render_bench can't (it is volume-centric): the
 # Wells tab at both hanging modes (TVD + flatten-on-pick, incl. a missing-pick /
@@ -688,6 +765,500 @@ def test_long_fence_labels_stagger_not_cluster(tmp_path):
     assert staggered or faded, light
     print(f"\n[label] 8 labels | staggered={staggered} faded={faded} | "
           f"x-range {min(L['x'] for L in light):.0f}..{max_x:.0f}")
+
+
+# --- color spec + per-layer legend: inferno points, clamped range, names ------
+# Drives the P2 semantics end to end in a real browser: a view2d payload built
+# with color="inferno_-2700_-2500" over NAMED points + a geometry must render
+# the cloud in the payload-pinned inferno ramp with the explicit range CLAMPING
+# out-of-range values to the ramp ends, show per-layer legend entries (type
+# icon + duck-typed name, ramp + clamped range on the value-coloured points),
+# initialize the colormap selector from the payload, and survive a theme flip.
+_LEGEND_JS = Path(__file__).parent / "viewer_perf" / "legend_bench.mjs"
+
+# world coordinates of the three probe blobs (z = max / min / below-min)
+_BLOB_MAX = (100.0, 100.0)
+_BLOB_MIN = (500.0, 100.0)
+_BLOB_CLAMP = (900.0, 100.0)
+
+
+def _build_inferno_points_view(tmp_path: Path) -> tuple[Path, dict]:
+    import random
+
+    from petektools import viewer
+
+    rng = random.Random(11)
+
+    class Points:
+        name = "Top Agat"
+
+        def xyz(self):
+            rows = []
+            for (cx, cy), z in (
+                (_BLOB_MAX, -2500.0),    # == range max -> inferno t=1
+                (_BLOB_MIN, -2700.0),    # == range min -> inferno t=0
+                (_BLOB_CLAMP, -3000.0),  # below min -> CLAMPS to t=0
+            ):
+                for _ in range(1500):
+                    rows.append([cx + rng.uniform(-20, 20), cy + rng.uniform(-20, 20), z])
+            return rows
+
+    class Geom:
+        name = "Agat grid"
+        xori = 0.0
+        yori = 0.0
+        xinc = 200.0
+        yinc = 200.0
+        ncol = 6
+        nrow = 6
+
+        def node_xy(self, i, j):
+            return (i * 200.0, j * 200.0)
+
+    payload = viewer.view2d_payload([Points(), Geom()], color="inferno_-2700_-2500")
+    out = tmp_path / "inferno_points.html"
+    save_view(payload, out)
+    return out, payload
+
+
+def _run_legend(view: Path, shots: Path, timeout: int = 90) -> dict:
+    out = subprocess.run(
+        [_NODE, str(_LEGEND_JS), str(view),
+         f"--p1={_BLOB_MAX[0]},{_BLOB_MAX[1]}",
+         f"--p2={_BLOB_MIN[0]},{_BLOB_MIN[1]}",
+         f"--p3={_BLOB_CLAMP[0]},{_BLOB_CLAMP[1]}",
+         f"--shot-light={shots / 'map-inferno-light.png'}",
+         f"--shot-dark={shots / 'map-inferno-dark.png'}"],
+        capture_output=True, text=True, timeout=timeout,
+    )
+    line = (out.stdout.strip().splitlines() or ["{}"])[-1]
+    data = json.loads(line) if line.startswith("{") else {}
+    return {"rc": out.returncode, "stderr": out.stderr, **data}
+
+
+def _num(text: str) -> float:
+    """A legend scale label back to its number (locale separators stripped)."""
+    return float(text.replace(",", "").replace(" ", "").replace(" ", ""))
+
+
+def _close(a, b, tol: int = 30) -> bool:
+    return a is not None and b is not None and all(abs(x - y) <= tol for x, y in zip(a, b))
+
+
+@pytest.mark.skipif(not _HAVE_PW, reason="playwright + chromium not available (browser leg)")
+def test_map_inferno_points_clamped_legend_names_both_themes(tmp_path):
+    view, payload = _build_inferno_points_view(tmp_path)
+    # payload-side sanity: colormap pinned, explicit clamp range, NO fill
+    assert payload["map"]["colormap"] == "inferno"
+    assert payload["map"]["point_color"] == {"by": "z", "range": [-2700.0, -2500.0]}
+    assert payload["map"]["fills"] == []
+    assert {"kind": "points", "name": "Top Agat"} in payload["map"]["layers"]
+
+    shots = Path(os.environ.get("PETEK_SHOTS_DIR", str(tmp_path)))
+    shots.mkdir(parents=True, exist_ok=True)
+    r = _run_legend(view, shots)
+    assert r["rc"] == 0, r.get("stderr")
+    assert not r.get("consoleErrors"), r["consoleErrors"]
+
+    inferno_lo, inferno_hi = [0, 0, 4], [252, 255, 164]  # ramp ends (t=0 / t=1)
+    alpha = 0.7  # the batched point path's fill alpha (< 20k points)
+
+    def _blend(c, bg):  # a point bin composites ONCE over the background
+        return [alpha * ci + (1 - alpha) * bi for ci, bi in zip(c, bg)]
+
+    for mode in ("light", "dark"):
+        s = r[mode]
+        # the cloud rendered in the inferno ramp: max blob at the hot end,
+        # min blob at the dark end (colours composite over the theme surface)
+        assert _close(s["blobMax"], _blend(inferno_hi, s["bg"]), tol=12), (mode, s)
+        assert _close(s["blobMin"], _blend(inferno_lo, s["bg"]), tol=12), (mode, s)
+        # CLAMP: the below-range blob paints exactly like the min blob
+        assert _close(s["blobClamped"], s["blobMin"], tol=10), (mode, s)
+        assert not _close(s["blobClamped"], s["blobMax"]), (mode, s)
+        # legend: the points layer wears its duck-typed NAME + the clamped range
+        pts_hdr = [h for h in s["headers"] if "Top Agat" in h]
+        assert pts_hdr, (mode, s["headers"])
+        scale = s["scales"][0]
+        assert _num(scale[0]) == -2700.0 and _num(scale[1]) == -2500.0, (mode, s["scales"])
+        # the geometry layer's name appears as a key row, with type icons drawn
+        assert any("Agat grid" in k for k in s["keys"]), (mode, s["keys"])
+        assert s["icons"] >= 2, (mode, s)  # points block icon + lines row icon
+        # the colormap selector initialized from the payload
+        assert s["colormap"] == "inferno", (mode, s["colormap"])
+    assert r["dark"]["theme"] == "dark", r["dark"]
+    print(f"\n[legend] blobs max/min/clamped (light) = {r['light']['blobMax']}/"
+          f"{r['light']['blobMin']}/{r['light']['blobClamped']} | "
+          f"headers = {r['light']['headers']} | keys = {r['light']['keys']}")
+
+
+# --- the Scene3D (view3d) tab: smoke + the 200k-point build budget -------------
+# Drives the P4 view3d path end to end in a real browser: a scene3d payload
+# (points + geometry + a value-coloured surface + a well + contours) must build
+# ONE Three.js scene (status hook __PETEK_SCENE3D_STATUS, like the volume tab's
+# __PETEK_VOLUME_STATUS), render the per-layer legend with duck-typed names +
+# the clamped inferno ramp, apply the z-exaggeration slider + colormap selector
+# live, survive orbit/wheel interaction and a theme flip with zero console
+# errors — and hold a sane build/first-render budget at 200k points.
+_SCENE3D_JS = Path(__file__).parent / "viewer_perf" / "scene3d_bench.mjs"
+
+SCENE3D_POINTS_N = 200_000
+SCENE3D_BUILD_CAP_MS = 1500.0   # buildScene3d (decode + colour bake + GPU-object setup)
+SCENE3D_TOTAL_CAP_MS = 10000.0  # tab click -> status ok (includes the first WebGL render)
+
+
+class _S3dPoints:
+    name = "Top Agat"
+
+    def __init__(self, n):
+        self.n = n
+
+    def xyz(self):
+        import random
+
+        rng = random.Random(7)
+        return [
+            [rng.uniform(0.0, 6000.0), rng.uniform(0.0, 6000.0),
+             -2600.0 + rng.uniform(-100.0, 100.0)]
+            for _ in range(self.n)
+        ]
+
+
+class _S3dGeom:
+    name = "Agat grid"
+    xori = 0.0
+    yori = 0.0
+    xinc = 250.0
+    yinc = 250.0
+    ncol = 25
+    nrow = 25
+
+    def node_xy(self, i, j):
+        return (i * 250.0, j * 250.0)
+
+
+class _S3dSurf:
+    name = "Top Agat surf"
+
+    def value_layer(self, attr=None):
+        n = 13
+        nodes = [[i * 500.0, j * 500.0] for j in range(n) for i in range(n)]
+        vals = [-2550.0 - 100.0 * (i % n) / (n - 1) for i in range(n * n)]
+        tris = []
+        for j in range(n - 1):
+            for i in range(n - 1):
+                a = j * n + i
+                tris.append([a, a + 1, a + n])
+                tris.append([a + 1, a + n + 1, a + n])
+        return {"name": "z", "nodes": nodes, "triangles": tris,
+                "values": vals, "range": [-2650.0, -2550.0]}
+
+    def iso_lines(self, interval=None, levels=None, attr=None):
+        return [(-2600.0, [[[0.0, 0.0], [6000.0, 6000.0]]]),
+                (-2575.0, [[[0.0, 3000.0], [6000.0, 3000.0]]])]
+
+
+class _S3dWell:
+    name = "31/2-A"
+
+    def trajectory(self):
+        return [[1000.0, 1000.0, -2400.0], [2000.0, 2000.0, -2550.0],
+                [3000.0, 3000.0, -2650.0]]
+
+
+def _build_scene3d_view(tmp_path: Path, name: str, npts: int, **kw) -> tuple[Path, dict]:
+    from petektools import viewer
+
+    payload = viewer.view3d_payload(
+        [_S3dPoints(npts), _S3dGeom(), _S3dSurf(), _S3dWell()],
+        color="inferno_-2700_-2500", fill=True, contours=25.0, **kw,
+    )
+    out = tmp_path / name
+    save_view(payload, out)
+    return out, payload
+
+
+def _run_scene3d(view: Path, *extra: str, timeout: int = 240) -> dict:
+    out = subprocess.run(
+        [_NODE, str(_SCENE3D_JS), str(view), *extra],
+        capture_output=True, text=True, timeout=timeout,
+    )
+    line = (out.stdout.strip().splitlines() or ["{}"])[-1]
+    data = json.loads(line) if line.startswith("{") else {}
+    return {"rc": out.returncode, "stderr": out.stderr, **data}
+
+
+@pytest.mark.skipif(not _HAVE_PW, reason="playwright + chromium not available (browser leg)")
+def test_scene3d_smoke_renders_all_layer_kinds(tmp_path):
+    shots = Path(os.environ.get("PETEK_SHOTS_DIR", str(tmp_path)))
+    shots.mkdir(parents=True, exist_ok=True)
+    view, payload = _build_scene3d_view(tmp_path, "scene3d_smoke.html", 5000)
+    # payload-side sanity: the scene3d bundle carries every layer kind
+    sc = payload["scene3d"]
+    assert sc["colormap"] == "inferno"
+    assert sc["point_color"] == {"by": "z", "range": [-2700.0, -2500.0]}
+    assert sc["meshes"] and sc["lattices"] and sc["wells"] and sc["contours"]
+
+    r = _run_scene3d(view, f"--screenshot={shots / 'scene3d-smoke.png'}")
+    print(f"\n[scene3d] smoke: build {r.get('status', {}).get('buildMs')} ms | "
+          f"render {r.get('renderMs')} ms | badge {r.get('badge')!r}")
+    assert r["rc"] == 0, r.get("failure") or r.get("stderr")
+    assert not r.get("consoleErrors"), r["consoleErrors"]
+    st = r["status"]
+    assert st["state"] == "ok" and st["points"] == 5000
+    assert st["meshes"] == 1 and st["wells"] == 1 and st["triangles"] > 0
+    # legend: per-layer entries with duck-typed names — the value-coloured
+    # points ("Top Agat · z") and surface ramps + the lattice/well/contour keys
+    lg = r["lightLegend"]
+    assert any("Top Agat · z" in h for h in lg["headers"]), lg["headers"]
+    assert any("Top Agat surf" in h for h in lg["headers"]), lg["headers"]
+    assert any("Agat grid" in k for k in lg["keys"]), lg["keys"]
+    assert any("31/2-A" in k for k in lg["keys"]), lg["keys"]
+    assert lg["icons"] >= 4  # points + fill ramps, lattice, contours, well rows
+    # the points ramp scale shows the CLAMPED spec range
+    assert any(_num(s[0]) == -2700.0 and _num(s[1]) == -2500.0 for s in lg["scales"]), lg["scales"]
+    # panel: colormap selector initialized from the payload; z-exag applies live
+    assert r["colormapInitial"] == "inferno"
+    assert "z ×12" in (r["badgeAfterExag"] or ""), r["badgeAfterExag"]
+    # dark theme keeps the legend populated (tokens re-read, identities keep slots)
+    assert r["darkLegend"]["headers"], r["darkLegend"]
+    assert r["hoverReadout"] is True
+
+
+@pytest.mark.skipif(not _HAVE_PW, reason="playwright + chromium not available (browser leg)")
+def test_scene3d_200k_points_build_and_render_budget(tmp_path):
+    view, payload = _build_scene3d_view(tmp_path, "scene3d_200k.html", SCENE3D_POINTS_N)
+    cloud = payload["scene3d"]["points"][0]
+    assert cloud["n"] == SCENE3D_POINTS_N  # at the cap, undecimated
+    assert "point_stride" not in payload["summary"]
+
+    r = _run_scene3d(view, f"--build-cap-ms={SCENE3D_BUILD_CAP_MS}",
+                     f"--total-cap-ms={SCENE3D_TOTAL_CAP_MS}")
+    st = r.get("status") or {}
+    print(f"\n[scene3d] 200k: build {st.get('buildMs')} ms | tab->ok {r.get('totalMs')} ms | "
+          f"render {r.get('renderMs')} ms | {st.get('points')} pts + {st.get('triangles')} tris")
+    assert r["rc"] == 0, r.get("failure") or r.get("stderr")
+    assert not r.get("consoleErrors"), r["consoleErrors"]
+    assert st["state"] == "ok" and st["points"] == SCENE3D_POINTS_N
+    assert st["buildMs"] < SCENE3D_BUILD_CAP_MS
+    assert r["totalMs"] < SCENE3D_TOTAL_CAP_MS
+
+
+@pytest.mark.skipif(not _HAVE_PW, reason="playwright + chromium not available (browser leg)")
+def test_scene3d_auto_degrades_over_budget(tmp_path):
+    # Lower the primitive budget below the fixture so the volume tab's degrade
+    # discipline MUST engage: a decimated 1-in-stride preview + a loud banner +
+    # a 1:stride badge — never a refusal or a blank canvas.
+    view, _payload = _build_scene3d_view(tmp_path, "scene3d_degrade.html", 5000)
+    r = _run_scene3d(view, "--tri-budget=1000", "--expect-degraded")
+    st = r.get("status") or {}
+    print(f"\n[scene3d] degrade @1000: kept {st.get('points')} pts + {st.get('triangles')} tris "
+          f"| badge {r.get('badge')!r}")
+    assert r["rc"] == 0, r.get("failure") or r.get("stderr")
+    assert not r.get("consoleErrors"), r["consoleErrors"]
+    assert r["degradedBanner"] and "Decimated preview" in r["degradedBanner"]
+    assert "1:" in (r["badge"] or "")
+    assert 0 < st["points"] <= 1000  # the point cloud really decimated
+
+
+# --- 2-D map binary blocks: wire size + Node decode + content-addressed dedup --
+# The 2-D map's bulk arrays (points, fill nodes/triangles/values, grid_lines and
+# contour lines) historically shipped as JSON floats — a single 78k-triangle fill
+# is ~5-6 MB of JSON parsed on the main thread. The blocks encoding packs them as
+# the v3 typed binary blocks (base64 f32/u32) in a content-addressed digest table
+# so an identical array ships once, and the viewer decodes them off the main
+# thread into typed arrays. These legs assert the wire-size win, the Node decode
+# budget, and the dedup, all without a browser (the Node kernel is decode.js).
+import copy
+
+_MAP_BENCH_JS = Path(__file__).parent / "viewer_perf" / "map_decode_bench.js"
+
+MAP_POINTS_N = 200_000
+MAP_FILL_GRID = 198  # 198x198 nodes -> 197*197*2 = 77,618 triangles (~78k)
+MAP_WIRE_MIN_RATIO = 3.0     # blocks must be >= 3x smaller than the JSON floats
+MAP_DECODE_MS_MAX = 300.0    # Node decode of the ~200k-pt + 78k-tri block table
+
+
+def _synthetic_2d_map(*, npts: int = MAP_POINTS_N, grid: int = MAP_FILL_GRID) -> dict:
+    """A synthetic (pure-code) view2d `map` bundle in the PLAIN (JSON) shape: a
+    `npts` point cloud + one value-coloured trimesh fill of ~78k triangles, a few
+    grid lines and a contour set. `_blocks.encode_map` turns it into blocks."""
+    import random
+
+    rng = random.Random(7)
+    w = 5000.0
+    pts = []
+    for _ in range(npts):
+        x, y = rng.uniform(0, w), rng.uniform(0, w)
+        z = -2600.0 + 40.0 * (x / w) - 30.0 * (y / w) ** 2
+        # full-precision floats — the real view2d wire (no rounding), which is
+        # exactly where JSON floats balloon and the typed blocks win.
+        pts.append([x, y, z])
+    zs = [p[2] for p in pts]
+    nodes, values = [], []
+    for j in range(grid):
+        for i in range(grid):
+            nodes.append([i * 25.0, j * 25.0])
+            values.append(0.1 + 0.2 * math.sin(i / 10.0) * math.cos(j / 10.0))
+    tris = []
+    for j in range(grid - 1):
+        for i in range(grid - 1):
+            a = j * grid + i
+            tris.append([a, a + 1, a + grid])
+            tris.append([a + 1, a + grid + 1, a + grid])
+    fill = {"name": "phi", "display_name": "phi", "nodes": nodes,
+            "triangles": tris, "values": values, "range": [0.0, 0.4]}
+    grid_lines = [[[0.0, c * 250.0], [w, c * 250.0]] for c in range(20)]
+    contours = [{"level": -2600.0, "major": True,
+                 "lines": [[[0.0, 0.0], [w, w]], [[0.0, w], [w, 0.0]]]}]
+    return {
+        "schema_version": 2,
+        "frame": {"origin_x": 0, "origin_y": 0, "spacing_x": 25, "spacing_y": 25,
+                  "ncol": grid, "nrow": grid},
+        "outline": [[[0, 0], [w, 0], [w, w], [0, w], [0, 0]]],
+        "grid_lines": grid_lines, "points": pts,
+        "point_color": {"by": "z", "range": [min(zs), max(zs)]},
+        "colormap": "viridis", "layers": [], "fills": [fill], "contours": contours,
+        "horizons": [], "zone_averages": [], "k_slices": [], "contacts": [], "wells": [],
+    }
+
+
+def test_map_blocks_wire_size_beats_json():
+    from petektools.viewer import _blocks
+
+    plain = _synthetic_2d_map()
+    json_bytes = len(json.dumps(plain))
+    blocks = copy.deepcopy(plain)
+    encoded = _blocks.encode_map(blocks, threshold_bytes=0)
+    blocks_bytes = len(json.dumps(blocks))
+    ratio = json_bytes / blocks_bytes
+    print(f"\n[map-wire] 200k pts + 78k-tri fill: JSON {json_bytes/1e6:.1f} MB -> "
+          f"blocks {blocks_bytes/1e6:.1f} MB = {ratio:.2f}x smaller "
+          f"({len(blocks['blocks'])} table entries)")
+    assert encoded and "blocks" in blocks
+    assert ratio >= MAP_WIRE_MIN_RATIO, f"{ratio:.2f}x < {MAP_WIRE_MIN_RATIO}x"
+
+
+@pytest.mark.skipif(_NODE is None, reason="node not available")
+def test_map_blocks_decode_under_node(tmp_path):
+    from petektools.viewer import _blocks
+
+    blocks = _synthetic_2d_map()
+    _blocks.encode_map(blocks, threshold_bytes=0)
+    path = tmp_path / "map_blocks.json"
+    path.write_text(json.dumps(blocks))
+    out = subprocess.run([_NODE, str(_MAP_BENCH_JS), str(path), "3"],
+                         capture_output=True, text=True, timeout=120)
+    assert out.returncode == 0, out.stderr
+    r = json.loads(out.stdout.strip().splitlines()[-1])
+    print(f"\n[map-decode] decode {r['decodeMs']} ms | {r['tableEntries']} blocks | "
+          f"{r['elements']} elements | wire {path.stat().st_size/1e6:.1f} MB")
+    assert r["tableEntries"] > 0 and r["elements"] > 0
+    assert r["decodeMs"] < MAP_DECODE_MS_MAX, r
+
+
+def test_map_blocks_dedup_shared_mesh_ships_once():
+    from petektools.viewer import _blocks
+
+    # Two fills over the SAME mesh (identical nodes + triangles) but distinct
+    # values — the classic dedup case: the geometry blocks must ship once.
+    grid = 40
+    nodes = [[i * 25.0, j * 25.0] for j in range(grid) for i in range(grid)]
+    tris = []
+    for j in range(grid - 1):
+        for i in range(grid - 1):
+            a = j * grid + i
+            tris.append([a, a + 1, a + grid])
+            tris.append([a + 1, a + grid + 1, a + grid])
+    n = len(nodes)
+    fill_a = {"name": "phi", "display_name": "phi", "nodes": [list(p) for p in nodes],
+              "triangles": [list(t) for t in tris], "values": [0.1] * n, "range": [0.0, 1.0]}
+    fill_b = {"name": "sw", "display_name": "sw", "nodes": [list(p) for p in nodes],
+              "triangles": [list(t) for t in tris], "values": [0.9] * n, "range": [0.0, 1.0]}
+    m = {"schema_version": 2, "frame": {"origin_x": 0, "origin_y": 0, "spacing_x": 25,
+         "spacing_y": 25, "ncol": grid, "nrow": grid},
+         "outline": [], "grid_lines": [], "points": [], "point_color": None,
+         "colormap": None, "layers": [], "fills": [fill_a, fill_b], "contours": [],
+         "horizons": [], "zone_averages": [], "k_slices": [], "contacts": [], "wells": []}
+    assert _blocks.encode_map(m, threshold_bytes=0)
+    f0, f1 = m["fills"]
+    # shared geometry -> one digest referenced by both fills (ships once)
+    assert f0["nodes"]["__block__"] == f1["nodes"]["__block__"]
+    assert f0["triangles"]["__block__"] == f1["triangles"]["__block__"]
+    # distinct value arrays keep distinct digests (not falsely merged)
+    assert f0["values"]["__block__"] != f1["values"]["__block__"]
+    # the table carries each distinct block exactly once: nodes + triangles +
+    # two value blocks = 4 entries (no duplicated geometry)
+    table = m["blocks"]
+    assert f0["nodes"]["__block__"] in table and f0["triangles"]["__block__"] in table
+    assert len(table) == 4, sorted(table)
+    print(f"\n[map-dedup] 2 fills / shared mesh -> {len(table)} blocks "
+          f"(nodes+tris shared, 2 distinct value blocks)")
+
+
+class _StridedMesh:
+    """A synthetic trimesh producer whose `value_layer(stride=)` returns a
+    coarser `stride`-decimated grid (≈ the petekio LOD seam), for a browserless
+    measure of the stride-ladder coarse ring's cost."""
+
+    def __init__(self, n: int):
+        self.n = n
+
+    @staticmethod
+    def _grid(n: int):
+        nodes = [[i * 25.0, j * 25.0] for j in range(n) for i in range(n)]
+        values = [0.1 + 0.2 * math.sin(i / 10.0) * math.cos(j / 10.0)
+                  for j in range(n) for i in range(n)]
+        tris = []
+        for j in range(n - 1):
+            for i in range(n - 1):
+                a = j * n + i
+                tris.append([a, a + 1, a + n])
+                tris.append([a + 1, a + n + 1, a + n])
+        return nodes, tris, values
+
+    def xyz(self):
+        return [[nd[0], nd[1], 0.0] for nd in self._grid(self.n)[0]]
+
+    def triangles(self):
+        return self._grid(self.n)[1]
+
+    def value_layer(self, attr=None, stride=None):
+        n = self.n if not stride or stride <= 1 else (self.n + stride - 1) // stride
+        nodes, tris, values = self._grid(n)
+        return {"name": "phi", "nodes": nodes, "triangles": tris,
+                "values": values, "range": [0.0, 0.4]}
+
+
+def test_map_lod_coarse_ring_shrinks_wire():
+    """The stride-4 coarse fill ring carries ≈k² fewer triangles and encodes to a
+    small fraction of the full ring's block bytes — the win the viewer trades a
+    few pixels of detail for when a data cell shrinks below ~4 px."""
+    from petektools.viewer import view2d_payload
+
+    mesh = _StridedMesh(MAP_FILL_GRID)  # 198×198 nodes → ~78k triangles
+    p = view2d_payload([mesh], fill=True, lod=(4,), encoding="json")
+    fill = p["map"]["fills"][0]
+    full_tris = len(fill["triangles"])
+    coarse_tris = len(fill["lod"]["triangles"])
+    ratio = full_tris / max(1, coarse_tris)
+
+    enc = view2d_payload([mesh], fill=True, lod=(4,), encoding="blocks",
+                         block_threshold_bytes=0)
+    m = enc["map"]
+    tbl = m["blocks"]
+
+    def blk_bytes(marker):
+        return len(tbl[marker["__block__"]]["data"])
+
+    full_b = blk_bytes(m["fills"][0]["nodes"]) + blk_bytes(m["fills"][0]["triangles"]) \
+        + blk_bytes(m["fills"][0]["values"])
+    lod = m["fills"][0]["lod"]
+    coarse_b = blk_bytes(lod["nodes"]) + blk_bytes(lod["triangles"]) + blk_bytes(lod["values"])
+    print(f"\n[map-lod] full {full_tris} tris / coarse {coarse_tris} tris = {ratio:.1f}x "
+          f"fewer | full ring {full_b/1e6:.2f} MB(b64) -> coarse {coarse_b/1e3:.0f} KB "
+          f"= {full_b/max(1,coarse_b):.0f}x smaller")
+    assert ratio >= 8.0, f"coarse ring only {ratio:.1f}x fewer triangles"
+    assert coarse_b * 8 < full_b, "coarse ring block bytes not materially smaller"
 
 
 if __name__ == "__main__":

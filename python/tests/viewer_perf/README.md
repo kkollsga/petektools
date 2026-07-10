@@ -43,10 +43,12 @@ npm i playwright                    # or a global install; the harness require()
 node render_bench.mjs <view.html> [flags]
 #   --heap-cap-mb=N   --frame-cap-ms=N   --tri-budget=N   --expect-degraded
 #   --screenshot=PATH --tab=map|section|volume|charts
+#   --drag-events=N   --drag-frame-cap-ms=N   (synthetic map drag + hover sweep)
 ```
 
 Prints one JSON line: `{decodeRenderMs, mapRenderMs, sectionRenderMs,
-chartsRenderMs, usedJSHeapMB, volBadge, degradedBanner, consoleErrors}`.
+chartsRenderMs, usedJSHeapMB, volBadge, degradedBanner, consoleErrors}` (plus
+`dragFrames/dragFrameMsMedian/hoverAvgMs/hoverReadout` with `--drag-events`).
 
 Driven + budget-asserted by `test_viewer_perf.py` at the ledger scales — it builds
 a `save_view` HTML with a v3 volume **and** an areal map, then asserts a JS-heap
@@ -68,3 +70,97 @@ vs the ledger death point (both flavors dead at ~0.9–1.0M cells, V8 string wal
 silent). Now 5M cells render at 242 MB heap with no console errors, and an
 over-budget shell degrades to a decimated preview + a loud banner instead of ever
 crashing.
+
+## 3. 200k-point map overlay (`--drag-events`)
+
+The worst case that made `view2d` unusable: 200k points with `point_color` set
+plus an inferred-geometry grid-line overlay. `--drag-events=N` dispatches a
+synthetic map drag (~3 mousemove events per animation frame — the rAF-coalesced
+path must repaint at most once per frame; exit 8 when it doesn't) and a non-drag
+hover sweep, and `--drag-frame-cap-ms` budget-asserts the median coalesced
+repaint (exit 9). Driven by `test_render_200k_points_pan_hover_budget`.
+
+Measured (this machine, headless Chromium), 200k coloured points + ~160 overlay
+lines, before → after the batched/baked/rAF point path:
+
+| metric | before | after |
+|---|---:|---:|
+| map render (`__PETEK_RENDER_MS`) | 145.3 ms | 0.5 ms |
+| drag repaint | 138.9 ms/event (sync per event) | 30 frames / 90 events, median 0.1 ms |
+| wheel zoom | 138.8 ms/event | ≤ ~10 ms worst frame (immediate), sub-ms blit |
+| hover mousemove | 2.6 ms (O(n) scan) | 0.1 ms (grid bucket) |
+
+## 4. 2-D map binary blocks (Node) — `map_decode_bench.js`
+
+The 2-D map's bulk arrays (`points`, fill `nodes`/`triangles`/`values`,
+`grid_lines`, `contours[i].lines`) ship as the **v3 typed binary blocks** in a
+content-addressed digest table (`map.blocks`) instead of JSON floats — a single
+78k-triangle fill is otherwise ~5–6 MB of JSON parsed on the main thread. This
+bench times the REAL decode kernel (`assets/decode.js` → `decodeBlockTable` +
+marker resolution) the browser worker runs.
+
+```bash
+node map_decode_bench.js <map.json> [iters]   # <map.json> = a blocks-encoded payload.map
+```
+
+Prints one JSON line: `{decodeMs, tableEntries, decodedBlocks, elements}`.
+Driven + budget-asserted by `test_viewer_perf.py`
+(`test_map_blocks_*`) — a synthetic **200k-point + 78k-triangle-fill** 2-D
+payload, all three legs browserless (they run on the Node kernel):
+
+| leg | assert | measured (this machine) |
+|---|---|---|
+| wire size | blocks **≥ 3× smaller** than the JSON floats of the same data | JSON **15.5 MB → blocks 5.1 MB = 3.05×** (8 table entries) |
+| Node decode | `decodeMs < 300` for the ~950k-element block table | **~4.8 ms** (best of 3) |
+| content-addressed dedup | two fills over one mesh → the `nodes`/`triangles` blocks appear **once** | 2 fills / shared mesh → **4 blocks** (nodes + tris shared, 2 distinct value blocks) |
+
+vs the JSON floats it replaces: the map no longer parses megabytes of float text
+on the main thread — the base64 blocks decode off-thread into typed arrays,
+transferred zero-copy, and identical arrays decode once per session.
+
+## 5. Stride-ladder LOD + fill baking (P2b/P3)
+
+**LOD rings (`view2d(lod=…)`).** A payload may carry ONE coarse display ring
+beside each full-resolution field — `fills[i].lod`, `map.grid_lines_lod`,
+`contours[i].lines_lod` — decimated by the producer (`value_layer(stride=)`,
+`wireframe_edges(stride=)`, `iso_lines(simplify=)`). Geometry truth is never
+decimated; the ring is display-only and keeps the full-resolution colour range.
+Browserless measure (`test_map_lod_coarse_ring_shrinks_wire`), a 198×198-node
+(~78k-triangle) fill, stride 4:
+
+| metric | full ring | coarse (stride 4) ring |
+|---|---:|---:|
+| triangles | 77,618 | 4,802 (**16.2× fewer**) |
+| block bytes (base64) | 1.87 MB | 117 KB (**16× smaller**) |
+
+**Expected switch behaviour** (asserted browser-side under Playwright in P4;
+`window.__PETEK_LOD_ACTIVE` is exposed for the harness):
+
+- The renderer picks the ring on **zoom-settle** — a ~150 ms debounce after the
+  last wheel event, never per frame — so a mid-gesture zoom never flickers
+  between rings.
+- It switches to the coarse ring when a full-resolution data cell falls below
+  **~4 px** on screen (`fullCellPx() < LOD_CELL_PX`), computed from the active
+  fill's node density (√(bbox area / node count)) or the frame lattice spacing.
+- Fills, mesh grid lines and contours switch together; the point cloud keeps its
+  own baked path. A small "LOD" chip shows while the coarse ring is active.
+- `lod=False` (and any LOD-unsupported payload) is byte-identical to the pre-LOD
+  shape — the full rings render exactly as before.
+
+**Fill baking (P3).** The active value-fill rasterizes once into an offscreen
+bitmap (viewport + margin, clamped to the fill bbox and the shared bake caps);
+pan blits it (one `drawImage`), an in-band zoom blits it scaled, and a zoom out
+of band / an LOD ring switch / over-the-caps re-bakes on the shared settle — the
+same baked-blit pattern (and the same `PT_*` caps, band and margin) the 200k
+point cloud uses, so a 78k-triangle fill never re-triangulates per pan frame. The
+bake key is `(colormap, range)` + the ring object identity, so switching rings
+invalidates the bitmap.
+
+**Visibility-driven rendering (P3).** This viewer renders ON DEMAND — only the
+active tab's render fn runs (`renderActive`), scene3d/volume repaint on
+control-change, and the map coalesces interaction repaints through rAF; there is
+**no persistent animation loop** to burn a background tab (verified). A hidden
+document cancels the settle timer (`visibilitychange`); browsers already suspend
+rAF for a hidden document. There is a **single** map canvas per exported page and
+no multi-view/embedded-canvas machinery, so no `IntersectionObserver` is used —
+it would gate work that does not exist.

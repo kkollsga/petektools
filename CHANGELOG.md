@@ -6,6 +6,119 @@ All notable changes to petekTools are recorded here. Format follows
 
 ## [Unreleased]
 
+## [0.2.11] - 2026-07-10
+
+### Added
+- `view2d` / `view2d_payload` gain `lod: bool | tuple = True` — an additive
+  **stride-ladder LOD** for the map. When on, every item whose producer duck
+  accepts the striding kwargs emits ONE coarse display ring beside its full
+  ring: `value_layer(stride=…)` → `fills[i].lod`
+  (`{stride, nodes, triangles, values, range}` — the range is the
+  full-resolution range, so colours stay stable across rings),
+  `wireframe_edges(stride=…)` → `map.grid_lines_lod`, and
+  `iso_lines(…, simplify=…)` → `contours[i].lines_lod`. `lod=True` uses
+  `stride=4` and derives the contour `simplify` tolerance from the data extent
+  (`extent / 512`); `lod=(stride,)` / `lod=(stride, simplify)` override;
+  `lod=False` is byte-identical to the pre-LOD payload. A producer that does not
+  accept the striding kwarg is feature-detected (`TypeError`) and simply
+  contributes no coarse ring — **geometry truth is never decimated; the coarse
+  ring is display-only**. Every LOD ring is block-encoded like its full ring and
+  shares the one `map.blocks` table. The viewer picks the ring on **zoom-settle**
+  (a ~150 ms debounce, never per frame) when a full-resolution data cell falls
+  below ~4 px on screen — fills, mesh grid lines and contours switch together
+  (points keep their baked path), with a small "LOD" chip while coarse is showing.
+  See `SCHEMA.md` (MapBundle → **Stride-ladder LOD**).
+- Map **fill baking + visibility-driven rendering** (viewer perf). The active
+  value-fill now rasterizes once into an offscreen bitmap that pan blits (one
+  `drawImage`) and an in-band zoom blits scaled, re-baking only on zoom-settle —
+  the same baked-blit path (shared caps/band/margin and the one settle debounce)
+  the 200k point cloud uses, so a 78k-triangle fill never re-triangulates per pan
+  frame. Rendering stays on-demand and now pauses cleanly when unseen: a hidden
+  document cancels the settle timer (`visibilitychange`), and only the active tab
+  ever repaints (no background animation loop). A stride-4 coarse LOD fill ring
+  is ~16× fewer triangles / ~16× smaller than its full ring
+  (`viewer_perf/README.md` §5).
+- `view2d` / `view2d_payload` gain `encoding="blocks"|"json"` (default
+  `"blocks"`): the 2-D map's bulk arrays (`points`, each fill's
+  `nodes`/`triangles`/`values`, `grid_lines`, `contours[i].lines`) now ship as
+  **content-addressed typed binary blocks** — the v3 wire format (little-endian
+  `f32`/`u32`, base64, canonical NaN) in a per-payload `map.blocks` digest table
+  — instead of JSON floats. A synthetic 200k-point + 78k-triangle-fill payload
+  is **~3× smaller on the wire** (15.5 → 5.1 MB) and its blocks decode in ~5 ms
+  under Node (`viewer_perf/map_decode_bench.js`). Identical arrays (e.g. two
+  fills over one mesh) share a **sha-256 digest and ship once**; the viewer
+  decodes them off the main thread (the shared decode worker) into typed arrays,
+  cached by digest across views, and the renderer's accessors read typed or
+  plain arrays transparently. Fully additive and opt-out: a JSON-shaped map (and
+  any payload under ~64 KB of floats) renders identically. See `SCHEMA.md`
+  (MapBundle → **Binary blocks**).
+- `view3d` / `view3d_payload`: a generic 3-D scene entrypoint at **full view2d
+  parity** — the same duck-typed items (points, geometries, trimeshes,
+  `value_layer()` surfaces, `iso_lines()` contours, outlines) plus wells
+  (`trajectory()` of `[x, y, z]` rows, z elevation — negative down), the same
+  `color=`/`fill=`/`contours=` semantics and registry-match spec grammar, and
+  the same per-layer legend (type icons + duck-typed names + ramp/clamped
+  range). Emits an additive `scene3d` payload bundle (viewer `SCHEMA.md`)
+  rendered by a new **3D** tab: one Three.js scene with orbit controls and a
+  theme-aware background; point clouds travel as compact base64 f32 blocks
+  (one draw call, smooth at the 200k cap), surfaces render value-coloured
+  (`fill=`) or neutral with a wireframe toggle, lattice/outline/contour lines
+  batch as segments, wells draw identity-coloured with wellhead markers. The
+  panel carries the volume tab's z-exaggeration control (slider + "fit z ×N",
+  display-only), the primitive budget auto-degrades to a decimated preview
+  with a loud banner (never a blank), and the build outcome is exposed as
+  `window.__PETEK_SCENE3D_STATUS` for the harness.
+- `view2d` / `view2d_payload` gain `fill=` (bool | spec string): value-coloured
+  trimesh fills are now an explicit opt-in, no longer a `color=` side effect.
+- `color=` / `fill=` string specs parse by registry match:
+  `"[<attr>_]<cmap>[_<min>_<max>]"` with `<cmap>` in
+  `viridis|magma|grays|inferno` and up to two trailing floats (negatives fine,
+  e.g. `"inferno_-2700_-2500"`) as an explicit clamp range — values outside it
+  clamp to the ramp ends. A non-colormap string stays an attribute name
+  (back-compat, e.g. `color="porosity"`); a malformed spec raises `ValueError`.
+- The **inferno** colormap (renderer ramp anchors + panel selector), and an
+  additive `map.colormap` payload field that pins the initial colormap from
+  the parsed spec.
+- Per-layer legend entries on the Map tab: a small canvas type icon (points /
+  lines / fill / contours / wells) + a display name duck-typed from each
+  source object's `name` (additive `map.layers` + fill `display_name`;
+  fallback: the layer kind), with the ramp + clamped range on value-coloured
+  layers.
+
+### Changed
+- **Behaviour change (owner-approved, pre-1.0):** `view2d(..., color=True)` no
+  longer fills items offering `value_layer()` — it colours points and selects
+  the colormap only. `view2d([pts, geom], color=True)` now shows coloured
+  points + geometry lines with no trimesh fill. **Migration:** a call that
+  relied on `color=True` (or `color="<spec>"`) to produce a value-coloured
+  trimesh fill must now ask for it explicitly — `view2d(items, fill=True)` or
+  `fill="<spec>"` (the spec grammar is shared with `color=`).
+- `color=` now defaults **on** in `view2d` / `view2d_payload`: points with a
+  finite z are depth-coded out of the box; pass `color=False` for monochrome
+  points. Fills (`fill=`) and contours (`contours=`) remain explicit opt-ins.
+- Map point clouds render at frame rate at 200k+ points (previously ~145 ms per
+  repaint, re-run synchronously per wheel/drag event). Points batch into <=256
+  colormap-bin `Path2D`s (squares at small radii) baked to a viewport-windowed,
+  memory-capped offscreen canvas re-blitted while panning/zooming; a gesture
+  frame that leaves the baked window / zoom band draws the batched immediate
+  path and re-bakes only when the gesture pauses (trailing timer), so no
+  pan/zoom frame pays the bake or its GPU upload;
+  wheel/drag repaints coalesce to at most one per animation frame; the hover
+  hit-test queries a coarse world-space grid bucket instead of scanning every
+  point. Render-path only - no payload schema change.
+
+### Fixed
+- A value-bearing item passed **bare** (the petekio regular-`Surface` duck:
+  `value_layer()`/`iso_lines()` + a 2-D `.geometry`, no top-level
+  geometry/trimesh/points conventions) no longer raises `TypeError` in
+  `view2d_payload` / `view3d_payload`. It now renders its STRUCTURE — in 2-D
+  the `.geometry` lattice lines (or, geometry-less, the primary value layer's
+  triangle edges); in 3-D a neutral elevation mesh from the primary value
+  layer (`values`/`range` null → neutral shading + wireframe toggle). Values
+  still colour nothing without an explicit `fill=` (owner semantics
+  preserved), and the `TypeError` for genuinely unrenderable items now points
+  at `fill=`.
+
 ## [0.2.10] - 2026-07-10
 
 ### Added

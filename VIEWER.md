@@ -70,7 +70,61 @@ content. The raster is **windowed + resolution-capped** — only the grid cells 
 the current viewport are sampled, and never more than one sample per screen pixel
 (subsampled beyond that) — so a repaint costs a screenful regardless of ncol×nrow
 (a 2000×2000 field repaints in ~2 ms), while hover still reads the full-resolution
-value array. Pan (drag), zoom (wheel); the hover readout shows the layer value + cell
+value array. The **point-cloud overlay is batched + baked** the same way: points
+draw in ≤256 colormap-bin `Path2D`s (one fill per bin) into a viewport-windowed,
+memory-capped offscreen canvas that pan/zoom re-blit in one `drawImage`;
+wheel/drag repaints coalesce to at most one per animation frame, a gesture frame
+outside the baked window/zoom band draws the batched immediate path (re-baking
+only when the gesture pauses), and hover hit-tests a coarse world-space grid
+bucket — so a **200k-point coloured cloud pans/zooms/hovers at frame rate**
+(≲10 ms worst gesture frame, sub-ms steady-state; previously ~145 ms per event).
+The active **value fill bakes the same way**: it rasterizes once into an
+offscreen bitmap that pan blits and an in-band zoom blits scaled, re-baking
+only on zoom-settle, so a ~78k-triangle fill never re-triangulates per gesture
+frame; a hidden tab cancels the settle timer (`visibilitychange`) and only the
+visible tab ever repaints.
+
+The `view2d` map's bulk arrays (points, fill nodes/triangles/values, grid
+lines, contour polylines) travel as **content-addressed typed binary blocks**
+by default (`encoding="blocks"`; ~3× smaller than JSON floats at 200k points,
+identical arrays ship once) and are decoded off the main thread in the shared
+decode worker, cached by digest; `encoding="json"` opts out and a JSON-shaped
+map renders identically. With `lod=` on (the default), producers that accept
+striding contribute one coarse **display-only LOD ring** per fill / mesh grid
+/ contour set; the viewer switches rings on zoom-settle (never per frame) when
+a full-resolution cell falls below ~4 px, shows a small "LOD" chip while
+coarse is up, and swaps back at full detail — geometry truth is never
+decimated. Payload shapes for both are in `SCHEMA.md` (MapBundle →
+**Binary blocks** / **Stride-ladder LOD**).
+
+For the `view2d` QA path, `color=` and `fill=` are **separate, explicit
+semantics** (owner ruling 2026-07-10): `color=` colours **points** (and picks
+the colormap for whatever is value-coloured) — it never triggers fills, and it
+defaults ON (`color=False` for monochrome points); value **fills** come only
+from `fill=`; contour lines only from `contours=`. Both
+`color=` and `fill=` accept `True` or a string spec parsed by **registry
+match**: `"[<attr>_]<cmap>[_<min>_<max>]"`, where `<cmap>` is one of
+`viridis` / `magma` / `grays` / `inferno` and the two trailing floats are an
+explicit clamp range (negatives fine — `"inferno_-2700_-2500"`); a string with
+no colormap token stays an attribute name (`value_layer(attr=...)` /
+`iso_lines(attr=...)` back-compat), and `"porosity_inferno_0_0.3"` combines
+all three. Values outside an explicit range **clamp to the ramp ends**, the
+parsed colormap initializes the panel selector (`map.colormap`), and a
+malformed spec raises `ValueError`. So `view2d([pts, geom], color=True)` shows
+exactly coloured points + geometry lines — no surprise trimesh fill. A
+value-bearing item passed bare (e.g. a petekio regular `Surface`:
+`value_layer()` + a 2-D `.geometry`, no top-level geometry/trimesh ducks)
+renders its STRUCTURE — the geometry lattice lines (or, geometry-less, its
+primary value layer's triangle edges); values still colour nothing without
+`fill=`.
+
+The map **legend renders one entry per visible layer** — a small type icon
+(dot cluster = points, lattice = grid lines, filled ramp swatch = fill/raster,
+squiggle = contours, marker = wells) + the layer's display name, duck-typed
+from the source object's `name` (e.g. a petekIO dataset name like
+`"Top Agat"`; fallback: the layer kind), with the colormap ramp + the clamped
+range wherever the layer is value-coloured. Pan (drag), zoom (wheel); the
+hover readout shows the layer value + cell
 `i,j`, or — over a well marker — the well id + its mean/per-horizon surface-tie
 residuals. A well with ties also wears a small **tie-quality glyph** (3 pips filled
 by the mean-|residual| tier: ≤2 m good, ≤5 m fair, else poor; text tokens, never a
@@ -135,6 +189,33 @@ volume-tab outcome is exposed for tests as `window.__PETEK_VOLUME_STATUS`
 (`{state: "ok"|"empty"|"stalled"|"error", …}`). A **Grid** panel group shows the
 cell dims (i×j×k) and mean cell size on every tab.
 
+### 3D (three.js — the `view3d` scene)
+The generic 3-D companion to the `view2d` QA path: `petektools.view3d([...])`
+accepts the SAME duck-typed items (points, geometries, trimeshes,
+`value_layer()` surfaces, `iso_lines()` contours, outlines) plus wells
+(`trajectory()` of `[x, y, z]` rows, z **elevation** — negative down, the
+family convention) and renders them in **one Three.js scene** (payload
+`scene3d`; the "3D" tab appears only when present). `color=` / `fill=` /
+`contours=` keep their exact view2d semantics and registry-match spec grammar:
+points render as a **single-draw-call colour-coded cloud** (compact base64 f32
+blocks on the wire, decoded on the volume tab's kernel; smooth at the 200k
+cap), surfaces/trimeshes render **value-coloured only under `fill=`** (neutral
+shading + a wireframe toggle otherwise — a value-bearing item passed bare, the
+petekio regular-`Surface` duck, renders as a neutral elevation mesh from its
+primary value layer; triangles touching a z-less node are
+holes, never guessed), geometry lattices and outline rings draw flat at the
+scene's reference elevation, contour polylines draw at their level, and wells
+draw identity-coloured with a screen-sized wellhead marker. The panel carries
+the colormap selector and the volume tab's **z-exaggeration** control (slider +
+"fit z ×N", display-only scale with a `z ×N` badge and true depths in the
+readout); the legend is the Map tab's per-layer machinery (type icons +
+duck-typed names like "Top Agat · z", ramp + clamped range on value-coloured
+layers). The volume tab's render discipline carries over: past the primitive
+budget the scene **auto-degrades** to a 1-in-stride decimated preview with a
+loud banner + `1:stride` badge, a malformed bundle surfaces a banner instead of
+a blank canvas, and the build outcome is exposed for tests as
+`window.__PETEK_SCENE3D_STATUS`.
+
 ### Wells (canvas 2-D)
 Multi-well **log correlation** (the `wells_logs` bundle, schema v4). N wells
 side-by-side on a **shared inverted depth axis** (depth down); each well carries a
@@ -182,8 +263,9 @@ the renderer is horizontal capability.
 ## Design system (dataviz method)
 
 - **Two colour jobs, never conflated.** Continuous **fields** use a
-  perceptually-uniform scientific colormap (viridis default — magma / grays
-  optional); **never** rainbow. **Categorical identity** (wells, horizons,
+  perceptually-uniform scientific colormap (viridis default — magma / grays /
+  inferno optional, and a payload may pin the initial choice via
+  `map.colormap`); **never** rainbow. **Categorical identity** (wells, horizons,
   contacts, zones) uses the fixed token slots (`--c1..--c8`), assigned **by
   entity** and never recoloured when a toggle changes the visible count or the
   theme flips — an entity keeps its slot across all three tabs and across sessions
@@ -199,8 +281,9 @@ the renderer is horizontal capability.
 
 `viewer.js` is **one shared-closure IIFE**, maintained as ordered fragments
 under `assets/viewer/` (`NN-name.js` — `00-app` core/state/palette, `10-chrome`
-lanes+tabs+shared UI, `20-map`, `30-section`, `40-volume`, `50-wells`,
-`60-charts`, `70-overlays` legends/readout/section-requests, `80-panel-boot`).
+lanes+tabs+shared UI, `20-map`, `30-section`, `40-volume`, `45-scene3d`,
+`50-wells`, `60-charts`, `70-overlays` legends/readout/section-requests,
+`80-panel-boot`).
 The parts are *not* standalone scripts or ES modules — the zero-external-fetch
 constraint rules out runtime imports — so the packaging layer
 (`viewer/_bundle.py`) concatenates them byte-for-byte in numeric filename order

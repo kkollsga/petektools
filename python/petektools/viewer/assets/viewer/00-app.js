@@ -21,13 +21,19 @@
   // ---- boot ----------------------------------------------------------------
   function boot(payload) {
     App.payload = payload;
+    // Resolve the 2-D map's binary blocks (SCHEMA.md) into typed arrays — off the
+    // main thread when a Worker is available, else synchronously. A JSON-shaped
+    // (blockless) map is a no-op; the renderer reads either shape.
+    decodeMap2d(payload);
     registerIdentities();
     initState();
     wireChrome();
     // A pure-analytics payload (charts only, no geometry) opens on the Charts tab;
-    // a logs-only payload (petekio's well.view() standalone path) opens on Wells.
+    // a logs-only payload (petekio's well.view() standalone path) opens on Wells;
+    // a view3d payload (scene3d, no map) opens straight on the 3D tab.
     if (!payload.map && !payload.volume && !(payload.sections && payload.sections.length)) {
-      if (payload.wells_logs && payload.wells_logs.wells && payload.wells_logs.wells.length) App.tab = "wells";
+      if (payload.scene3d) App.tab = "scene3d";
+      else if (payload.wells_logs && payload.wells_logs.wells && payload.wells_logs.wells.length) App.tab = "wells";
       else if (payload.charts && payload.charts.length) App.tab = "charts";
     }
     selectTab(App.tab);
@@ -75,6 +81,8 @@
     var p = App.payload;
     // Order = payload order → stable across sessions of the same bundle.
     (p.wells || []).forEach(function (w) { registerId("well:" + w.id); });
+    // 3-D scene wells (view3d payloads) take the same well: identity slots.
+    ((p.scene3d && p.scene3d.wells) || []).forEach(function (w) { registerId("well:" + w.id); });
     (p.map && p.map.horizons || []).forEach(function (h) { registerId("hz:" + h.name); });
     (p.map && p.map.contacts || []).forEach(function (c) { registerId("ct:" + c.kind); });
     (p.volume && p.volume.zone_names || []).forEach(function (z) { registerId("zone:" + z); });
@@ -123,13 +131,17 @@
   function token(name) { return cssvar(name); }
 
   // ---- perceptually-uniform colormaps (continuous fields) ------------------
-  // Anchor stops (sRGB 0..1) — viridis/magma sampled at 0,.25,.5,.75,1; linear
-  // interpolation between is smooth enough for a raster/mesh ramp.
+  // Anchor stops (sRGB 0..1) — each map sampled at 0,.25,.5,.75,1; linear
+  // interpolation between is smooth enough for a raster/mesh ramp. The name
+  // set is the registry the Python color=/fill= spec grammar matches against
+  // (petektools.viewer._view2d._COLORMAPS) — keep the two in sync.
   var COLORMAPS = {
     viridis: [[68, 1, 84], [59, 82, 139], [33, 145, 140], [94, 201, 98], [253, 231, 37]],
     magma: [[0, 0, 4], [81, 18, 124], [183, 55, 121], [252, 137, 97], [252, 253, 191]],
     grays: [[30, 30, 30], [90, 90, 90], [140, 140, 140], [195, 195, 195], [245, 245, 245]],
+    inferno: [[0, 0, 4], [87, 16, 110], [188, 55, 84], [249, 142, 9], [252, 255, 164]],
   };
+  var COLORMAP_NAMES = ["viridis", "magma", "grays", "inferno"];
   function rampColor(name, t) {
     if (!isFinite(t)) return null;
     t = t < 0 ? 0 : t > 1 ? 1 : t;
@@ -197,7 +209,11 @@
     // to the first property map only when there are no horizon layers.
     S.mapLayerIdx = 0;
     if (S.mapLayerIdx >= S.mapLayers.length) S.mapLayerIdx = Math.max(0, S.mapLayers.length - 1);
-    S.colormap = "viridis";
+    // The payload may pin the initial colormap (a view2d/view3d color=/fill=
+    // "<cmap>" spec travels as map.colormap / scene3d.colormap); the panel
+    // selector can still change it.
+    var pinned = m.colormap || (p.scene3d && p.scene3d.colormap);
+    S.colormap = pinned && COLORMAPS[pinned] ? pinned : "viridis";
     S.showOutline = true;
     S.clipRaster = true; // clip the areal raster to the outline polygon (QC toggle)
     S.showGridLines = true;
@@ -208,6 +224,10 @@
     S.mapFillIdx = 0;
     S.showFills = true;
     S.showContours = true;
+    // Stride-ladder LOD (view2d lod=): false = full-resolution rings. Flipped on
+    // zoom-settle by the map renderer when a data cell shrinks below a few px and
+    // the payload carries coarse rings; a payload without LOD keeps it false.
+    S.lodActive = false;
     S.contactVis = (m.contacts || []).map(function () { return true; });
     S.wellVis = (p.wells || []).map(function () { return true; });
 
@@ -221,6 +241,18 @@
     // it; it only appears when the active section carries zone bands (graceful
     // fallback — a payload without zone_ids stays on the property colormap).
     S.sectionColorBy = "property";
+
+    // The 3-D scene tab (view3d payloads): z-exaggeration seed (the payload's
+    // z_exaggeration, the volume tab's 5x default otherwise) + per-kind layer
+    // visibility + the neutral-mesh wireframe option. The "3D" tab button only
+    // shows when the payload carries a scene3d bundle (older payloads see no
+    // new chrome).
+    var s3 = p.scene3d || {};
+    S.s3dExag = s3.z_exaggeration || 5;
+    S.s3dShow = { points: true, meshes: true, lattice: true, contours: true, wells: true, outlines: true };
+    S.s3dWireframe = false;
+    var tab3d = document.querySelector('.tab[data-tab="scene3d"]');
+    if (tab3d) tab3d.hidden = !p.scene3d;
 
     var v = p.volume || {};
     S.dims = deriveDims();

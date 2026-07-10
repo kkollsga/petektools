@@ -35,6 +35,7 @@ otherwise beautifies the raw internal `name`: a scoped `"A::B"` name reads as
 | `summary` | object \| null | a free-form `key → value` panel (numbers formatted) |
 | `map` | MapBundle \| null | the **Map** tab (areal raster) |
 | `volume` | VolumeBundle \| null | the **Volume** tab (3-D mesh) |
+| `scene3d` | Scene3dBundle \| null | **additive:** the **3D** tab (the `view3d` scene; the tab button only appears when present) |
 | `sections` | list[SectionBundle] | the **Intersection** tab (pre-computed sections) |
 | `section_labels` | list[str] | one display label per `sections` entry |
 | `wells` | list[WellTrack] | map markers + click-to-section targets |
@@ -54,11 +55,15 @@ state. `sections` may be empty (live mode adds them via `/section`).
 | `points` | list[Point] | optional 2-D QA overlay; `Point` = `[x, y, z?]` |
 | `fills` | list[TriFill] | **additive:** selectable value-coloured trimesh fills, drawn UNDER `grid_lines`/`outline`/`points` |
 | `contours` | list[ContourSet] | **additive:** iso-lines; all levels stroke as one batched path, stronger than grid lines |
-| `point_color` | PointColor \| null | **additive:** `{by: "z", range: [min, max]}` — points with a finite third component colour through the active colormap (non-finite z falls back to the accent); when no fill/ScalarLayer owns the legend, the ramp legend shows this range |
+| `grid_lines_lod` | list[Line] \| absent | **additive (LOD):** the coarse (strided) `grid_lines` ring — present only when a mesh producer supplied one; see **Stride-ladder LOD** |
+| `point_color` | PointColor \| null | **additive:** `{by: "z", range: [min, max]}` — points with a finite third component colour through the active colormap (non-finite z falls back to the accent). `range` is the producer's data range or the user's explicit `color=` clamp range — values outside it clamp to the ramp ends; the legend's points entry shows this range |
+| `colormap` | str \| null | **additive:** the initial colormap for this payload (`viridis`\|`magma`\|`grays`\|`inferno`) — the parsed `<cmap>` of a `view2d` `color=`/`fill=` spec (`color`'s wins over `fill`'s). The panel selector can still change it; an unknown/absent name keeps the viridis default |
+| `layers` | list[LayerName] | **additive:** per-emitted-layer legend names, in emission order — `{kind: "points"\|"lines"\|"contours", name: str \| null}` with `name` duck-typed from the producer object (e.g. a dataset name like `"Top Agat"`); the legend falls back to the layer kind when `null`. Fills self-describe via their own `display_name` |
 | `horizons` | list[ScalarLayer] | selectable depth/field layers |
 | `zone_averages` | list[ScalarLayer] | selectable property layers |
 | `k_slices` | list[ScalarLayer] | optional per-k property slices |
 | `contacts` | list[Contact] | translucent subcrop-mask overlays |
+| `blocks` | dict[digest → Block] | **additive:** the content-addressed typed-block table when `points`/fill arrays/`grid_lines`/`contours[i].lines` ship as binary blocks (see **Binary blocks** below); absent for a plain-JSON map |
 
 **Frame:** `{origin_x, origin_y, spacing_x, spacing_y, ncol, nrow}`. Node `(i, j)`
 sits at `(origin_x + i·spacing_x, origin_y + j·spacing_y)`.
@@ -68,7 +73,8 @@ display_name?: str}`. `values` are **row-major** (`values[j·ncol + i]`);
 `null`/non-finite cells render transparent. Continuous fields use a
 perceptually-uniform colormap.
 
-**TriFill (additive; the `view2d` `color=` output):** `{name: str, nodes:
+**TriFill (additive; the `view2d` `fill=` output — fills are explicit, never a
+`color=` side effect):** `{name: str, display_name?: str | null, nodes:
 [[x, y], …], triangles: [[a, b, c], …], values: float[len(nodes)], range:
 [min, max]}`. Per-**node** values on a world-coordinate triangulation; each
 triangle flat-fills with the continuous-colormap colour of the **mean of its
@@ -77,11 +83,26 @@ value is **skipped** (renders as a hole — never colour-guessed). The renderer
 quantizes to ~64 colormap bins and fills one batched path per bin, so triangle
 count is unbounded in practice. `range` here is the **two-float `[min, max]`
 list** the producer seam emits (an exception to the `{min, max}` object
-convention above). One fill is active at a time (a panel selector when several
-are present); a "Fill" toggle controls visibility, and the active fill drives a
-legend entry (name + ramp + min/max). Both `fills` and `contours` are `[]` when
-absent; a payload without them renders exactly as before (no `schema_version`
-bump — additive fields are non-breaking).
+convention above) — the user's explicit `fill=` clamp range when one was
+specified (out-of-range values clamp to the ramp ends). `display_name` is the
+duck-typed source-object name (e.g. `"Top Agat"`; `name` stays the attribute
+identity, e.g. `"z"`). One fill is active at a time (a panel selector when
+several are present); a "Fill" toggle controls visibility, and the active fill
+drives a legend entry (type icon + display name + ramp + min/max). Both
+`fills` and `contours` are `[]` when absent; a payload without them renders
+exactly as before (no `schema_version` bump — additive fields are
+non-breaking). A fill may additionally carry a coarse **`lod`** ring
+(`{stride, nodes, triangles, values, range}` — see **Stride-ladder LOD**).
+
+**Per-layer legend entries (additive).** On the Map tab the legend renders one
+entry per **visible** layer: a small canvas **type icon** (dot cluster =
+points, lattice = geometry/grid lines, filled ramp swatch = fill/raster,
+squiggle = contours, marker-with-leader = wells) + the display name (`layers`
+names / fill `display_name` / well ids; fallback: the layer kind), with the
+colormap ramp + the clamped `[min, max]` range wherever the layer is
+value-coloured (the active fill, `point_color`-coded points, the raster
+`ScalarLayer`). Icons draw from the live theme tokens and active colormap, so
+a theme flip or colormap change restyles them on the next repaint.
 
 **ContourSet (additive; the `view2d` `contours=` output):** `{level: float,
 major: bool, lines: [[[x, y], …], …]}` — the world-coordinate polylines of one
@@ -90,7 +111,69 @@ text token, slightly darker/stronger than the grid lines; `major` (index)
 levels stroke as a second batched path, bolder (≈2.25 px at α 0.85). In
 interval mode the payload builder flags majors at the round step nearest 4–5×
 the interval (25 → 100, 20 → 100, 10 → 50); explicit level lists carry no
-majors. No labels (yet); a "Contours" toggle controls visibility of both.
+majors. No labels (yet); a "Contours" toggle controls visibility of both. A set
+may additionally carry a coarse **`lines_lod`** ring (simplified polylines — see
+**Stride-ladder LOD**).
+
+**Stride-ladder LOD (additive; the `view2d` `lod=` output).** A payload may carry
+ONE coarse display ring beside each full-resolution field, so the viewer can drop
+to it when a data cell shrinks below a few screen pixels — **geometry truth is
+never decimated; the coarse ring is display-only additive data**, and colours stay
+stable across rings (the coarse fill ring keeps the FULL-resolution `range`). The
+coarse rings, all optional and each block-encoded exactly like its full ring:
+
+- `fills[i].lod` — `{stride: int, nodes, triangles, values, range}`, the same
+  shape as its `TriFill` (a `value_layer(stride=…)`-decimated mesh; `range` is the
+  full-resolution range).
+- `map.grid_lines_lod` — a coarse `grid_lines` set (a `wireframe_edges(stride=…)`
+  ring), the union across all mesh items that supplied one.
+- `contours[i].lines_lod` — a coarse `lines` set (an `iso_lines(…, simplify=…)`
+  Douglas–Peucker ring).
+
+`lod=True` (the default) asks producers for a `stride=4` ring and derives the
+contour `simplify` tolerance from the data extent (`extent / 512`); `lod=(stride,)`
+/ `lod=(stride, simplify)` override; `lod=False` emits no rings (a payload
+byte-identical to the pre-LOD shape). A producer that does not accept the striding
+kwarg is feature-detected and simply contributes no coarse ring. **Renderer:** the
+map picks the ring on **zoom-settle** (a ~150 ms debounce after the last wheel
+event, never per frame — no flicker), switching when a full-resolution cell falls
+below ~4 px on screen; fills, mesh grid lines and contours all switch together
+(points keep their own baked path). A small "LOD" chip shows while the coarse ring
+is active.
+
+**Binary blocks (additive; the `view2d` `encoding="blocks"` output — the
+default).** The map's bulk arrays optionally travel as **content-addressed typed
+binary blocks** — the same wire format the v3 `VolumeBundle` uses (little-endian,
+tightly-packed `f32`/`u32`, `base64` in `data`, NaN = the canonical `0x7FC00000`)
+— instead of JSON floats. A single 78k-triangle fill is ~5–6 MB of JSON parsed on
+the main thread; as blocks it is ~3× smaller on the wire and decodes off the main
+thread into typed arrays. It is fully additive: a JSON-shaped (blockless) map
+renders identically, and a payload whose bulk arrays total under ~64 KB of floats
+stays JSON regardless (the block envelope is not worth it).
+
+- `blocks` | dict[digest → Block] — the per-payload block table (present only
+  when at least one field is block-encoded). Each **Block** is
+  `{dtype: "f32"|"u32", shape: [..], data: base64}`, keyed by the **sha-256 hex
+  of its raw little-endian bytes**. Identical arrays (e.g. two fills over one
+  mesh) hash to one digest and so ship **once**; the client caches decoded blocks
+  by digest, deduping across views in a session.
+- A field that would be a JSON array becomes a **marker** referencing the table:
+  - `{"__block__": "<digest>"}` — a single block. Used for `points`
+    (`f32 [n, 3]`, `[x, y, z]`, NaN z allowed), each fill's `nodes`
+    (`f32 [n, 2]`), `triangles` (`u32 [n, 3]`), and `values` (`f32 [n]`, JSON
+    `null` → NaN).
+  - `{"__csr__": {"coords": "<digest>", "offsets": "<digest>"}}` — a
+    **CSR-encoded set of variable-length polylines**: `coords` is an
+    `f32 [total_points, 2]` block of every point concatenated, `offsets` a
+    `u32 [n_lines + 1]` block where line `k` is `coords[offsets[k]:offsets[k+1]]`.
+    Used for `grid_lines` and each `contours[i].lines`.
+  - The additive LOD rings encode identically — `fills[i].lod` `nodes`/`triangles`/
+    `values` as `__block__`, `grid_lines_lod` and each `contours[i].lines_lod` as
+    `__csr__` — all sharing the one `blocks` table (a coarse ring identical to any
+    other block ships once).
+
+The viewer's decode kernel (`assets/decode.js`) reads both shapes; the renderer's
+accessors index the typed arrays or the plain nested arrays transparently.
 
 **Contact:** `{kind: str, depth_m: float, crossing: bool[ncol·nrow],
 display_name?: str}` — `crossing` marks the columns the contact plane cuts
@@ -229,6 +312,70 @@ arrays (`positions` float[N·8·3], `indices` int[N·36] into `cell·8 + corner`
 ordering `i` fastest then `j` then `k`; the viewer applies threshold / zone /
 i-j-k clip over these arrays.
 
+## Scene3dBundle — the generic 3-D scene (3D tab; the `view3d` output)
+
+One Three.js scene with the `view2d` layer set in 3-D. The vertical axis is
+**elevation** (family convention: z is negative down — a horizon at 2600 m
+depth carries `z == -2600`); the renderer maps it onto three's y-up frame so
+depth reads down-screen. Additive: a payload without `scene3d` renders exactly
+as before (no `schema_version` bump), and the "3D" tab button stays hidden.
+`color=` / `fill=` semantics and the registry-match spec grammar are exactly
+view2d's; the same per-layer legend machinery (type icons + duck-typed display
+names + ramp/clamped range) drives the 3D tab's legend.
+
+| field | type | rendered as |
+|---|---|---|
+| `schema_version` | int | `1` |
+| `points` | list[PointCloud3D] | one `THREE.Points` per cloud, per-vertex ramp colours |
+| `meshes` | list[Mesh3D] | surface meshes — value-coloured (`fill=`) or neutral + a wireframe toggle |
+| `lattices` | list[Lattice3D] | geometry grid lines (`LineSegments`), flat at `ref_z` |
+| `contours` | list[ContourSet] | the SAME shape as `map.contours`; each polyline renders at `z = level` (major levels stroke stronger) |
+| `wells` | list[Well3D] | identity-coloured bore paths + a screen-sized wellhead marker |
+| `outlines` | list[Ring] | edge rings (`[[x, y], …]`), flat at `ref_z` |
+| `layers` | list[LayerName] | per-layer legend entries, emission order — `{kind: "points"\|"lines"\|"contours"\|"wells", name: str \| null}` (duck-typed producer names; fallback: the kind). Value meshes self-describe via `display_name`, like 2-D fills |
+| `point_color` | PointColor \| null | as `map.point_color`: `{by: "z", range: [min, max]}` — the explicit `color=` clamp range or the data z range; out-of-range values clamp to the ramp ends |
+| `colormap` | str \| null | the payload-pinned initial colormap (the parsed `color=`/`fill=` `<cmap>`) |
+| `z_exaggeration` | float | the z-exaggeration slider seed (display-only group scale, `z ×N` badge, true depths in the readout — the volume tab's control; default 5) |
+| `ref_z` | float | the flat-element elevation: midpoint of the scene's finite z extent (0 for an all-flat scene). Lattices and outline rings carry no z of their own and render at this plane |
+
+**PointCloud3D:** `{name: str | null, n: int, xyz: Block}` — `xyz` is ONE
+compact v3-style binary block (`{dtype: "f32", shape: [n, 3], data:
+"<base64>"}`, little-endian, NaN = `0x7FC00000`) decoded on the same kernel as
+the volume blocks / well-log lanes. A NaN z renders at `ref_z` in the neutral
+colour (never colour-guessed). The Python builder decimates each cloud past
+`point_limit` (default 200k) by striding, recorded as `summary.point_stride`.
+
+**Mesh3D:** `{name: str, display_name: str | null, nodes: [[x, y, z | null],
+…], triangles: [[a, b, c], …], values: float[len(nodes)] | null, range:
+[min, max] | null}`. `values`+`range` present → per-vertex colormap colouring
+(the user's `fill=` clamp range when specified; a `null` value renders the
+neutral colour); absent → the neutral material with a panel wireframe toggle —
+also the shape a value-bearing item passed BARE (no `fill=`) emits: its
+primary value layer supplies the node elevations while `values`/`range` stay
+null (structure, never a bare-colour side effect).
+A triangle touching a `null`-z node is **skipped** (a hole, never guessed).
+`name` is the attribute identity (e.g. `"z"`); `display_name` the duck-typed
+source-object name (e.g. `"Top Agat"`).
+
+**Lattice3D:** `{name: str | null, lines: [[[x, y], …], …]}` — the 2-D
+geometry lattice polylines (clipped to `edge` exactly as on the Map tab).
+
+**Well3D:** `{id: str, trajectory: [[x, y, z | null], …]}` — z is ELEVATION
+(negative down; note the 2-D `WellTrack.trajectory` carries positive-down
+TVD). `id` takes the same `well:` categorical identity slot as top-level
+wells. A `null`-z sample is dropped from the drawn path.
+
+**Render discipline (the volume tab's idioms).** The scene build honours the
+same primitive budget (`window.PETEK_TRI_BUDGET`, default 5M, points +
+triangles): past it the build **auto-degrades** to a 1-in-stride decimated
+preview with a loud "Decimated preview" banner and a `1:stride` badge — never
+a refusal, crash, or silent blank. A malformed bundle surfaces a banner + an
+`error` status instead of a blank canvas. The build outcome is exposed for
+tests as `window.__PETEK_SCENE3D_STATUS` (`{state: "ok"|"error", points,
+triangles, meshes, wells, buildMs}`). z-exaggeration is a display-only group
+scale; the theme flip re-reads the line/background tokens while identities
+keep their slots.
+
 ## WellTrack
 
 `{id: str, x: float, y: float, trajectory: [[x, y, tvd], …], display_name?: str,
@@ -361,7 +508,8 @@ not the viewer).
 ## Colour discipline (rendered, not declared)
 
 Two colour jobs, never conflated: **continuous fields** (rasters, section fills,
-the volume) use a perceptually-uniform scientific colormap (viridis default);
+the volume) use a perceptually-uniform scientific colormap (viridis default;
+magma / grays / inferno selectable, or pinned by the payload's `map.colormap`);
 **categorical identity** (wells, horizons, contacts, zones, scatter groups,
 distribution series) uses the fixed token slots, assigned by entity and stable
 across tabs/theme. The payload supplies names, units and ranges; the renderer owns

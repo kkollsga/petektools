@@ -106,7 +106,7 @@ from .asset import (
     write_petrel_tops,
     write_wellpath,
 )
-from .viewer import view2d, view2d_payload
+from .viewer import view2d, view2d_payload, view3d, view3d_payload
 
 __all__ = [
     "Clamped",
@@ -173,6 +173,8 @@ __all__ = [
     "variance",
     "view2d",
     "view2d_payload",
+    "view3d",
+    "view3d_payload",
     "weighted_mean",
     "weighted_percentile",
     "weighted_std",

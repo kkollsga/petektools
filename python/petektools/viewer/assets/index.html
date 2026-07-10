@@ -75,8 +75,8 @@
   #stage { flex: 1 1 auto; display: grid; grid-template-columns: 1fr 268px; min-height: 0; }
   #view { position: relative; min-width: 0; background: var(--surface-1); }
   .pane { position: absolute; inset: 0; }
-  .pane canvas, #volume-host { width: 100%; height: 100%; display: block; }
-  #volume-host { position: absolute; inset: 0; }
+  .pane canvas, #volume-host, #scene3d-host { width: 100%; height: 100%; display: block; }
+  #volume-host, #scene3d-host { position: absolute; inset: 0; }
   /* --- control panel --- */
   #panel { border-left: 1px solid var(--border); background: var(--surface-1); overflow-y: auto; }
   .panel-body { padding: 14px 14px 40px; }
@@ -121,7 +121,9 @@
     border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px;
     max-width: 260px; backdrop-filter: blur(3px);
   }
-  .legend h3 { margin: 0 0 6px; font-size: 11px; color: var(--text-secondary); font-weight: 600; }
+  .legend h3 { margin: 0 0 6px; font-size: 11px; color: var(--text-secondary); font-weight: 600; display: flex; align-items: center; gap: 6px; }
+  .legend h3 + .ramp, .legend .scale + h3 { margin-top: 6px; }
+  .legend .type-icon { flex: none; border-radius: 2px; }
   .legend .ramp { height: 10px; border-radius: 3px; margin: 4px 0; }
   .legend .scale { display: flex; justify-content: space-between; font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; }
   .legend .keys { margin-top: 6px; display: grid; gap: 3px; }
@@ -152,6 +154,7 @@
       <button class="tab" data-tab="map" role="tab" aria-selected="true">Map</button>
       <button class="tab" data-tab="section" role="tab" aria-selected="false">Intersection</button>
       <button class="tab" data-tab="volume" role="tab" aria-selected="false">Volume</button>
+      <button class="tab" data-tab="scene3d" role="tab" aria-selected="false" hidden>3D</button>
       <button class="tab" data-tab="wells" role="tab" aria-selected="false">Wells</button>
       <button class="tab" data-tab="charts" role="tab" aria-selected="false">Charts</button>
     </nav>
@@ -165,6 +168,7 @@
       <div class="pane" data-pane="map"><canvas id="map-canvas"></canvas></div>
       <div class="pane" data-pane="section" hidden><canvas id="section-canvas"></canvas></div>
       <div class="pane" data-pane="volume" hidden><div id="volume-host"></div></div>
+      <div class="pane" data-pane="scene3d" hidden><div id="scene3d-host"></div></div>
       <div class="pane" data-pane="wells" hidden><canvas id="wells-canvas"></canvas></div>
       <div class="pane" data-pane="charts" hidden><canvas id="charts-canvas"></canvas></div>
       <div id="readout" class="readout" hidden></div>
