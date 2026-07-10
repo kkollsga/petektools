@@ -205,6 +205,83 @@ def test_render_auto_degrades_over_budget(tmp_path):
     assert not r.get("consoleErrors"), r["consoleErrors"]
 
 
+# --- 200k-point map overlay: batched/baked/rAF-coalesced point path ------------
+# The worst case that made view2d unusable: a 200k-point cloud with point_color
+# set (per-point colormap lookup) plus an inferred-geometry grid-line overlay.
+# The old per-point beginPath/arc/fill path cost ~145 ms/frame and re-rendered
+# synchronously per wheel/drag DOM event (~139 ms/event → a 90-event drag took
+# 12.5 s). Budgets: the full map render (includes the offscreen point bake) and
+# the median rAF-coalesced drag repaint must land well under a 60 Hz frame; the
+# drag must coalesce to at most one repaint per animation frame; the grid-bucket
+# hover sweep must stay cheap (the old O(n) scan cost ~2.6 ms/event).
+POINTS_N = 200_000
+POINTS_FRAME_CAP_MS = 16.0       # full map render incl. point bake (was ~145 ms)
+POINTS_DRAG_CAP_MS = 8.0         # median coalesced drag repaint (was ~139 ms/event)
+POINTS_HOVER_CAP_MS = 5.0        # avg non-drag hover event (was ~2.6 ms of scan alone)
+
+
+def _build_points_view(tmp_path: Path, npts: int = POINTS_N) -> Path:
+    """A save_view HTML with a `npts` colored point cloud + a grid-line geometry
+    overlay (and a tiny v3 volume so the harness's volume leg still passes)."""
+    import random
+
+    rng = random.Random(7)
+    ncol = nrow = 241
+    sp = 25.0
+    w = (ncol - 1) * sp
+    pts = []
+    for _ in range(npts):
+        x, y = rng.uniform(0, w), rng.uniform(0, w)
+        z = -2600.0 + 60.0 * (x / w) - 40.0 * (y / w) ** 2 + rng.uniform(-5, 5)
+        if rng.random() < 0.01:
+            z = None  # non-finite z → the accent-fallback bin
+        pts.append([round(x, 2), round(y, 2), None if z is None else round(z, 2)])
+    zs = [p[2] for p in pts if p[2] is not None]
+    grid_lines = []
+    for k in range(0, ncol, 3):  # inferred-geometry overlay: ~160 lattice lines
+        c = k * sp
+        grid_lines.append([[0.0, c], [w, c]])
+        grid_lines.append([[c, 0.0], [c, w]])
+    env, _bin = _v3.build_v3_volume(50, 50, 4)
+    payload = {
+        "schema_version": 3, "kind": "points-perf", "property": "z", "properties": ["z"],
+        "summary": {"cells": 50 * 50 * 4}, "volume": env,
+        "map": {"schema_version": 1,
+                "frame": {"origin_x": 0, "origin_y": 0, "spacing_x": sp, "spacing_y": sp,
+                          "ncol": ncol, "nrow": nrow},
+                "outline": [[[0, 0], [w, 0], [w, w], [0, w], [0, 0]]],
+                "horizons": [], "zone_averages": [], "k_slices": [], "contacts": [],
+                "grid_lines": grid_lines, "points": pts, "wells": [],
+                "point_color": {"by": "z", "range": [min(zs), max(zs)]}},
+        "sections": [], "section_labels": [], "wells": [], "charts": [],
+    }
+    out = tmp_path / "points_200k.html"
+    save_view(payload, out)
+    return out
+
+
+@pytest.mark.skipif(not _HAVE_PW, reason="playwright + chromium not available (browser leg)")
+def test_render_200k_points_pan_hover_budget(tmp_path):
+    view = _build_points_view(tmp_path)
+    r = _run_render(view, f"--frame-cap-ms={POINTS_FRAME_CAP_MS}", "--drag-events=90",
+                    f"--drag-frame-cap-ms={POINTS_DRAG_CAP_MS}", timeout=240)
+    print(f"\n[points] 200k: map render {r.get('mapRenderMs')} ms | "
+          f"drag {r.get('dragFrames')} frames / {r.get('dragEvents')} events, "
+          f"median {r.get('dragFrameMsMedian')} ms (max {r.get('dragFrameMsMax')}) | "
+          f"hover {r.get('hoverAvgMs')} ms/event | heap {r.get('usedJSHeapMB')} MB")
+    assert r["rc"] == 0, r.get("failure") or r.get("stderr")
+    assert not r.get("consoleErrors"), r["consoleErrors"]
+    # full map render (incl. the offscreen point bake) inside a 60 Hz frame
+    assert r["mapRenderMs"] < POINTS_FRAME_CAP_MS
+    # pan/zoom: at most one repaint per animation frame (~3 events dispatched/frame)
+    assert r["dragFrames"] <= (r["dragEvents"] // 2), r
+    assert r["dragFrameMsMedian"] < POINTS_DRAG_CAP_MS, r
+    # hover: grid-bucketed hit-test, never an all-points scan — and it still HITS
+    # (the readout showed a point under the sweep's final position)
+    assert r["hoverAvgMs"] < POINTS_HOVER_CAP_MS, r
+    assert r["hoverReadout"] is True, r
+
+
 # --- the Wells correlation tab + v4 obligations (Playwright) ------------------
 # Drives the correlation-view path render_bench can't (it is volume-centric): the
 # Wells tab at both hanging modes (TVD + flatten-on-pick, incl. a missing-pick /
