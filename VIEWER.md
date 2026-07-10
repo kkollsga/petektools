@@ -122,7 +122,7 @@ The map **legend renders one entry per visible layer** — a small type icon
 (dot cluster = points, lattice = grid lines, filled ramp swatch = fill/raster,
 squiggle = contours, marker = wells) + the layer's display name, duck-typed
 from the source object's `name` (e.g. a petekIO dataset name like
-`"Top Agat"`; fallback: the layer kind), with the colormap ramp + the clamped
+`"Top Dome"`; fallback: the layer kind), with the colormap ramp + the clamped
 range wherever the layer is value-coloured. Pan (drag), zoom (wheel); the
 hover readout shows the layer value + cell
 `i,j`, or — over a well marker — the well id + its mean/per-horizon surface-tie
@@ -209,7 +209,7 @@ draw identity-coloured with a screen-sized wellhead marker. The panel carries
 the colormap selector and the volume tab's **z-exaggeration** control (slider +
 "fit z ×N", display-only scale with a `z ×N` badge and true depths in the
 readout); the legend is the Map tab's per-layer machinery (type icons +
-duck-typed names like "Top Agat · z", ramp + clamped range on value-coloured
+duck-typed names like "Top Dome · z", ramp + clamped range on value-coloured
 layers). The volume tab's render discipline carries over: past the primitive
 budget the scene **auto-degrades** to a 1-in-stride decimated preview with a
 loud banner + `1:stride` badge, a malformed bundle surfaces a banner instead of

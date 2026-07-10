@@ -58,7 +58,7 @@ state. `sections` may be empty (live mode adds them via `/section`).
 | `grid_lines_lod` | list[Line] \| absent | **additive (LOD):** the coarse (strided) `grid_lines` ring — present only when a mesh producer supplied one; see **Stride-ladder LOD** |
 | `point_color` | PointColor \| null | **additive:** `{by: "z", range: [min, max]}` — points with a finite third component colour through the active colormap (non-finite z falls back to the accent). `range` is the producer's data range or the user's explicit `color=` clamp range — values outside it clamp to the ramp ends; the legend's points entry shows this range |
 | `colormap` | str \| null | **additive:** the initial colormap for this payload (`viridis`\|`magma`\|`grays`\|`inferno`) — the parsed `<cmap>` of a `view2d` `color=`/`fill=` spec (`color`'s wins over `fill`'s). The panel selector can still change it; an unknown/absent name keeps the viridis default |
-| `layers` | list[LayerName] | **additive:** per-emitted-layer legend names, in emission order — `{kind: "points"\|"lines"\|"contours", name: str \| null}` with `name` duck-typed from the producer object (e.g. a dataset name like `"Top Agat"`); the legend falls back to the layer kind when `null`. Fills self-describe via their own `display_name` |
+| `layers` | list[LayerName] | **additive:** per-emitted-layer legend names, in emission order — `{kind: "points"\|"lines"\|"contours", name: str \| null}` with `name` duck-typed from the producer object (e.g. a dataset name like `"Top Dome"`); the legend falls back to the layer kind when `null`. Fills self-describe via their own `display_name` |
 | `horizons` | list[ScalarLayer] | selectable depth/field layers |
 | `zone_averages` | list[ScalarLayer] | selectable property layers |
 | `k_slices` | list[ScalarLayer] | optional per-k property slices |
@@ -85,7 +85,7 @@ count is unbounded in practice. `range` here is the **two-float `[min, max]`
 list** the producer seam emits (an exception to the `{min, max}` object
 convention above) — the user's explicit `fill=` clamp range when one was
 specified (out-of-range values clamp to the ramp ends). `display_name` is the
-duck-typed source-object name (e.g. `"Top Agat"`; `name` stays the attribute
+duck-typed source-object name (e.g. `"Top Dome"`; `name` stays the attribute
 identity, e.g. `"z"`). One fill is active at a time (a panel selector when
 several are present); a "Fill" toggle controls visibility, and the active fill
 drives a legend entry (type icon + display name + ramp + min/max). Both
@@ -355,7 +355,7 @@ primary value layer supplies the node elevations while `values`/`range` stay
 null (structure, never a bare-colour side effect).
 A triangle touching a `null`-z node is **skipped** (a hole, never guessed).
 `name` is the attribute identity (e.g. `"z"`); `display_name` the duck-typed
-source-object name (e.g. `"Top Agat"`).
+source-object name (e.g. `"Top Dome"`).
 
 **Lattice3D:** `{name: str | null, lines: [[[x, y], …], …]}` — the 2-D
 geometry lattice polylines (clipped to `edge` exactly as on the Map tab).

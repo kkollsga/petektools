@@ -5,7 +5,7 @@
  *     outside the explicit range CLAMP to the ramp ends (a below-min blob
  *     paints exactly like the min blob, never like the max blob);
  *   - the legend shows one entry per visible layer with a TYPE ICON and the
- *     duck-typed display name (e.g. "Top Agat"), plus the ramp + the CLAMPED
+ *     duck-typed display name (e.g. "Top Dome"), plus the ramp + the CLAMPED
  *     user range for the value-coloured points layer;
  *   - the panel colormap selector initializes from map.colormap ("inferno");
  *   - a theme flip re-renders the same semantics with zero console errors.

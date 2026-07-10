@@ -201,7 +201,7 @@ def test_view2d_payload_keeps_pointsets_as_points_only():
                 return [1.0, 1.0, 2.0, 2.0]
             return None
 
-    p = viewer.view2d_payload([TopologyPoints()], title="Top Agat points")
+    p = viewer.view2d_payload([TopologyPoints()], title="Top Dome points")
 
     assert p["map"]["points"] == [
         [0.0, 0.0, 100.0],
@@ -232,7 +232,7 @@ def test_view2d_payload_clips_geometry_grid_to_edge():
         def rings(self):
             return [[[0.0, 0.0], [10.0, 0.0], [0.0, 10.0], [0.0, 0.0]]]
 
-    p = viewer.view2d_payload([Geom()], title="Top Agat QA")
+    p = viewer.view2d_payload([Geom()], title="Top Dome QA")
 
     assert p["summary"]["grid"] == "2 x 2"
     assert p["summary"]["grid_lines"] == 2
@@ -264,7 +264,7 @@ class _Mesh:
 
 
 def test_view2d_payload_renders_trimesh_edges_and_edge_outline():
-    p = viewer.view2d_payload([_Mesh()], title="Top Agat trimesh")
+    p = viewer.view2d_payload([_Mesh()], title="Top Dome trimesh")
 
     drawn = set()
     for line in p["map"]["grid_lines"]:
@@ -409,7 +409,7 @@ def test_spec_grammar_malformed_raises():
 
 def test_view2d_color_spec_drives_point_color_and_colormap():
     class Points:
-        name = "Top Agat"
+        name = "Top Dome"
 
         def xyz(self):
             return [[0.0, 0.0, -2600.0], [10.0, 0.0, -2900.0], [5.0, 5.0, -2400.0]]
@@ -433,7 +433,7 @@ def test_view2d_color_spec_drives_point_color_and_colormap():
 
 def test_view2d_layers_record_duck_typed_names():
     class NamedPoints:
-        name = "Top Agat"
+        name = "Top Dome"
 
         def xyz(self):
             return [[0.0, 0.0, -10.0], [10.0, 10.0, -20.0]]
@@ -452,7 +452,7 @@ def test_view2d_layers_record_duck_typed_names():
 
     p = viewer.view2d_payload([NamedPoints(), Geom()], color=True)
     assert p["map"]["layers"] == [
-        {"kind": "points", "name": "Top Agat"},
+        {"kind": "points", "name": "Top Dome"},
         {"kind": "lines", "name": None},
     ]
 
@@ -547,10 +547,10 @@ def test_view2d_fill_spec_overrides_range_and_sets_colormap():
 
 def test_view2d_fill_records_item_display_name():
     class NamedMesh(_ValueMesh):
-        name = "Top Agat"
+        name = "Top Dome"
 
     p = viewer.view2d_payload([NamedMesh()], fill=True)
-    assert p["map"]["fills"][0]["display_name"] == "Top Agat"
+    assert p["map"]["fills"][0]["display_name"] == "Top Dome"
 
 
 def test_view2d_contours_interval_and_levels_forms():
@@ -753,7 +753,7 @@ class _SurfaceDuck:
     a 2-D ``.geometry`` (GridGeometry duck), ``name``/``kind`` — and NO
     top-level ``node_xy``/``triangles``/``xyz``."""
 
-    name = "Top Agat"
+    name = "Top Dome"
     kind = "surface"
     geometry = _SurfaceGeom()
 
@@ -783,14 +783,14 @@ def test_view2d_bare_surface_renders_structure_lines():
     assert "value_attr" not in surf.seen          # value_layer never consulted
     assert p["map"]["grid_lines"]                 # .geometry lattice drawn
     assert p["summary"]["grid"] == "3 x 3"
-    assert {"kind": "lines", "name": "Top Agat"} in p["map"]["layers"]
+    assert {"kind": "lines", "name": "Top Dome"} in p["map"]["layers"]
 
 
 def test_view2d_bare_value_layer_only_item_draws_mesh_edges():
     # geometry-less value-bearing item: the primary layer's triangle edges
     # become the drawn structure (still no fill without fill=)
     class LayerOnly:
-        name = "Top Agat"
+        name = "Top Dome"
 
         def value_layer(self, attr=None):
             return _SurfaceDuck().value_layer(attr)
@@ -799,14 +799,14 @@ def test_view2d_bare_value_layer_only_item_draws_mesh_edges():
     assert p["map"]["fills"] == []
     assert sum(len(line) - 1 for line in p["map"]["grid_lines"]) == 5  # unique edges
     assert p["summary"]["triangles"] == 2
-    assert {"kind": "lines", "name": "Top Agat"} in p["map"]["layers"]
+    assert {"kind": "lines", "name": "Top Dome"} in p["map"]["layers"]
 
 
 def test_view2d_surface_with_fill_unchanged():
     surf = _SurfaceDuck()
     p = viewer.view2d_payload([surf], fill=True, contours=[-2610.0])
     assert len(p["map"]["fills"]) == 1
-    assert p["map"]["fills"][0]["display_name"] == "Top Agat"
+    assert p["map"]["fills"][0]["display_name"] == "Top Dome"
     assert surf.seen["value_attr"] is None
     assert p["summary"]["contour_levels"] == 1
 
@@ -836,14 +836,14 @@ def _decode_xyz(block: dict) -> tuple:
 
 
 class _Points3D:
-    name = "Top Agat"
+    name = "Top Dome"
 
     def xyz(self):
         return [[0.0, 0.0, -2600.0], [10.0, 0.0, -2900.0], [5.0, 5.0]]  # one z-less row
 
 
 class _Geom3D:
-    name = "Agat grid"
+    name = "Dome grid"
     xori = 0.0
     yori = 0.0
     xinc = 100.0
@@ -870,8 +870,8 @@ def test_view3d_payload_points_and_geometry_classification():
     # item classification parity: a point cloud + a geometry lattice, with the
     # SAME duck-typed legend names view2d records
     assert sc["layers"] == [
-        {"kind": "points", "name": "Top Agat"},
-        {"kind": "lines", "name": "Agat grid"},
+        {"kind": "points", "name": "Top Dome"},
+        {"kind": "lines", "name": "Dome grid"},
     ]
     assert len(sc["lattices"]) == 1 and sc["lattices"][0]["lines"]
     assert p["summary"]["grid"] == "3 x 3" and p["summary"]["points"] == 3
@@ -880,7 +880,7 @@ def test_view3d_payload_points_and_geometry_classification():
     assert sc["point_color"] == {"by": "z", "range": [-2700.0, -2500.0]}
     # the point cloud travels as ONE compact f32 [n, 3] block; a z-less row is NaN
     cloud = sc["points"][0]
-    assert cloud["name"] == "Top Agat" and cloud["n"] == 3
+    assert cloud["name"] == "Top Dome" and cloud["n"] == 3
     assert cloud["xyz"]["dtype"] == "f32" and cloud["xyz"]["shape"] == [3, 3]
     vals = _decode_xyz(cloud["xyz"])
     assert vals[:6] == (0.0, 0.0, -2600.0, 10.0, 0.0, -2900.0)
@@ -1015,7 +1015,7 @@ def test_view3d_bare_surface_renders_neutral_elevation_mesh():
     m = sc["meshes"][0]
     assert set(m) == MESH3D_KEYS, set(m)
     assert m["values"] is None and m["range"] is None  # NEUTRAL — wireframe path
-    assert m["name"] == "mesh" and m["display_name"] == "Top Agat"
+    assert m["name"] == "mesh" and m["display_name"] == "Top Dome"
     # value-as-elevation: the primary layer's values became the node z
     assert [n[2] for n in m["nodes"]] == [-2600.0, -2610.0, -2620.0, -2630.0]
     assert p["summary"]["meshes"] == 1 and p["summary"]["triangles"] == 2
@@ -1027,7 +1027,7 @@ def test_view3d_surface_with_fill_unchanged():
     m = p["scene3d"]["meshes"][0]
     assert m["values"] == [-2600.0, -2610.0, -2620.0, -2630.0]
     assert m["range"] == [-2630.0, -2600.0]
-    assert m["name"] == "z" and m["display_name"] == "Top Agat"
+    assert m["name"] == "z" and m["display_name"] == "Top Dome"
     assert len(p["scene3d"]["meshes"]) == 1  # never a neutral duplicate
 
 

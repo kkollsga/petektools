@@ -207,8 +207,8 @@ All notable changes to petekTools are recorded here. Format follows
   support for `points` and `grid_lines` map overlays.
 
 ### Changed
-- Documented that the cubic interpolation method is a clean-room natural cubic
-  spline (`S'' = 0` endpoints), not SciPy's default not-a-knot spline.
+- Documented that the cubic interpolation method is an independently implemented
+  natural cubic spline (`S'' = 0` endpoints), not SciPy's default not-a-knot spline.
 
 ## [0.2.4] - 2026-07-07
 

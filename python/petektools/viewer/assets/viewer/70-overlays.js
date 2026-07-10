@@ -60,7 +60,7 @@
   }
   // The map's per-layer legend entries. `map.layers` (additive) carries one
   // {kind, name} per emitted layer, `name` duck-typed from the producer object
-  // (e.g. "Top Agat"); an older payload without it derives plain kind entries.
+  // (e.g. "Top Dome"); an older payload without it derives plain kind entries.
   function mapLegendLayers(m) {
     if (m.layers && m.layers.length) return m.layers;
     var out = [];

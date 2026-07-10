@@ -85,7 +85,7 @@ pub fn interp1d(
 ```
 
 `x` must be finite, strictly increasing, and match `y.len()`. `CubicNatural` is
-a clean-room natural cubic spline (`S'' = 0` at both endpoints), not SciPy's
+an independent natural cubic spline implementation (`S'' = 0` at both endpoints), not SciPy's
 default not-a-knot boundary condition. Python exposes this as
 `pt.interp1d(x, y, query, method="linear", extrapolate=False)` with method names
 `nearest`/`closest`, `previous`/`ffill`, `next`/`bfill`, `linear`, and
