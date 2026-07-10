@@ -111,7 +111,7 @@ values = pt.interp1d(
 
 Methods are `nearest`/`closest`, `previous`/`ffill`, `next`/`bfill`, `linear`,
 and `cubic`/`spline`. The cubic method is a natural cubic spline (`S'' = 0` at
-both endpoints), implemented in Rust as a clean-room numeric kernel. It is not
+both endpoints), implemented in Rust from the standard derivation. It is not
 SciPy's default not-a-knot spline.
 
 ## Geostatistics
@@ -214,7 +214,7 @@ values clamp to the ramp ends), `color="porosity"` stays an attribute name
 three. A malformed spec (e.g. one trailing float) raises `ValueError`. The
 viewer panel gets a fill selector (when several items contribute fills),
 "Fill"/"Contours" toggles, and a per-layer legend — type icon + the item's
-duck-typed `name` (e.g. `"Top Agat"`) + the colour ramp and clamped range on
+duck-typed `name` (e.g. `"Top Dome"`) + the colour ramp and clamped range on
 value-coloured layers. Items without these methods are silently unaffected:
 
 ```python

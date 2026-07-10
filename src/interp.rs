@@ -1,6 +1,7 @@
 //! One-dimensional interpolation kernels.
 //!
-//! The cubic path is a clean-room natural cubic spline: construction solves for
+//! The cubic path is a natural cubic spline implemented from the standard
+//! derivation: construction solves for
 //! knot second derivatives with zero curvature at both ends, then evaluates the
 //! standard piecewise cubic form. This mirrors the public mathematical contract
 //! used by established spline libraries without copying their implementation.

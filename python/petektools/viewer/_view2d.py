@@ -458,7 +458,7 @@ def _parse_spec(spec: bool | str, param: str) -> dict[str, Any]:
 
 def _item_name(item: Any) -> str | None:
     """A layer's legend display name, duck-typed from the item's optional
-    ``name`` attribute (e.g. a petekIO dataset name like ``"Top Agat"``).
+    ``name`` attribute (e.g. a petekIO dataset name like ``"Top Dome"``).
     ``None`` when absent, empty, or not a plain value."""
     nm = getattr(item, "name", None)
     if nm is None or callable(nm):

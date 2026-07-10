@@ -790,7 +790,7 @@ def _build_inferno_points_view(tmp_path: Path) -> tuple[Path, dict]:
     rng = random.Random(11)
 
     class Points:
-        name = "Top Agat"
+        name = "Top Dome"
 
         def xyz(self):
             rows = []
@@ -804,7 +804,7 @@ def _build_inferno_points_view(tmp_path: Path) -> tuple[Path, dict]:
             return rows
 
     class Geom:
-        name = "Agat grid"
+        name = "Dome grid"
         xori = 0.0
         yori = 0.0
         xinc = 200.0
@@ -852,7 +852,7 @@ def test_map_inferno_points_clamped_legend_names_both_themes(tmp_path):
     assert payload["map"]["colormap"] == "inferno"
     assert payload["map"]["point_color"] == {"by": "z", "range": [-2700.0, -2500.0]}
     assert payload["map"]["fills"] == []
-    assert {"kind": "points", "name": "Top Agat"} in payload["map"]["layers"]
+    assert {"kind": "points", "name": "Top Dome"} in payload["map"]["layers"]
 
     shots = Path(os.environ.get("PETEK_SHOTS_DIR", str(tmp_path)))
     shots.mkdir(parents=True, exist_ok=True)
@@ -876,12 +876,12 @@ def test_map_inferno_points_clamped_legend_names_both_themes(tmp_path):
         assert _close(s["blobClamped"], s["blobMin"], tol=10), (mode, s)
         assert not _close(s["blobClamped"], s["blobMax"]), (mode, s)
         # legend: the points layer wears its duck-typed NAME + the clamped range
-        pts_hdr = [h for h in s["headers"] if "Top Agat" in h]
+        pts_hdr = [h for h in s["headers"] if "Top Dome" in h]
         assert pts_hdr, (mode, s["headers"])
         scale = s["scales"][0]
         assert _num(scale[0]) == -2700.0 and _num(scale[1]) == -2500.0, (mode, s["scales"])
         # the geometry layer's name appears as a key row, with type icons drawn
-        assert any("Agat grid" in k for k in s["keys"]), (mode, s["keys"])
+        assert any("Dome grid" in k for k in s["keys"]), (mode, s["keys"])
         assert s["icons"] >= 2, (mode, s)  # points block icon + lines row icon
         # the colormap selector initialized from the payload
         assert s["colormap"] == "inferno", (mode, s["colormap"])
@@ -907,7 +907,7 @@ SCENE3D_TOTAL_CAP_MS = 10000.0  # tab click -> status ok (includes the first Web
 
 
 class _S3dPoints:
-    name = "Top Agat"
+    name = "Top Dome"
 
     def __init__(self, n):
         self.n = n
@@ -924,7 +924,7 @@ class _S3dPoints:
 
 
 class _S3dGeom:
-    name = "Agat grid"
+    name = "Dome grid"
     xori = 0.0
     yori = 0.0
     xinc = 250.0
@@ -937,7 +937,7 @@ class _S3dGeom:
 
 
 class _S3dSurf:
-    name = "Top Agat surf"
+    name = "Top Dome surf"
 
     def value_layer(self, attr=None):
         n = 13
@@ -1007,11 +1007,11 @@ def test_scene3d_smoke_renders_all_layer_kinds(tmp_path):
     assert st["state"] == "ok" and st["points"] == 5000
     assert st["meshes"] == 1 and st["wells"] == 1 and st["triangles"] > 0
     # legend: per-layer entries with duck-typed names — the value-coloured
-    # points ("Top Agat · z") and surface ramps + the lattice/well/contour keys
+    # points ("Top Dome · z") and surface ramps + the lattice/well/contour keys
     lg = r["lightLegend"]
-    assert any("Top Agat · z" in h for h in lg["headers"]), lg["headers"]
-    assert any("Top Agat surf" in h for h in lg["headers"]), lg["headers"]
-    assert any("Agat grid" in k for k in lg["keys"]), lg["keys"]
+    assert any("Top Dome · z" in h for h in lg["headers"]), lg["headers"]
+    assert any("Top Dome surf" in h for h in lg["headers"]), lg["headers"]
+    assert any("Dome grid" in k for k in lg["keys"]), lg["keys"]
     assert any("31/2-A" in k for k in lg["keys"]), lg["keys"]
     assert lg["icons"] >= 4  # points + fill ramps, lattice, contours, well rows
     # the points ramp scale shows the CLAMPED spec range
