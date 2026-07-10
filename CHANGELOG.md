@@ -6,6 +6,21 @@ All notable changes to petekTools are recorded here. Format follows
 
 ## [Unreleased]
 
+## [0.2.9] - 2026-07-10
+
+### Added
+- `petektools.view2d(...)` / `view2d_payload(...)` accept triangulated meshes:
+  an object offering `triangles()` index triples over `xyz()`/`points()`
+  vertices (optionally with an `edge` polygon) now draws its unique triangle
+  edges as grid lines and its `edge` rings as the outline, instead of being
+  swallowed by the point-cloud fallback with a default rectangular outline.
+  A new `max_mesh_edges` budget (default 150 000) strides edges over budget
+  and reports `mesh_edge_stride` in the summary.
+
+### Fixed
+- The map view strokes all grid lines as one batched canvas path, keeping
+  pan/zoom responsive on dense trimesh overlays (~100k+ edges).
+
 ## [0.2.8] - 2026-07-10
 
 ### Changed

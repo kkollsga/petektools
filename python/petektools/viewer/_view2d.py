@@ -3,7 +3,8 @@
 This module is deliberately domain-agnostic. It accepts plain coordinate
 sequences plus duck-typed objects from producer libraries: a point object may
 offer ``xyz()``/``xy()``, a geometry may offer ``node_xy(i, j)`` with ``ncol`` and
-``nrow``, and an outline may offer ``rings()``.
+``nrow``, a triangulated mesh may offer ``triangles()`` with ``xyz()``/``points()``,
+and an outline may offer ``rings()``.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ def view2d_payload(
     max_grid_lines: int = 800,
     max_line_points: int = 1000,
     point_limit: int | None = 200_000,
+    max_mesh_edges: int | None = 150_000,
 ) -> dict[str, Any]:
     """Build a generic 2-D map payload from points, geometries, and outlines.
 
@@ -31,11 +33,13 @@ def view2d_payload(
 
     - points: ``xyz()``/``xy()`` or a sequence of ``[x, y]``/``[x, y, z]`` rows
     - geometry: ``node_xy(i, j)``, ``ncol``, ``nrow`` and optional ``edge``
+    - trimesh: ``triangles()`` index triples over ``xyz()``/``points()`` vertices,
+      with optional ``edge`` — the unique triangle edges render as grid lines
     - outline: ``rings()`` returning rings of ``[x, y]`` or ``[x, y, z]`` rows
 
     Point objects are rendered as points only. Topology-bearing point sets do
-    not imply grid-line rendering; pass a geometry or structured surface when
-    the grid itself should be visible.
+    not imply grid-line rendering; pass a geometry, structured surface, or
+    trimesh when the grid itself should be visible.
     """
     scene_items = _scene_items(items)
     points: list[list[float]] = []
@@ -64,6 +68,19 @@ def view2d_payload(
                 summary["rotation_deg"] = float(rot)
             if not edge_rings:
                 frame = _frame_from_geometry(item)
+            continue
+
+        if _is_trimesh(item):
+            edge = getattr(item, "edge", None)
+            edge_rings = _rings(edge) if edge is not None else []
+            mesh_lines, n_triangles, edge_stride = _mesh_lines(
+                item, max_mesh_edges, max_line_points
+            )
+            grid_lines.extend(mesh_lines)
+            outlines.extend(edge_rings)
+            summary["triangles"] = n_triangles
+            if edge_stride > 1:
+                summary["mesh_edge_stride"] = edge_stride
             continue
 
         rings = _rings(item)
@@ -128,6 +145,7 @@ def view2d(
     max_grid_lines: int = 800,
     max_line_points: int = 1000,
     point_limit: int | None = 200_000,
+    max_mesh_edges: int | None = 150_000,
 ) -> str | dict[str, Any]:
     """Open or save a generic 2-D map view.
 
@@ -141,6 +159,7 @@ def view2d(
         max_grid_lines=max_grid_lines,
         max_line_points=max_line_points,
         point_limit=point_limit,
+        max_mesh_edges=max_mesh_edges,
     )
     if save is not None:
         save_view(payload, save)
@@ -155,13 +174,80 @@ def _scene_items(items: Any) -> list[Any]:
         return [items]
     if _looks_like_point_cloud(items):
         return [items]
-    if isinstance(items, Iterable) and not _is_geometry(items) and not hasattr(items, "rings"):
+    if (
+        isinstance(items, Iterable)
+        and not _is_geometry(items)
+        and not _is_trimesh(items)
+        and not hasattr(items, "rings")
+    ):
         return list(items)
     return [items]
 
 
 def _is_geometry(obj: Any) -> bool:
     return hasattr(obj, "node_xy") and hasattr(obj, "ncol") and hasattr(obj, "nrow")
+
+
+def _is_trimesh(obj: Any) -> bool:
+    return hasattr(obj, "triangles") and (hasattr(obj, "xyz") or hasattr(obj, "points"))
+
+
+def _mesh_lines(
+    mesh: Any,
+    max_edges: int | None,
+    max_line_points: int,
+) -> tuple[list[list[list[float]]], int, int]:
+    """Unique triangle edges as polylines, plus (triangle count, edge stride)."""
+    verts = mesh.xyz() if hasattr(mesh, "xyz") else mesh.points()
+    tris = mesh.triangles()
+    edges: set[tuple[int, int]] = set()
+    n_triangles = 0
+    for tri in tris:
+        a, b, c = int(tri[0]), int(tri[1]), int(tri[2])
+        n_triangles += 1
+        for u, v in ((a, b), (b, c), (c, a)):
+            edges.add((u, v) if u < v else (v, u))
+    edge_list = sorted(edges)
+    stride = 1
+    if max_edges is not None and len(edge_list) > max_edges:
+        stride = math.ceil(len(edge_list) / max_edges)
+        edge_list = edge_list[::stride]
+    return _chain_edges(edge_list, verts, max_line_points), n_triangles, stride
+
+
+def _chain_edges(
+    edge_list: list[tuple[int, int]],
+    verts: Sequence[Any],
+    max_line_points: int,
+) -> list[list[list[float]]]:
+    """Greedily chain shared-vertex edges into polylines (each edge drawn once)."""
+    neighbors: dict[int, list[int]] = {}
+    for u, v in edge_list:
+        neighbors.setdefault(u, []).append(v)
+        neighbors.setdefault(v, []).append(u)
+    used: set[tuple[int, int]] = set()
+    cap = max(2, max_line_points)
+    lines: list[list[list[float]]] = []
+    for u0, v0 in edge_list:
+        if (u0, v0) in used:
+            continue
+        used.add((u0, v0))
+        path = [u0, v0]
+        tail = v0
+        while len(path) < cap:
+            step = None
+            for w in neighbors[tail]:
+                key = (tail, w) if tail < w else (w, tail)
+                if key not in used:
+                    step = w
+                    used.add(key)
+                    break
+            if step is None:
+                break
+            path.append(step)
+            tail = step
+        lines.append([_xy(verts[i]) for i in path])
+    return lines
 
 
 def _frame_from_geometry(geom: Any) -> dict[str, float | int]:

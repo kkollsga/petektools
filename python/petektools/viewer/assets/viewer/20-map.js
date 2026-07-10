@@ -142,17 +142,17 @@
     var layer = S.mapLayers[S.mapLayerIdx];
     if (layer) drawWindowedRaster(ctx, cv, f, layer);
 
-    // regular-geometry gridlines (2-D QA payloads)
+    // regular-geometry / trimesh gridlines (2-D QA payloads); one batched
+    // stroke — per-line strokes crawl on dense meshes
     if (S.showGridLines && App.payload.map.grid_lines) {
       ctx.strokeStyle = token("--muted");
       ctx.globalAlpha = 0.32;
       ctx.lineWidth = 1;
+      ctx.beginPath();
       App.payload.map.grid_lines.forEach(function (line) {
-        if (!line.length) return;
-        ctx.beginPath();
         line.forEach(function (pt, i) { var s = w2s(pt[0], pt[1]); if (i === 0) ctx.moveTo(s[0], s[1]); else ctx.lineTo(s[0], s[1]); });
-        ctx.stroke();
       });
+      ctx.stroke();
       ctx.globalAlpha = 1;
     }
 

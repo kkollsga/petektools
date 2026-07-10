@@ -183,11 +183,13 @@ declares and computes nothing itself; new cross-sections come from a consumer's
 The viewer is horizontal capability: it serves every layer of the ecosystem, so
 it lives here. The full guide is in `VIEWER.md`.
 
-For lightweight map QC, `petektools.view2d([...])` accepts point-like objects
-and geometry-like objects. Point sets render as points only. Geometry-like
-objects render grid lines, and when they expose an `edge` polygon the grid-line
-overlay is clipped to that edge so inferred grids, structured surfaces, and
-point clouds line up in the same view.
+For lightweight map QC, `petektools.view2d([...])` accepts point-like objects,
+geometry-like objects, and triangulated meshes. Point sets render as points
+only. Geometry-like objects render grid lines, and when they expose an `edge`
+polygon the grid-line overlay is clipped to that edge so inferred grids,
+structured surfaces, and point clouds line up in the same view. Mesh-like
+objects (`triangles()` over `xyz()`/`points()` vertices) render their unique
+triangle edges as grid lines with the mesh `edge` rings as the outline.
 
 ## Where to go next
 
