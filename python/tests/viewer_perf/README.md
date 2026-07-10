@@ -89,3 +89,31 @@ lines, before → after the batched/baked/rAF point path:
 | drag repaint | 138.9 ms/event (sync per event) | 30 frames / 90 events, median 0.1 ms |
 | wheel zoom | 138.8 ms/event | ≤ ~10 ms worst frame (immediate), sub-ms blit |
 | hover mousemove | 2.6 ms (O(n) scan) | 0.1 ms (grid bucket) |
+
+## 4. 2-D map binary blocks (Node) — `map_decode_bench.js`
+
+The 2-D map's bulk arrays (`points`, fill `nodes`/`triangles`/`values`,
+`grid_lines`, `contours[i].lines`) ship as the **v3 typed binary blocks** in a
+content-addressed digest table (`map.blocks`) instead of JSON floats — a single
+78k-triangle fill is otherwise ~5–6 MB of JSON parsed on the main thread. This
+bench times the REAL decode kernel (`assets/decode.js` → `decodeBlockTable` +
+marker resolution) the browser worker runs.
+
+```bash
+node map_decode_bench.js <map.json> [iters]   # <map.json> = a blocks-encoded payload.map
+```
+
+Prints one JSON line: `{decodeMs, tableEntries, decodedBlocks, elements}`.
+Driven + budget-asserted by `test_viewer_perf.py`
+(`test_map_blocks_*`) — a synthetic **200k-point + 78k-triangle-fill** 2-D
+payload, all three legs browserless (they run on the Node kernel):
+
+| leg | assert | measured (this machine) |
+|---|---|---|
+| wire size | blocks **≥ 3× smaller** than the JSON floats of the same data | JSON **15.5 MB → blocks 5.1 MB = 3.05×** (8 table entries) |
+| Node decode | `decodeMs < 300` for the ~950k-element block table | **~4.8 ms** (best of 3) |
+| content-addressed dedup | two fills over one mesh → the `nodes`/`triangles` blocks appear **once** | 2 fills / shared mesh → **4 blocks** (nodes + tris shared, 2 distinct value blocks) |
+
+vs the JSON floats it replaces: the map no longer parses megabytes of float text
+on the main thread — the base64 blocks decode off-thread into typed arrays,
+transferred zero-copy, and identical arrays decode once per session.

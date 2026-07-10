@@ -62,6 +62,7 @@ state. `sections` may be empty (live mode adds them via `/section`).
 | `zone_averages` | list[ScalarLayer] | selectable property layers |
 | `k_slices` | list[ScalarLayer] | optional per-k property slices |
 | `contacts` | list[Contact] | translucent subcrop-mask overlays |
+| `blocks` | dict[digest → Block] | **additive:** the content-addressed typed-block table when `points`/fill arrays/`grid_lines`/`contours[i].lines` ship as binary blocks (see **Binary blocks** below); absent for a plain-JSON map |
 
 **Frame:** `{origin_x, origin_y, spacing_x, spacing_y, ncol, nrow}`. Node `(i, j)`
 sits at `(origin_x + i·spacing_x, origin_y + j·spacing_y)`.
@@ -109,6 +110,36 @@ levels stroke as a second batched path, bolder (≈2.25 px at α 0.85). In
 interval mode the payload builder flags majors at the round step nearest 4–5×
 the interval (25 → 100, 20 → 100, 10 → 50); explicit level lists carry no
 majors. No labels (yet); a "Contours" toggle controls visibility of both.
+
+**Binary blocks (additive; the `view2d` `encoding="blocks"` output — the
+default).** The map's bulk arrays optionally travel as **content-addressed typed
+binary blocks** — the same wire format the v3 `VolumeBundle` uses (little-endian,
+tightly-packed `f32`/`u32`, `base64` in `data`, NaN = the canonical `0x7FC00000`)
+— instead of JSON floats. A single 78k-triangle fill is ~5–6 MB of JSON parsed on
+the main thread; as blocks it is ~3× smaller on the wire and decodes off the main
+thread into typed arrays. It is fully additive: a JSON-shaped (blockless) map
+renders identically, and a payload whose bulk arrays total under ~64 KB of floats
+stays JSON regardless (the block envelope is not worth it).
+
+- `blocks` | dict[digest → Block] — the per-payload block table (present only
+  when at least one field is block-encoded). Each **Block** is
+  `{dtype: "f32"|"u32", shape: [..], data: base64}`, keyed by the **sha-256 hex
+  of its raw little-endian bytes**. Identical arrays (e.g. two fills over one
+  mesh) hash to one digest and so ship **once**; the client caches decoded blocks
+  by digest, deduping across views in a session.
+- A field that would be a JSON array becomes a **marker** referencing the table:
+  - `{"__block__": "<digest>"}` — a single block. Used for `points`
+    (`f32 [n, 3]`, `[x, y, z]`, NaN z allowed), each fill's `nodes`
+    (`f32 [n, 2]`), `triangles` (`u32 [n, 3]`), and `values` (`f32 [n]`, JSON
+    `null` → NaN).
+  - `{"__csr__": {"coords": "<digest>", "offsets": "<digest>"}}` — a
+    **CSR-encoded set of variable-length polylines**: `coords` is an
+    `f32 [total_points, 2]` block of every point concatenated, `offsets` a
+    `u32 [n_lines + 1]` block where line `k` is `coords[offsets[k]:offsets[k+1]]`.
+    Used for `grid_lines` and each `contours[i].lines`.
+
+The viewer's decode kernel (`assets/decode.js`) reads both shapes; the renderer's
+accessors index the typed arrays or the plain nested arrays transparently.
 
 **Contact:** `{kind: str, depth_m: float, crossing: bool[ncol·nrow],
 display_name?: str}` — `crossing` marks the columns the contact plane cuts

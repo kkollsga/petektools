@@ -7,6 +7,20 @@ All notable changes to petekTools are recorded here. Format follows
 ## [Unreleased]
 
 ### Added
+- `view2d` / `view2d_payload` gain `encoding="blocks"|"json"` (default
+  `"blocks"`): the 2-D map's bulk arrays (`points`, each fill's
+  `nodes`/`triangles`/`values`, `grid_lines`, `contours[i].lines`) now ship as
+  **content-addressed typed binary blocks** — the v3 wire format (little-endian
+  `f32`/`u32`, base64, canonical NaN) in a per-payload `map.blocks` digest table
+  — instead of JSON floats. A synthetic 200k-point + 78k-triangle-fill payload
+  is **~3× smaller on the wire** (15.5 → 5.1 MB) and its blocks decode in ~5 ms
+  under Node (`viewer_perf/map_decode_bench.js`). Identical arrays (e.g. two
+  fills over one mesh) share a **sha-256 digest and ship once**; the viewer
+  decodes them off the main thread (the shared decode worker) into typed arrays,
+  cached by digest across views, and the renderer's accessors read typed or
+  plain arrays transparently. Fully additive and opt-out: a JSON-shaped map (and
+  any payload under ~64 KB of floats) renders identically. See `SCHEMA.md`
+  (MapBundle → **Binary blocks**).
 - `view3d` / `view3d_payload`: a generic 3-D scene entrypoint at **full view2d
   parity** — the same duck-typed items (points, geometries, trimeshes,
   `value_layer()` surfaces, `iso_lines()` contours, outlines) plus wells
