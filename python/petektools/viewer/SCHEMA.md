@@ -35,6 +35,7 @@ otherwise beautifies the raw internal `name`: a scoped `"A::B"` name reads as
 | `summary` | object \| null | a free-form `key → value` panel (numbers formatted) |
 | `map` | MapBundle \| null | the **Map** tab (areal raster) |
 | `volume` | VolumeBundle \| null | the **Volume** tab (3-D mesh) |
+| `scene3d` | Scene3dBundle \| null | **additive:** the **3D** tab (the `view3d` scene; the tab button only appears when present) |
 | `sections` | list[SectionBundle] | the **Intersection** tab (pre-computed sections) |
 | `section_labels` | list[str] | one display label per `sections` entry |
 | `wells` | list[WellTrack] | map markers + click-to-section targets |
@@ -245,6 +246,67 @@ arrays (`positions` float[N·8·3], `indices` int[N·36] into `cell·8 + corner`
 `vertex_values` float[N·8], `cell_values`/`zone_ids`/`active` length `N`). Cell
 ordering `i` fastest then `j` then `k`; the viewer applies threshold / zone /
 i-j-k clip over these arrays.
+
+## Scene3dBundle — the generic 3-D scene (3D tab; the `view3d` output)
+
+One Three.js scene with the `view2d` layer set in 3-D. The vertical axis is
+**elevation** (family convention: z is negative down — a horizon at 2600 m
+depth carries `z == -2600`); the renderer maps it onto three's y-up frame so
+depth reads down-screen. Additive: a payload without `scene3d` renders exactly
+as before (no `schema_version` bump), and the "3D" tab button stays hidden.
+`color=` / `fill=` semantics and the registry-match spec grammar are exactly
+view2d's; the same per-layer legend machinery (type icons + duck-typed display
+names + ramp/clamped range) drives the 3D tab's legend.
+
+| field | type | rendered as |
+|---|---|---|
+| `schema_version` | int | `1` |
+| `points` | list[PointCloud3D] | one `THREE.Points` per cloud, per-vertex ramp colours |
+| `meshes` | list[Mesh3D] | surface meshes — value-coloured (`fill=`) or neutral + a wireframe toggle |
+| `lattices` | list[Lattice3D] | geometry grid lines (`LineSegments`), flat at `ref_z` |
+| `contours` | list[ContourSet] | the SAME shape as `map.contours`; each polyline renders at `z = level` (major levels stroke stronger) |
+| `wells` | list[Well3D] | identity-coloured bore paths + a screen-sized wellhead marker |
+| `outlines` | list[Ring] | edge rings (`[[x, y], …]`), flat at `ref_z` |
+| `layers` | list[LayerName] | per-layer legend entries, emission order — `{kind: "points"\|"lines"\|"contours"\|"wells", name: str \| null}` (duck-typed producer names; fallback: the kind). Value meshes self-describe via `display_name`, like 2-D fills |
+| `point_color` | PointColor \| null | as `map.point_color`: `{by: "z", range: [min, max]}` — the explicit `color=` clamp range or the data z range; out-of-range values clamp to the ramp ends |
+| `colormap` | str \| null | the payload-pinned initial colormap (the parsed `color=`/`fill=` `<cmap>`) |
+| `z_exaggeration` | float | the z-exaggeration slider seed (display-only group scale, `z ×N` badge, true depths in the readout — the volume tab's control; default 5) |
+| `ref_z` | float | the flat-element elevation: midpoint of the scene's finite z extent (0 for an all-flat scene). Lattices and outline rings carry no z of their own and render at this plane |
+
+**PointCloud3D:** `{name: str | null, n: int, xyz: Block}` — `xyz` is ONE
+compact v3-style binary block (`{dtype: "f32", shape: [n, 3], data:
+"<base64>"}`, little-endian, NaN = `0x7FC00000`) decoded on the same kernel as
+the volume blocks / well-log lanes. A NaN z renders at `ref_z` in the neutral
+colour (never colour-guessed). The Python builder decimates each cloud past
+`point_limit` (default 200k) by striding, recorded as `summary.point_stride`.
+
+**Mesh3D:** `{name: str, display_name: str | null, nodes: [[x, y, z | null],
+…], triangles: [[a, b, c], …], values: float[len(nodes)] | null, range:
+[min, max] | null}`. `values`+`range` present → per-vertex colormap colouring
+(the user's `fill=` clamp range when specified; a `null` value renders the
+neutral colour); absent → the neutral material with a panel wireframe toggle.
+A triangle touching a `null`-z node is **skipped** (a hole, never guessed).
+`name` is the attribute identity (e.g. `"z"`); `display_name` the duck-typed
+source-object name (e.g. `"Top Agat"`).
+
+**Lattice3D:** `{name: str | null, lines: [[[x, y], …], …]}` — the 2-D
+geometry lattice polylines (clipped to `edge` exactly as on the Map tab).
+
+**Well3D:** `{id: str, trajectory: [[x, y, z | null], …]}` — z is ELEVATION
+(negative down; note the 2-D `WellTrack.trajectory` carries positive-down
+TVD). `id` takes the same `well:` categorical identity slot as top-level
+wells. A `null`-z sample is dropped from the drawn path.
+
+**Render discipline (the volume tab's idioms).** The scene build honours the
+same primitive budget (`window.PETEK_TRI_BUDGET`, default 5M, points +
+triangles): past it the build **auto-degrades** to a 1-in-stride decimated
+preview with a loud "Decimated preview" banner and a `1:stride` badge — never
+a refusal, crash, or silent blank. A malformed bundle surfaces a banner + an
+`error` status instead of a blank canvas. The build outcome is exposed for
+tests as `window.__PETEK_SCENE3D_STATUS` (`{state: "ok"|"error", points,
+triangles, meshes, wells, buildMs}`). z-exaggeration is a display-only group
+scale; the theme flip re-reads the line/background tokens while identities
+keep their slots.
 
 ## WellTrack
 

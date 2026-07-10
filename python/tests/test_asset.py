@@ -76,6 +76,8 @@ def test_public_api_lock():
         "variance",
         "view2d",
         "view2d_payload",
+        "view3d",
+        "view3d_payload",
         "weighted_mean",
         "weighted_percentile",
         "weighted_std",

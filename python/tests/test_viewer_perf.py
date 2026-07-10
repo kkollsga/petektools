@@ -891,5 +891,174 @@ def test_map_inferno_points_clamped_legend_names_both_themes(tmp_path):
           f"headers = {r['light']['headers']} | keys = {r['light']['keys']}")
 
 
+# --- the Scene3D (view3d) tab: smoke + the 200k-point build budget -------------
+# Drives the P4 view3d path end to end in a real browser: a scene3d payload
+# (points + geometry + a value-coloured surface + a well + contours) must build
+# ONE Three.js scene (status hook __PETEK_SCENE3D_STATUS, like the volume tab's
+# __PETEK_VOLUME_STATUS), render the per-layer legend with duck-typed names +
+# the clamped inferno ramp, apply the z-exaggeration slider + colormap selector
+# live, survive orbit/wheel interaction and a theme flip with zero console
+# errors — and hold a sane build/first-render budget at 200k points.
+_SCENE3D_JS = Path(__file__).parent / "viewer_perf" / "scene3d_bench.mjs"
+
+SCENE3D_POINTS_N = 200_000
+SCENE3D_BUILD_CAP_MS = 1500.0   # buildScene3d (decode + colour bake + GPU-object setup)
+SCENE3D_TOTAL_CAP_MS = 10000.0  # tab click -> status ok (includes the first WebGL render)
+
+
+class _S3dPoints:
+    name = "Top Agat"
+
+    def __init__(self, n):
+        self.n = n
+
+    def xyz(self):
+        import random
+
+        rng = random.Random(7)
+        return [
+            [rng.uniform(0.0, 6000.0), rng.uniform(0.0, 6000.0),
+             -2600.0 + rng.uniform(-100.0, 100.0)]
+            for _ in range(self.n)
+        ]
+
+
+class _S3dGeom:
+    name = "Agat grid"
+    xori = 0.0
+    yori = 0.0
+    xinc = 250.0
+    yinc = 250.0
+    ncol = 25
+    nrow = 25
+
+    def node_xy(self, i, j):
+        return (i * 250.0, j * 250.0)
+
+
+class _S3dSurf:
+    name = "Top Agat surf"
+
+    def value_layer(self, attr=None):
+        n = 13
+        nodes = [[i * 500.0, j * 500.0] for j in range(n) for i in range(n)]
+        vals = [-2550.0 - 100.0 * (i % n) / (n - 1) for i in range(n * n)]
+        tris = []
+        for j in range(n - 1):
+            for i in range(n - 1):
+                a = j * n + i
+                tris.append([a, a + 1, a + n])
+                tris.append([a + 1, a + n + 1, a + n])
+        return {"name": "z", "nodes": nodes, "triangles": tris,
+                "values": vals, "range": [-2650.0, -2550.0]}
+
+    def iso_lines(self, interval=None, levels=None, attr=None):
+        return [(-2600.0, [[[0.0, 0.0], [6000.0, 6000.0]]]),
+                (-2575.0, [[[0.0, 3000.0], [6000.0, 3000.0]]])]
+
+
+class _S3dWell:
+    name = "31/2-A"
+
+    def trajectory(self):
+        return [[1000.0, 1000.0, -2400.0], [2000.0, 2000.0, -2550.0],
+                [3000.0, 3000.0, -2650.0]]
+
+
+def _build_scene3d_view(tmp_path: Path, name: str, npts: int, **kw) -> tuple[Path, dict]:
+    from petektools import viewer
+
+    payload = viewer.view3d_payload(
+        [_S3dPoints(npts), _S3dGeom(), _S3dSurf(), _S3dWell()],
+        color="inferno_-2700_-2500", fill=True, contours=25.0, **kw,
+    )
+    out = tmp_path / name
+    save_view(payload, out)
+    return out, payload
+
+
+def _run_scene3d(view: Path, *extra: str, timeout: int = 240) -> dict:
+    out = subprocess.run(
+        [_NODE, str(_SCENE3D_JS), str(view), *extra],
+        capture_output=True, text=True, timeout=timeout,
+    )
+    line = (out.stdout.strip().splitlines() or ["{}"])[-1]
+    data = json.loads(line) if line.startswith("{") else {}
+    return {"rc": out.returncode, "stderr": out.stderr, **data}
+
+
+@pytest.mark.skipif(not _HAVE_PW, reason="playwright + chromium not available (browser leg)")
+def test_scene3d_smoke_renders_all_layer_kinds(tmp_path):
+    shots = Path(os.environ.get("PETEK_SHOTS_DIR", str(tmp_path)))
+    shots.mkdir(parents=True, exist_ok=True)
+    view, payload = _build_scene3d_view(tmp_path, "scene3d_smoke.html", 5000)
+    # payload-side sanity: the scene3d bundle carries every layer kind
+    sc = payload["scene3d"]
+    assert sc["colormap"] == "inferno"
+    assert sc["point_color"] == {"by": "z", "range": [-2700.0, -2500.0]}
+    assert sc["meshes"] and sc["lattices"] and sc["wells"] and sc["contours"]
+
+    r = _run_scene3d(view, f"--screenshot={shots / 'scene3d-smoke.png'}")
+    print(f"\n[scene3d] smoke: build {r.get('status', {}).get('buildMs')} ms | "
+          f"render {r.get('renderMs')} ms | badge {r.get('badge')!r}")
+    assert r["rc"] == 0, r.get("failure") or r.get("stderr")
+    assert not r.get("consoleErrors"), r["consoleErrors"]
+    st = r["status"]
+    assert st["state"] == "ok" and st["points"] == 5000
+    assert st["meshes"] == 1 and st["wells"] == 1 and st["triangles"] > 0
+    # legend: per-layer entries with duck-typed names — the value-coloured
+    # points ("Top Agat · z") and surface ramps + the lattice/well/contour keys
+    lg = r["lightLegend"]
+    assert any("Top Agat · z" in h for h in lg["headers"]), lg["headers"]
+    assert any("Top Agat surf" in h for h in lg["headers"]), lg["headers"]
+    assert any("Agat grid" in k for k in lg["keys"]), lg["keys"]
+    assert any("31/2-A" in k for k in lg["keys"]), lg["keys"]
+    assert lg["icons"] >= 4  # points + fill ramps, lattice, contours, well rows
+    # the points ramp scale shows the CLAMPED spec range
+    assert any(_num(s[0]) == -2700.0 and _num(s[1]) == -2500.0 for s in lg["scales"]), lg["scales"]
+    # panel: colormap selector initialized from the payload; z-exag applies live
+    assert r["colormapInitial"] == "inferno"
+    assert "z ×12" in (r["badgeAfterExag"] or ""), r["badgeAfterExag"]
+    # dark theme keeps the legend populated (tokens re-read, identities keep slots)
+    assert r["darkLegend"]["headers"], r["darkLegend"]
+    assert r["hoverReadout"] is True
+
+
+@pytest.mark.skipif(not _HAVE_PW, reason="playwright + chromium not available (browser leg)")
+def test_scene3d_200k_points_build_and_render_budget(tmp_path):
+    view, payload = _build_scene3d_view(tmp_path, "scene3d_200k.html", SCENE3D_POINTS_N)
+    cloud = payload["scene3d"]["points"][0]
+    assert cloud["n"] == SCENE3D_POINTS_N  # at the cap, undecimated
+    assert "point_stride" not in payload["summary"]
+
+    r = _run_scene3d(view, f"--build-cap-ms={SCENE3D_BUILD_CAP_MS}",
+                     f"--total-cap-ms={SCENE3D_TOTAL_CAP_MS}")
+    st = r.get("status") or {}
+    print(f"\n[scene3d] 200k: build {st.get('buildMs')} ms | tab->ok {r.get('totalMs')} ms | "
+          f"render {r.get('renderMs')} ms | {st.get('points')} pts + {st.get('triangles')} tris")
+    assert r["rc"] == 0, r.get("failure") or r.get("stderr")
+    assert not r.get("consoleErrors"), r["consoleErrors"]
+    assert st["state"] == "ok" and st["points"] == SCENE3D_POINTS_N
+    assert st["buildMs"] < SCENE3D_BUILD_CAP_MS
+    assert r["totalMs"] < SCENE3D_TOTAL_CAP_MS
+
+
+@pytest.mark.skipif(not _HAVE_PW, reason="playwright + chromium not available (browser leg)")
+def test_scene3d_auto_degrades_over_budget(tmp_path):
+    # Lower the primitive budget below the fixture so the volume tab's degrade
+    # discipline MUST engage: a decimated 1-in-stride preview + a loud banner +
+    # a 1:stride badge — never a refusal or a blank canvas.
+    view, _payload = _build_scene3d_view(tmp_path, "scene3d_degrade.html", 5000)
+    r = _run_scene3d(view, "--tri-budget=1000", "--expect-degraded")
+    st = r.get("status") or {}
+    print(f"\n[scene3d] degrade @1000: kept {st.get('points')} pts + {st.get('triangles')} tris "
+          f"| badge {r.get('badge')!r}")
+    assert r["rc"] == 0, r.get("failure") or r.get("stderr")
+    assert not r.get("consoleErrors"), r["consoleErrors"]
+    assert r["degradedBanner"] and "Decimated preview" in r["degradedBanner"]
+    assert "1:" in (r["badge"] or "")
+    assert 0 < st["points"] <= 1000  # the point cloud really decimated
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-s"]))

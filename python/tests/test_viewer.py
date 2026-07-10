@@ -586,6 +586,212 @@ def test_view2d_malformed_value_layer_raises():
         viewer.view2d_payload([BadMesh()], fill=True)
 
 
+# --- view3d: the scene3d bundle (full view2d parity in one 3-D scene) ---------
+SCENE3D_KEYS = {
+    "schema_version", "points", "meshes", "lattices", "contours", "wells",
+    "outlines", "layers", "point_color", "colormap", "z_exaggeration", "ref_z",
+}
+MESH3D_KEYS = {"name", "display_name", "nodes", "triangles", "values", "range"}
+
+
+def _decode_xyz(block: dict) -> tuple:
+    """Decode a scene3d f32 [n, 3] point block (base64, little-endian) — the
+    same wire the viewer's decode kernel reads."""
+    import base64
+    import struct
+
+    raw = base64.b64decode(block["data"])
+    n = len(raw) // 4
+    return struct.unpack("<%df" % n, raw)
+
+
+class _Points3D:
+    name = "Top Agat"
+
+    def xyz(self):
+        return [[0.0, 0.0, -2600.0], [10.0, 0.0, -2900.0], [5.0, 5.0]]  # one z-less row
+
+
+class _Geom3D:
+    name = "Agat grid"
+    xori = 0.0
+    yori = 0.0
+    xinc = 100.0
+    yinc = 100.0
+    ncol = 3
+    nrow = 3
+
+    def node_xy(self, i, j):
+        return (i * 100.0, j * 100.0)
+
+
+class _Well3D:
+    name = "31/2-A"
+
+    def trajectory(self):
+        return [[0.0, 0.0, -2400.0], [50.0, 50.0, -2600.0]]
+
+
+def test_view3d_payload_points_and_geometry_classification():
+    p = viewer.view3d_payload([_Points3D(), _Geom3D()], color="inferno_-2700_-2500")
+    assert p["kind"] == "3D" and p["map"] is None and p["volume"] is None
+    sc = p["scene3d"]
+    assert set(sc) == SCENE3D_KEYS, set(sc)
+    # item classification parity: a point cloud + a geometry lattice, with the
+    # SAME duck-typed legend names view2d records
+    assert sc["layers"] == [
+        {"kind": "points", "name": "Top Agat"},
+        {"kind": "lines", "name": "Agat grid"},
+    ]
+    assert len(sc["lattices"]) == 1 and sc["lattices"][0]["lines"]
+    assert p["summary"]["grid"] == "3 x 3" and p["summary"]["points"] == 3
+    # the spec grammar is the view2d grammar: colormap pinned + clamp range
+    assert sc["colormap"] == "inferno"
+    assert sc["point_color"] == {"by": "z", "range": [-2700.0, -2500.0]}
+    # the point cloud travels as ONE compact f32 [n, 3] block; a z-less row is NaN
+    cloud = sc["points"][0]
+    assert cloud["name"] == "Top Agat" and cloud["n"] == 3
+    assert cloud["xyz"]["dtype"] == "f32" and cloud["xyz"]["shape"] == [3, 3]
+    vals = _decode_xyz(cloud["xyz"])
+    assert vals[:6] == (0.0, 0.0, -2600.0, 10.0, 0.0, -2900.0)
+    assert vals[6:8] == (5.0, 5.0) and vals[8] != vals[8]  # NaN z
+
+
+def test_view3d_grammar_is_view2d_grammar():
+    # bare colormap → data range; attribute string stays an attribute (no cmap)
+    p = viewer.view3d_payload([_Points3D()], color="inferno")
+    assert p["scene3d"]["colormap"] == "inferno"
+    assert p["scene3d"]["point_color"]["range"] == [-2900.0, -2600.0]
+    p = viewer.view3d_payload([_Points3D()], color="porosity")
+    assert p["scene3d"]["colormap"] is None
+    # color=False → monochrome (no point_color)
+    p = viewer.view3d_payload([_Points3D()], color=False)
+    assert p["scene3d"]["point_color"] is None
+    # malformed specs raise exactly like view2d
+    with pytest.raises(ValueError, match="malformed"):
+        viewer.view3d_payload([_Points3D()], color="inferno_-2700")
+    with pytest.raises(ValueError, match="malformed"):
+        viewer.view3d_payload([_Points3D()], fill="magma_a_b")
+
+
+def test_view3d_fill_surface_takes_z_from_primary_values():
+    # a surface duck (value_layer only, 2-D nodes): the PRIMARY layer's values
+    # are its elevation, so fill=True yields a 3-D value-coloured mesh
+    mesh = _ValueMesh()
+    p = viewer.view3d_payload([mesh], fill=True)
+    sc = p["scene3d"]
+    assert mesh.seen["value_attr"] is None
+    assert len(sc["meshes"]) == 1
+    m = sc["meshes"][0]
+    assert set(m) == MESH3D_KEYS, set(m)
+    assert m["name"] == "z" and m["display_name"] is None
+    # 2-D nodes lifted to 3-D: z == the layer value; the NaN-valued node is gapped
+    assert m["nodes"][:3] == [[0.0, 0.0, 1.0], [10.0, 0.0, 2.0], [0.0, 10.0, 3.0]]
+    assert m["nodes"][3] == [10.0, 10.0, None]
+    assert m["values"][:3] == [1.0, 2.0, 3.0] and m["values"][3] is None
+    assert m["range"] == [1.0, 4.0]
+    assert p["summary"]["meshes"] == 1 and p["summary"]["triangles"] == 2
+
+
+def test_view3d_fill_spec_overrides_range_and_attr_stays_flat():
+    mesh = _ValueMesh()
+    p = viewer.view3d_payload([mesh], fill="magma_0_2")
+    assert p["scene3d"]["meshes"][0]["range"] == [0.0, 2.0]  # user clamp wins
+    assert p["scene3d"]["colormap"] == "magma"
+    # an ATTRIBUTE fill over 2-D nodes stays gapped (values are not elevations)
+    mesh2 = _ValueMesh()
+    p2 = viewer.view3d_payload([mesh2], fill="phi")
+    assert mesh2.seen["value_attr"] == "phi"
+    assert all(n[2] is None for n in p2["scene3d"]["meshes"][0]["nodes"])
+
+
+def test_view3d_trimesh_neutral_vs_value_colored():
+    # no fill: a trimesh renders as ONE neutral mesh (values None — the JS gives
+    # it the neutral material + the wireframe option)
+    p = viewer.view3d_payload([_ValueMesh()])
+    assert len(p["scene3d"]["meshes"]) == 1
+    m = p["scene3d"]["meshes"][0]
+    assert m["values"] is None and m["range"] is None and m["name"] == "mesh"
+    assert m["nodes"][0] == [0.0, 0.0, 1.0]  # xyz vertices carry their own z
+    # fill=: the value_layer IS the surface — one value-coloured mesh, never a
+    # neutral duplicate on top
+    p2 = viewer.view3d_payload([_ValueMesh()], fill=True)
+    assert len(p2["scene3d"]["meshes"]) == 1
+    assert p2["scene3d"]["meshes"][0]["values"] is not None
+
+
+def test_view3d_wells_duck_type():
+    p = viewer.view3d_payload([_Well3D(), _Points3D()])
+    sc = p["scene3d"]
+    assert sc["wells"] == [
+        {"id": "31/2-A", "trajectory": [[0.0, 0.0, -2400.0], [50.0, 50.0, -2600.0]]}
+    ]
+    assert {"kind": "wells", "name": "31/2-A"} in sc["layers"]
+    assert p["summary"]["wells"] == 1
+
+    class BadWell:
+        def trajectory(self):
+            return [[0.0, 0.0]]  # no z — not a 3-D bore path
+
+    with pytest.raises(TypeError, match="x, y, z"):
+        viewer.view3d_payload([BadWell()])
+
+
+def test_view3d_contours_reuse_view2d_seam():
+    mesh = _ValueMesh()
+    p = viewer.view3d_payload([mesh], contours=25.0, color="porosity")
+    # the same iso_lines forwarding as view2d (interval + the color attr)
+    assert mesh.seen["iso"] == {"interval": 25.0, "levels": None, "attr": "porosity"}
+    cs = p["scene3d"]["contours"]
+    assert [c["level"] for c in cs] == [1.5, 2.5]
+    assert all({"level", "major", "lines"} == set(c) for c in cs)
+    assert p["summary"]["contour_levels"] == 2
+
+
+def test_view3d_point_decimation_cap():
+    class Cloud:
+        name = "big"
+
+        def xyz(self):
+            return [[float(i), 0.0, -float(i)] for i in range(250)]
+
+    p = viewer.view3d_payload([Cloud()], point_limit=100)
+    sc = p["scene3d"]
+    assert p["summary"]["point_stride"] == 3
+    cloud = sc["points"][0]
+    assert cloud["n"] == 84 and cloud["xyz"]["shape"] == [84, 3]
+    # the colour range reads the DECIMATED cloud (parity with view2d)
+    assert sc["point_color"]["range"] == [-249.0, 0.0]
+
+
+def test_view3d_z_exaggeration_and_ref_z():
+    # the z-exag slider seed defaults to the volume tab's 5x, overridable
+    assert viewer.view3d_payload([_Points3D()])["scene3d"]["z_exaggeration"] == 5.0
+    p = viewer.view3d_payload([_Points3D()], z_exaggeration=12)
+    assert p["scene3d"]["z_exaggeration"] == 12.0
+    # ref_z (the flat-lattice/outline elevation) is the scene z-extent midpoint
+    assert p["scene3d"]["ref_z"] == -2750.0
+    # an all-flat scene (no z anywhere) parks the reference plane at 0
+    assert viewer.view3d_payload([_Geom3D()])["scene3d"]["ref_z"] == 0.0
+
+
+def test_view3d_rejects_unknown_items():
+    with pytest.raises(TypeError, match="cannot add"):
+        viewer.view3d_payload([object()])
+
+
+def test_view3d_save_is_self_contained(tmp_path):
+    import petektools
+
+    assert petektools.view3d is viewer.view3d  # exported at the package root
+    out = tmp_path / "view3d.html"
+    got = viewer.view3d([_Points3D(), _Geom3D()], save=out)
+    assert got == str(out)
+    html = out.read_text()
+    assert "window.PETEK_VIEWER_PAYLOAD=" in html and '"scene3d"' in html
+    assert "<script src=" not in html  # zero external fetches
+
+
 # --- the generic chart-mark schema (Charts tab) ------------------------------
 def test_schema_version_bumped(payload):
     assert payload["schema_version"] == 3  # v3: volume exterior-shell + binary blocks

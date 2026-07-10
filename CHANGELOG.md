@@ -7,6 +7,22 @@ All notable changes to petekTools are recorded here. Format follows
 ## [Unreleased]
 
 ### Added
+- `view3d` / `view3d_payload`: a generic 3-D scene entrypoint at **full view2d
+  parity** — the same duck-typed items (points, geometries, trimeshes,
+  `value_layer()` surfaces, `iso_lines()` contours, outlines) plus wells
+  (`trajectory()` of `[x, y, z]` rows, z elevation — negative down), the same
+  `color=`/`fill=`/`contours=` semantics and registry-match spec grammar, and
+  the same per-layer legend (type icons + duck-typed names + ramp/clamped
+  range). Emits an additive `scene3d` payload bundle (viewer `SCHEMA.md`)
+  rendered by a new **3D** tab: one Three.js scene with orbit controls and a
+  theme-aware background; point clouds travel as compact base64 f32 blocks
+  (one draw call, smooth at the 200k cap), surfaces render value-coloured
+  (`fill=`) or neutral with a wireframe toggle, lattice/outline/contour lines
+  batch as segments, wells draw identity-coloured with wellhead markers. The
+  panel carries the volume tab's z-exaggeration control (slider + "fit z ×N",
+  display-only), the primitive budget auto-degrades to a decimated preview
+  with a loud banner (never a blank), and the build outcome is exposed as
+  `window.__PETEK_SCENE3D_STATUS` for the harness.
 - `view2d` / `view2d_payload` gain `fill=` (bool | spec string): value-coloured
   trimesh fills are now an explicit opt-in, no longer a `color=` side effect.
 - `color=` / `fill=` string specs parse by registry match:

@@ -166,6 +166,31 @@ volume-tab outcome is exposed for tests as `window.__PETEK_VOLUME_STATUS`
 (`{state: "ok"|"empty"|"stalled"|"error", …}`). A **Grid** panel group shows the
 cell dims (i×j×k) and mean cell size on every tab.
 
+### 3D (three.js — the `view3d` scene)
+The generic 3-D companion to the `view2d` QA path: `petektools.view3d([...])`
+accepts the SAME duck-typed items (points, geometries, trimeshes,
+`value_layer()` surfaces, `iso_lines()` contours, outlines) plus wells
+(`trajectory()` of `[x, y, z]` rows, z **elevation** — negative down, the
+family convention) and renders them in **one Three.js scene** (payload
+`scene3d`; the "3D" tab appears only when present). `color=` / `fill=` /
+`contours=` keep their exact view2d semantics and registry-match spec grammar:
+points render as a **single-draw-call colour-coded cloud** (compact base64 f32
+blocks on the wire, decoded on the volume tab's kernel; smooth at the 200k
+cap), surfaces/trimeshes render **value-coloured only under `fill=`** (neutral
+shading + a wireframe toggle otherwise; triangles touching a z-less node are
+holes, never guessed), geometry lattices and outline rings draw flat at the
+scene's reference elevation, contour polylines draw at their level, and wells
+draw identity-coloured with a screen-sized wellhead marker. The panel carries
+the colormap selector and the volume tab's **z-exaggeration** control (slider +
+"fit z ×N", display-only scale with a `z ×N` badge and true depths in the
+readout); the legend is the Map tab's per-layer machinery (type icons +
+duck-typed names like "Top Agat · z", ramp + clamped range on value-coloured
+layers). The volume tab's render discipline carries over: past the primitive
+budget the scene **auto-degrades** to a 1-in-stride decimated preview with a
+loud banner + `1:stride` badge, a malformed bundle surfaces a banner instead of
+a blank canvas, and the build outcome is exposed for tests as
+`window.__PETEK_SCENE3D_STATUS`.
+
 ### Wells (canvas 2-D)
 Multi-well **log correlation** (the `wells_logs` bundle, schema v4). N wells
 side-by-side on a **shared inverted depth axis** (depth down); each well carries a
@@ -231,8 +256,9 @@ the renderer is horizontal capability.
 
 `viewer.js` is **one shared-closure IIFE**, maintained as ordered fragments
 under `assets/viewer/` (`NN-name.js` — `00-app` core/state/palette, `10-chrome`
-lanes+tabs+shared UI, `20-map`, `30-section`, `40-volume`, `50-wells`,
-`60-charts`, `70-overlays` legends/readout/section-requests, `80-panel-boot`).
+lanes+tabs+shared UI, `20-map`, `30-section`, `40-volume`, `45-scene3d`,
+`50-wells`, `60-charts`, `70-overlays` legends/readout/section-requests,
+`80-panel-boot`).
 The parts are *not* standalone scripts or ES modules — the zero-external-fetch
 constraint rules out runtime imports — so the packaging layer
 (`viewer/_bundle.py`) concatenates them byte-for-byte in numeric filename order

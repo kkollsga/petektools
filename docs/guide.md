@@ -222,6 +222,22 @@ petektools.view2d([surface, well_points], color="inferno_-2700_-2500",
                   fill=True, contours=25.0)
 ```
 
+`petektools.view3d([...])` renders the same items in **one Three.js scene**
+(the viewer's "3D" tab) at full view2d parity: the same duck-typed item
+handling plus wells (`trajectory()` of `[x, y, z]` rows, z elevation —
+negative down), the same `color=` / `fill=` / `contours=` semantics and spec
+grammar, and the same per-layer legend. Points render as a colour-coded 3-D
+cloud (compact binary blocks, smooth at the 200k default cap),
+surfaces/trimeshes value-colour under `fill=` (neutral + wireframe toggle
+otherwise), geometry lattices/outlines draw flat at the scene's reference
+elevation, and contours draw at their level. A `z_exaggeration=` kwarg seeds
+the tab's z-exaggeration slider (display-only, default 5x — the volume tab's
+control):
+
+```python
+petektools.view3d([pts, geom], color="inferno_-2700_-2500")
+```
+
 ## Where to go next
 
 - **`API.md`** — the locked public contract (the *what*).
