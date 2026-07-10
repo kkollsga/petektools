@@ -222,6 +222,18 @@ petektools.view2d([surface, well_points], color="inferno_-2700_-2500",
                   fill=True, contours=25.0)
 ```
 
+Two more `view2d` kwargs tune the wire and the feel, not the picture.
+`encoding="blocks"` (the default) ships the map's bulk arrays as compact
+typed binary blocks — roughly 3× smaller than JSON floats on a large payload,
+decoded off the main thread; pass `encoding="json"` for a plain-JSON payload
+(small payloads are unaffected either way). `lod=True` (the default) adds a
+coarse display-only ring beside each fill / mesh grid / contour set from
+producers that support striding; the viewer switches to it when zoomed far
+out (a small "LOD" chip shows while coarse is on) and back to full resolution
+as you zoom in — **the data itself is never decimated**. `lod=(stride,)` /
+`lod=(stride, simplify)` tune it; `lod=False` turns it off. See the schema
+doc's MapBundle notes for the exact payload shapes.
+
 `petektools.view3d([...])` renders the same items in **one Three.js scene**
 (the viewer's "3D" tab) at full view2d parity: the same duck-typed item
 handling plus wells (`trajectory()` of `[x, y, z]` rows, z elevation —

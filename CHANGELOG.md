@@ -6,6 +6,8 @@ All notable changes to petekTools are recorded here. Format follows
 
 ## [Unreleased]
 
+## [0.2.11] - 2026-07-10
+
 ### Added
 - `view2d` / `view2d_payload` gain `lod: bool | tuple = True` — an additive
   **stride-ladder LOD** for the map. When on, every item whose producer duck
@@ -86,9 +88,11 @@ All notable changes to petekTools are recorded here. Format follows
 ### Changed
 - **Behaviour change (owner-approved, pre-1.0):** `view2d(..., color=True)` no
   longer fills items offering `value_layer()` — it colours points and selects
-  the colormap only. Pass `fill=` for value fills;
-  `view2d([pts, geom], color=True)` now shows coloured points + geometry lines
-  with no trimesh fill.
+  the colormap only. `view2d([pts, geom], color=True)` now shows coloured
+  points + geometry lines with no trimesh fill. **Migration:** a call that
+  relied on `color=True` (or `color="<spec>"`) to produce a value-coloured
+  trimesh fill must now ask for it explicitly — `view2d(items, fill=True)` or
+  `fill="<spec>"` (the spec grammar is shared with `color=`).
 - `color=` now defaults **on** in `view2d` / `view2d_payload`: points with a
   finite z are depth-coded out of the box; pass `color=False` for monochrome
   points. Fills (`fill=`) and contours (`contours=`) remain explicit opt-ins.

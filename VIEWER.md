@@ -78,6 +78,24 @@ outside the baked window/zoom band draws the batched immediate path (re-baking
 only when the gesture pauses), and hover hit-tests a coarse world-space grid
 bucket — so a **200k-point coloured cloud pans/zooms/hovers at frame rate**
 (≲10 ms worst gesture frame, sub-ms steady-state; previously ~145 ms per event).
+The active **value fill bakes the same way**: it rasterizes once into an
+offscreen bitmap that pan blits and an in-band zoom blits scaled, re-baking
+only on zoom-settle, so a ~78k-triangle fill never re-triangulates per gesture
+frame; a hidden tab cancels the settle timer (`visibilitychange`) and only the
+visible tab ever repaints.
+
+The `view2d` map's bulk arrays (points, fill nodes/triangles/values, grid
+lines, contour polylines) travel as **content-addressed typed binary blocks**
+by default (`encoding="blocks"`; ~3× smaller than JSON floats at 200k points,
+identical arrays ship once) and are decoded off the main thread in the shared
+decode worker, cached by digest; `encoding="json"` opts out and a JSON-shaped
+map renders identically. With `lod=` on (the default), producers that accept
+striding contribute one coarse **display-only LOD ring** per fill / mesh grid
+/ contour set; the viewer switches rings on zoom-settle (never per frame) when
+a full-resolution cell falls below ~4 px, shows a small "LOD" chip while
+coarse is up, and swaps back at full detail — geometry truth is never
+decimated. Payload shapes for both are in `SCHEMA.md` (MapBundle →
+**Binary blocks** / **Stride-ladder LOD**).
 
 For the `view2d` QA path, `color=` and `fill=` are **separate, explicit
 semantics** (owner ruling 2026-07-10): `color=` colours **points** (and picks
