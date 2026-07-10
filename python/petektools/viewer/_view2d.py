@@ -24,6 +24,7 @@ import math
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
+from . import _blocks
 from ._save import save_view
 from ._server import serve
 
@@ -39,6 +40,8 @@ def view2d_payload(
     max_line_points: int = 1000,
     point_limit: int | None = 200_000,
     max_mesh_edges: int | None = 150_000,
+    encoding: str = "blocks",
+    block_threshold_bytes: int = _blocks.DEFAULT_THRESHOLD_BYTES,
 ) -> dict[str, Any]:
     """Build a generic 2-D map payload from points, geometries, and outlines.
 
@@ -107,6 +110,16 @@ def view2d_payload(
     Point objects are rendered as points only. Topology-bearing point sets do
     not imply grid-line rendering; pass a geometry, structured surface, or
     trimesh when the grid itself should be visible.
+
+    ``encoding`` controls how the bulk arrays travel. ``"blocks"`` (default)
+    encodes ``points``, each fill's ``nodes``/``triangles``/``values``,
+    ``grid_lines`` and ``contours[i].lines`` as content-addressed typed binary
+    blocks (the v3 wire format; see ``SCHEMA.md`` / :mod:`_blocks`) with a
+    per-payload ``map["blocks"]`` digest table that ships each identical array
+    once — the viewer decodes them off the main thread into typed arrays. A
+    payload whose bulk arrays total under ``block_threshold_bytes`` (~64 KB of
+    floats) stays plain JSON regardless. ``encoding="json"`` forces the plain
+    (pre-blocks) shape; the viewer renders either.
     """
     color_spec = _parse_spec(color, "color")
     fill_spec = _parse_spec(fill, "fill")
@@ -251,7 +264,10 @@ def view2d_payload(
     if point_color is not None:
         summary["point_color"] = point_color["by"]
 
-    return {
+    if encoding not in ("blocks", "json"):
+        raise ValueError(f"encoding= must be 'blocks' or 'json', got {encoding!r}")
+
+    payload = {
         "schema_version": 4,
         "kind": "2D",
         "property": title,
@@ -280,6 +296,12 @@ def view2d_payload(
         "wells": [],
         "charts": [],
     }
+    # Additive: encode the bulk arrays as content-addressed typed blocks (the v3
+    # wire format) unless asked for plain JSON or the payload is below threshold.
+    # A JSON-shaped payload still renders (the viewer decodes both).
+    if encoding == "blocks":
+        _blocks.encode_map(payload["map"], threshold_bytes=block_threshold_bytes)
+    return payload
 
 
 def view2d(
@@ -297,6 +319,8 @@ def view2d(
     max_line_points: int = 1000,
     point_limit: int | None = 200_000,
     max_mesh_edges: int | None = 150_000,
+    encoding: str = "blocks",
+    block_threshold_bytes: int = _blocks.DEFAULT_THRESHOLD_BYTES,
 ) -> str | dict[str, Any]:
     """Open or save a generic 2-D map view.
 
@@ -319,6 +343,8 @@ def view2d(
         max_line_points=max_line_points,
         point_limit=point_limit,
         max_mesh_edges=max_mesh_edges,
+        encoding=encoding,
+        block_threshold_bytes=block_threshold_bytes,
     )
     if save is not None:
         save_view(payload, save)
