@@ -3,6 +3,7 @@
     var body = document.getElementById("panel-body"); body.innerHTML = "";
     if (App.tab === "map") buildMapPanel(body);
     else if (App.tab === "section") buildSectionPanel(body);
+    else if (App.tab === "scene3d") buildScene3dPanel(body);
     else if (App.tab === "charts") buildChartsPanel(body);
     else if (App.tab === "wells") buildWellsPanel(body);
     else buildVolumePanel(body);

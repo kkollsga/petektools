@@ -25,9 +25,11 @@
     initState();
     wireChrome();
     // A pure-analytics payload (charts only, no geometry) opens on the Charts tab;
-    // a logs-only payload (petekio's well.view() standalone path) opens on Wells.
+    // a logs-only payload (petekio's well.view() standalone path) opens on Wells;
+    // a view3d payload (scene3d, no map) opens straight on the 3D tab.
     if (!payload.map && !payload.volume && !(payload.sections && payload.sections.length)) {
-      if (payload.wells_logs && payload.wells_logs.wells && payload.wells_logs.wells.length) App.tab = "wells";
+      if (payload.scene3d) App.tab = "scene3d";
+      else if (payload.wells_logs && payload.wells_logs.wells && payload.wells_logs.wells.length) App.tab = "wells";
       else if (payload.charts && payload.charts.length) App.tab = "charts";
     }
     selectTab(App.tab);
@@ -75,6 +77,8 @@
     var p = App.payload;
     // Order = payload order → stable across sessions of the same bundle.
     (p.wells || []).forEach(function (w) { registerId("well:" + w.id); });
+    // 3-D scene wells (view3d payloads) take the same well: identity slots.
+    ((p.scene3d && p.scene3d.wells) || []).forEach(function (w) { registerId("well:" + w.id); });
     (p.map && p.map.horizons || []).forEach(function (h) { registerId("hz:" + h.name); });
     (p.map && p.map.contacts || []).forEach(function (c) { registerId("ct:" + c.kind); });
     (p.volume && p.volume.zone_names || []).forEach(function (z) { registerId("zone:" + z); });
@@ -201,9 +205,11 @@
     // to the first property map only when there are no horizon layers.
     S.mapLayerIdx = 0;
     if (S.mapLayerIdx >= S.mapLayers.length) S.mapLayerIdx = Math.max(0, S.mapLayers.length - 1);
-    // The payload may pin the initial colormap (a view2d color=/fill= "<cmap>"
-    // spec travels as map.colormap); the panel selector can still change it.
-    S.colormap = m.colormap && COLORMAPS[m.colormap] ? m.colormap : "viridis";
+    // The payload may pin the initial colormap (a view2d/view3d color=/fill=
+    // "<cmap>" spec travels as map.colormap / scene3d.colormap); the panel
+    // selector can still change it.
+    var pinned = m.colormap || (p.scene3d && p.scene3d.colormap);
+    S.colormap = pinned && COLORMAPS[pinned] ? pinned : "viridis";
     S.showOutline = true;
     S.clipRaster = true; // clip the areal raster to the outline polygon (QC toggle)
     S.showGridLines = true;
@@ -227,6 +233,18 @@
     // it; it only appears when the active section carries zone bands (graceful
     // fallback — a payload without zone_ids stays on the property colormap).
     S.sectionColorBy = "property";
+
+    // The 3-D scene tab (view3d payloads): z-exaggeration seed (the payload's
+    // z_exaggeration, the volume tab's 5x default otherwise) + per-kind layer
+    // visibility + the neutral-mesh wireframe option. The "3D" tab button only
+    // shows when the payload carries a scene3d bundle (older payloads see no
+    // new chrome).
+    var s3 = p.scene3d || {};
+    S.s3dExag = s3.z_exaggeration || 5;
+    S.s3dShow = { points: true, meshes: true, lattice: true, contours: true, wells: true, outlines: true };
+    S.s3dWireframe = false;
+    var tab3d = document.querySelector('.tab[data-tab="scene3d"]');
+    if (tab3d) tab3d.hidden = !p.scene3d;
 
     var v = p.volume || {};
     S.dims = deriveDims();
