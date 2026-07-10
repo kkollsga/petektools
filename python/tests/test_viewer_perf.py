@@ -1060,5 +1060,140 @@ def test_scene3d_auto_degrades_over_budget(tmp_path):
     assert 0 < st["points"] <= 1000  # the point cloud really decimated
 
 
+# --- 2-D map binary blocks: wire size + Node decode + content-addressed dedup --
+# The 2-D map's bulk arrays (points, fill nodes/triangles/values, grid_lines and
+# contour lines) historically shipped as JSON floats — a single 78k-triangle fill
+# is ~5-6 MB of JSON parsed on the main thread. The blocks encoding packs them as
+# the v3 typed binary blocks (base64 f32/u32) in a content-addressed digest table
+# so an identical array ships once, and the viewer decodes them off the main
+# thread into typed arrays. These legs assert the wire-size win, the Node decode
+# budget, and the dedup, all without a browser (the Node kernel is decode.js).
+import copy
+
+_MAP_BENCH_JS = Path(__file__).parent / "viewer_perf" / "map_decode_bench.js"
+
+MAP_POINTS_N = 200_000
+MAP_FILL_GRID = 198  # 198x198 nodes -> 197*197*2 = 77,618 triangles (~78k)
+MAP_WIRE_MIN_RATIO = 3.0     # blocks must be >= 3x smaller than the JSON floats
+MAP_DECODE_MS_MAX = 300.0    # Node decode of the ~200k-pt + 78k-tri block table
+
+
+def _synthetic_2d_map(*, npts: int = MAP_POINTS_N, grid: int = MAP_FILL_GRID) -> dict:
+    """A synthetic (pure-code) view2d `map` bundle in the PLAIN (JSON) shape: a
+    `npts` point cloud + one value-coloured trimesh fill of ~78k triangles, a few
+    grid lines and a contour set. `_blocks.encode_map` turns it into blocks."""
+    import random
+
+    rng = random.Random(7)
+    w = 5000.0
+    pts = []
+    for _ in range(npts):
+        x, y = rng.uniform(0, w), rng.uniform(0, w)
+        z = -2600.0 + 40.0 * (x / w) - 30.0 * (y / w) ** 2
+        # full-precision floats — the real view2d wire (no rounding), which is
+        # exactly where JSON floats balloon and the typed blocks win.
+        pts.append([x, y, z])
+    zs = [p[2] for p in pts]
+    nodes, values = [], []
+    for j in range(grid):
+        for i in range(grid):
+            nodes.append([i * 25.0, j * 25.0])
+            values.append(0.1 + 0.2 * math.sin(i / 10.0) * math.cos(j / 10.0))
+    tris = []
+    for j in range(grid - 1):
+        for i in range(grid - 1):
+            a = j * grid + i
+            tris.append([a, a + 1, a + grid])
+            tris.append([a + 1, a + grid + 1, a + grid])
+    fill = {"name": "phi", "display_name": "phi", "nodes": nodes,
+            "triangles": tris, "values": values, "range": [0.0, 0.4]}
+    grid_lines = [[[0.0, c * 250.0], [w, c * 250.0]] for c in range(20)]
+    contours = [{"level": -2600.0, "major": True,
+                 "lines": [[[0.0, 0.0], [w, w]], [[0.0, w], [w, 0.0]]]}]
+    return {
+        "schema_version": 2,
+        "frame": {"origin_x": 0, "origin_y": 0, "spacing_x": 25, "spacing_y": 25,
+                  "ncol": grid, "nrow": grid},
+        "outline": [[[0, 0], [w, 0], [w, w], [0, w], [0, 0]]],
+        "grid_lines": grid_lines, "points": pts,
+        "point_color": {"by": "z", "range": [min(zs), max(zs)]},
+        "colormap": "viridis", "layers": [], "fills": [fill], "contours": contours,
+        "horizons": [], "zone_averages": [], "k_slices": [], "contacts": [], "wells": [],
+    }
+
+
+def test_map_blocks_wire_size_beats_json():
+    from petektools.viewer import _blocks
+
+    plain = _synthetic_2d_map()
+    json_bytes = len(json.dumps(plain))
+    blocks = copy.deepcopy(plain)
+    encoded = _blocks.encode_map(blocks, threshold_bytes=0)
+    blocks_bytes = len(json.dumps(blocks))
+    ratio = json_bytes / blocks_bytes
+    print(f"\n[map-wire] 200k pts + 78k-tri fill: JSON {json_bytes/1e6:.1f} MB -> "
+          f"blocks {blocks_bytes/1e6:.1f} MB = {ratio:.2f}x smaller "
+          f"({len(blocks['blocks'])} table entries)")
+    assert encoded and "blocks" in blocks
+    assert ratio >= MAP_WIRE_MIN_RATIO, f"{ratio:.2f}x < {MAP_WIRE_MIN_RATIO}x"
+
+
+@pytest.mark.skipif(_NODE is None, reason="node not available")
+def test_map_blocks_decode_under_node(tmp_path):
+    from petektools.viewer import _blocks
+
+    blocks = _synthetic_2d_map()
+    _blocks.encode_map(blocks, threshold_bytes=0)
+    path = tmp_path / "map_blocks.json"
+    path.write_text(json.dumps(blocks))
+    out = subprocess.run([_NODE, str(_MAP_BENCH_JS), str(path), "3"],
+                         capture_output=True, text=True, timeout=120)
+    assert out.returncode == 0, out.stderr
+    r = json.loads(out.stdout.strip().splitlines()[-1])
+    print(f"\n[map-decode] decode {r['decodeMs']} ms | {r['tableEntries']} blocks | "
+          f"{r['elements']} elements | wire {path.stat().st_size/1e6:.1f} MB")
+    assert r["tableEntries"] > 0 and r["elements"] > 0
+    assert r["decodeMs"] < MAP_DECODE_MS_MAX, r
+
+
+def test_map_blocks_dedup_shared_mesh_ships_once():
+    from petektools.viewer import _blocks
+
+    # Two fills over the SAME mesh (identical nodes + triangles) but distinct
+    # values — the classic dedup case: the geometry blocks must ship once.
+    grid = 40
+    nodes = [[i * 25.0, j * 25.0] for j in range(grid) for i in range(grid)]
+    tris = []
+    for j in range(grid - 1):
+        for i in range(grid - 1):
+            a = j * grid + i
+            tris.append([a, a + 1, a + grid])
+            tris.append([a + 1, a + grid + 1, a + grid])
+    n = len(nodes)
+    fill_a = {"name": "phi", "display_name": "phi", "nodes": [list(p) for p in nodes],
+              "triangles": [list(t) for t in tris], "values": [0.1] * n, "range": [0.0, 1.0]}
+    fill_b = {"name": "sw", "display_name": "sw", "nodes": [list(p) for p in nodes],
+              "triangles": [list(t) for t in tris], "values": [0.9] * n, "range": [0.0, 1.0]}
+    m = {"schema_version": 2, "frame": {"origin_x": 0, "origin_y": 0, "spacing_x": 25,
+         "spacing_y": 25, "ncol": grid, "nrow": grid},
+         "outline": [], "grid_lines": [], "points": [], "point_color": None,
+         "colormap": None, "layers": [], "fills": [fill_a, fill_b], "contours": [],
+         "horizons": [], "zone_averages": [], "k_slices": [], "contacts": [], "wells": []}
+    assert _blocks.encode_map(m, threshold_bytes=0)
+    f0, f1 = m["fills"]
+    # shared geometry -> one digest referenced by both fills (ships once)
+    assert f0["nodes"]["__block__"] == f1["nodes"]["__block__"]
+    assert f0["triangles"]["__block__"] == f1["triangles"]["__block__"]
+    # distinct value arrays keep distinct digests (not falsely merged)
+    assert f0["values"]["__block__"] != f1["values"]["__block__"]
+    # the table carries each distinct block exactly once: nodes + triangles +
+    # two value blocks = 4 entries (no duplicated geometry)
+    table = m["blocks"]
+    assert f0["nodes"]["__block__"] in table and f0["triangles"]["__block__"] in table
+    assert len(table) == 4, sorted(table)
+    print(f"\n[map-dedup] 2 fills / shared mesh -> {len(table)} blocks "
+          f"(nodes+tris shared, 2 distinct value blocks)")
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-s"]))
