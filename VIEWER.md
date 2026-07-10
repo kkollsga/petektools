@@ -70,7 +70,15 @@ content. The raster is **windowed + resolution-capped** — only the grid cells 
 the current viewport are sampled, and never more than one sample per screen pixel
 (subsampled beyond that) — so a repaint costs a screenful regardless of ncol×nrow
 (a 2000×2000 field repaints in ~2 ms), while hover still reads the full-resolution
-value array. Pan (drag), zoom (wheel); the hover readout shows the layer value + cell
+value array. The **point-cloud overlay is batched + baked** the same way: points
+draw in ≤256 colormap-bin `Path2D`s (one fill per bin) into a viewport-windowed,
+memory-capped offscreen canvas that pan/zoom re-blit in one `drawImage`;
+wheel/drag repaints coalesce to at most one per animation frame, a gesture frame
+outside the baked window/zoom band draws the batched immediate path (re-baking
+only when the gesture pauses), and hover hit-tests a coarse world-space grid
+bucket — so a **200k-point coloured cloud pans/zooms/hovers at frame rate**
+(≲10 ms worst gesture frame, sub-ms steady-state; previously ~145 ms per event).
+Pan (drag), zoom (wheel); the hover readout shows the layer value + cell
 `i,j`, or — over a well marker — the well id + its mean/per-horizon surface-tie
 residuals. A well with ties also wears a small **tie-quality glyph** (3 pips filled
 by the mean-|residual| tier: ≤2 m good, ≤5 m fair, else poor; text tokens, never a

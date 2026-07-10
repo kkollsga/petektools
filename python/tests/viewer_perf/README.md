@@ -43,10 +43,12 @@ npm i playwright                    # or a global install; the harness require()
 node render_bench.mjs <view.html> [flags]
 #   --heap-cap-mb=N   --frame-cap-ms=N   --tri-budget=N   --expect-degraded
 #   --screenshot=PATH --tab=map|section|volume|charts
+#   --drag-events=N   --drag-frame-cap-ms=N   (synthetic map drag + hover sweep)
 ```
 
 Prints one JSON line: `{decodeRenderMs, mapRenderMs, sectionRenderMs,
-chartsRenderMs, usedJSHeapMB, volBadge, degradedBanner, consoleErrors}`.
+chartsRenderMs, usedJSHeapMB, volBadge, degradedBanner, consoleErrors}` (plus
+`dragFrames/dragFrameMsMedian/hoverAvgMs/hoverReadout` with `--drag-events`).
 
 Driven + budget-asserted by `test_viewer_perf.py` at the ledger scales — it builds
 a `save_view` HTML with a v3 volume **and** an areal map, then asserts a JS-heap
@@ -68,3 +70,22 @@ vs the ledger death point (both flavors dead at ~0.9–1.0M cells, V8 string wal
 silent). Now 5M cells render at 242 MB heap with no console errors, and an
 over-budget shell degrades to a decimated preview + a loud banner instead of ever
 crashing.
+
+## 3. 200k-point map overlay (`--drag-events`)
+
+The worst case that made `view2d` unusable: 200k points with `point_color` set
+plus an inferred-geometry grid-line overlay. `--drag-events=N` dispatches a
+synthetic map drag (~3 mousemove events per animation frame — the rAF-coalesced
+path must repaint at most once per frame; exit 8 when it doesn't) and a non-drag
+hover sweep, and `--drag-frame-cap-ms` budget-asserts the median coalesced
+repaint (exit 9). Driven by `test_render_200k_points_pan_hover_budget`.
+
+Measured (this machine, headless Chromium), 200k coloured points + ~160 overlay
+lines, before → after the batched/baked/rAF point path:
+
+| metric | before | after |
+|---|---:|---:|
+| map render (`__PETEK_RENDER_MS`) | 145.3 ms | 0.5 ms |
+| drag repaint | 138.9 ms/event (sync per event) | 30 frames / 90 events, median 0.1 ms |
+| wheel zoom | 138.8 ms/event | ≤ ~10 ms worst frame (immediate), sub-ms blit |
+| hover mousemove | 2.6 ms (O(n) scan) | 0.1 ms (grid bucket) |
