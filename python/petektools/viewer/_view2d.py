@@ -53,6 +53,8 @@ def view2d_payload(
 
     ``color=True`` asks every item offering ``value_layer()`` for its primary
     layer; a string asks for that attribute (``value_layer(attr=color)``).
+    With ``color`` on, plain points carrying a finite third component are
+    colour-coded by it (``map.point_color`` records the z range).
     ``contours=<float>`` requests ``iso_lines(interval=...)``; a list requests
     ``iso_lines(levels=...)``; a string ``color`` is forwarded as ``attr=``.
     Items without these methods are unaffected, and an item that yields a fill
@@ -142,6 +144,12 @@ def view2d_payload(
     if not outlines:
         outlines = _rect_outline_from_frame(frame)
 
+    point_color = None
+    if color:
+        zs = [p[2] for p in points if len(p) > 2 and math.isfinite(p[2])]
+        if zs:
+            point_color = {"by": "z", "range": [min(zs), max(zs)]}
+
     summary["points"] = len(points)
     summary["grid_lines"] = len(grid_lines)
     summary["outlines"] = len(outlines)
@@ -149,6 +157,8 @@ def view2d_payload(
         summary["fills"] = len(fills)
     if contour_sets:
         summary["contour_levels"] = len(contour_sets)
+    if point_color is not None:
+        summary["point_color"] = point_color["by"]
 
     return {
         "schema_version": 4,
@@ -163,6 +173,7 @@ def view2d_payload(
             "outline": outlines,
             "grid_lines": grid_lines,
             "points": points,
+            "point_color": point_color,
             "fills": fills,
             "contours": contour_sets,
             "horizons": [],

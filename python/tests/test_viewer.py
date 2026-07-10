@@ -287,6 +287,26 @@ def test_view2d_payload_renders_trimesh_edges_and_edge_outline():
     assert "mesh_edge_stride" not in p["summary"]
 
 
+def test_view2d_payload_color_codes_points_by_z():
+    class Points:
+        def xyz(self):
+            return [[0.0, 0.0, -10.0], [10.0, 0.0, -30.0], [5.0, 5.0, float("nan")]]
+
+    colored = viewer.view2d_payload([Points()], color=True)
+    assert colored["map"]["point_color"] == {"by": "z", "range": [-30.0, -10.0]}
+    assert colored["summary"]["point_color"] == "z"
+
+    plain = viewer.view2d_payload([Points()])
+    assert plain["map"]["point_color"] is None
+    assert "point_color" not in plain["summary"]
+
+    class FlatPoints:  # nothing finite in z → no colour coding
+        def xy(self):
+            return [[0.0, 0.0], [10.0, 0.0]]
+
+    assert viewer.view2d_payload([FlatPoints()], color=True)["map"]["point_color"] is None
+
+
 def test_view2d_payload_prefers_wireframe_edges_over_derived():
     class QuadMesh(_Mesh):
         def wireframe_edges(self):

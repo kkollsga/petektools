@@ -7,6 +7,10 @@ All notable changes to petekTools are recorded here. Format follows
 ## [Unreleased]
 
 ### Added
+- With `color=` on, `view2d` also colour-codes plain points by their z value
+  through the active colormap (additive `map.point_color` field); non-finite z
+  keeps the accent colour, and a points-only coloured view gets the ramp
+  legend.
 - `view2d(...)` / `view2d_payload(...)` gain `color=` and `contours=` kwargs:
   `color=True` (or `color="<attr>"`) collects each item's duck-typed
   `value_layer()` into a value-coloured trimesh fill drawn under the grid

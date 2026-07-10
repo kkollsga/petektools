@@ -54,6 +54,7 @@ state. `sections` may be empty (live mode adds them via `/section`).
 | `points` | list[Point] | optional 2-D QA overlay; `Point` = `[x, y, z?]` |
 | `fills` | list[TriFill] | **additive:** selectable value-coloured trimesh fills, drawn UNDER `grid_lines`/`outline`/`points` |
 | `contours` | list[ContourSet] | **additive:** iso-lines; all levels stroke as one batched path, stronger than grid lines |
+| `point_color` | PointColor \| null | **additive:** `{by: "z", range: [min, max]}` — points with a finite third component colour through the active colormap (non-finite z falls back to the accent); when no fill/ScalarLayer owns the legend, the ramp legend shows this range |
 | `horizons` | list[ScalarLayer] | selectable depth/field layers |
 | `zone_averages` | list[ScalarLayer] | selectable property layers |
 | `k_slices` | list[ScalarLayer] | optional per-k property slices |

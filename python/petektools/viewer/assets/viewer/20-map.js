@@ -193,11 +193,27 @@
     if (S.showPoints && App.payload.map.points) {
       var pts = App.payload.map.points;
       var r = Math.max(1.5, Math.min(3.5, mapView.scale < 0.05 ? 1.5 : 2.5));
-      ctx.fillStyle = token("--accent");
+      // depth-coded points: map.point_color carries the z range; precompute the
+      // css per LUT bin once, fall back to the accent for non-finite z
+      var pc = App.payload.map.point_color, pcss = null, plo = 0, pspan = 1, paccent = token("--accent");
+      if (pc && pc.range) {
+        var plut = colormapLUT(S.colormap); // flat Uint8Array of packed RGB triplets
+        pcss = [];
+        for (var pi = 0; pi + 2 < plut.length; pi += 3) {
+          pcss.push("rgb(" + plut[pi] + "," + plut[pi + 1] + "," + plut[pi + 2] + ")");
+        }
+        plo = pc.range[0]; pspan = (pc.range[1] - pc.range[0]) || 1;
+      }
+      ctx.fillStyle = paccent;
       ctx.globalAlpha = pts.length > 20000 ? 0.45 : 0.7;
       pts.forEach(function (pt) {
         var s = w2s(pt[0], pt[1]);
         if (s[0] < -r || s[1] < -r || s[0] > cv.width + r || s[1] > cv.height + r) return;
+        if (pcss) {
+          var z = pt[2];
+          ctx.fillStyle = (z == null || !isFinite(z)) ? paccent
+            : pcss[Math.max(0, Math.min(pcss.length - 1, Math.round((z - plo) / pspan * (pcss.length - 1))))];
+        }
         ctx.beginPath();
         ctx.arc(s[0], s[1], r, 0, 6.2832);
         ctx.fill();
@@ -304,7 +320,12 @@
       S.fence.pts.forEach(function (pt) { var s = w2s(pt[0], pt[1]); ctx.beginPath(); ctx.arc(s[0], s[1], 3, 0, 6.28); ctx.fillStyle = token("--accent"); ctx.fill(); });
     }
 
-    drawFieldLegend(layer, S.showFills ? activeFill : null);
+    var legendFill = S.showFills ? activeFill : null;
+    if (!layer && !legendFill && S.showPoints && App.payload.map.point_color) {
+      // points-only depth coding still deserves a ramp legend
+      legendFill = { name: "points · " + App.payload.map.point_color.by, range: App.payload.map.point_color.range };
+    }
+    drawFieldLegend(layer, legendFill);
   }
 
   // Value-coloured trimesh fill: each triangle flat-fills with the colormap
