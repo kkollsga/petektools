@@ -298,16 +298,21 @@ def _iso_contours(
     """Contour sets from an item's ``iso_lines()`` duck.
 
     A float ``contours`` requests ``iso_lines(interval=...)``, a list requests
-    ``iso_lines(levels=...)``; a string ``color`` forwards as ``attr=``. Returns
-    ``None`` when the item does not offer the method; raises ``TypeError`` on a
-    malformed result (each entry must be ``(level, [polyline, ...])``).
+    ``iso_lines(levels=...)``; a string ``color`` forwards as ``attr=``. In
+    interval mode, index levels — multiples of the round step nearest 4-5x the
+    interval — are flagged ``major`` and render bolder (explicit level lists
+    carry no majors). Returns ``None`` when the item does not offer the method;
+    raises ``TypeError`` on a malformed result (each entry must be
+    ``(level, [polyline, ...])``).
     """
     fn = getattr(item, "iso_lines", None)
     if not callable(fn):
         return None
     kwargs: dict[str, Any] = {}
+    major_step = None
     if isinstance(contours, (int, float)) and not isinstance(contours, bool):
         kwargs["interval"] = float(contours)
+        major_step = _major_step(float(contours))
     else:
         kwargs["levels"] = [float(v) for v in contours]
     if isinstance(color, str):
@@ -322,10 +327,31 @@ def _iso_contours(
                 f"iso_lines() on {name} must yield (level, [polyline, ...]) pairs, "
                 f"got {entry!r}"
             ) from None
+        level = float(level)
+        major = (
+            major_step is not None
+            and abs(level / major_step - round(level / major_step)) < 1e-6
+        )
         out.append(
-            {"level": float(level), "lines": [[_xy(p) for p in line] for line in lines]}
+            {
+                "level": level,
+                "major": major,
+                "lines": [[_xy(p) for p in line] for line in lines],
+            }
         )
     return out
+
+
+def _major_step(interval: float) -> float:
+    """The index-contour step: the first of 4x/5x the interval that lands on a
+    round number (mantissa 1, 2, 2.5, or 5), falling back to 5x."""
+    for k in (4, 5):
+        step = interval * k
+        exponent = math.floor(math.log10(step))
+        mantissa = step / 10**exponent
+        if any(abs(mantissa - m) < 1e-9 for m in (1.0, 2.0, 2.5, 5.0)):
+            return step
+    return interval * 5
 
 
 def _is_trimesh(obj: Any) -> bool:

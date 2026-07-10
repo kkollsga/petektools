@@ -163,20 +163,26 @@
       ctx.globalAlpha = 1;
     }
 
-    // contour iso-lines: ALL levels of all sets stroke as one batched path
-    // (the grid-lines trick), a bit darker/stronger than the grid lines.
+    // contour iso-lines: two batched paths (the grid-lines trick) — minor
+    // levels a bit stronger than grid lines, major/index levels bolder still.
     if (S.showContours && App.payload.map.contours && App.payload.map.contours.length) {
-      ctx.strokeStyle = token("--text-secondary");
-      ctx.globalAlpha = 0.6;
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      App.payload.map.contours.forEach(function (c) {
-        (c.lines || []).forEach(function (line) {
-          line.forEach(function (pt, i) { var s = w2s(pt[0], pt[1]); if (i === 0) ctx.moveTo(s[0], s[1]); else ctx.lineTo(s[0], s[1]); });
+      var strokeContours = function (sets, alpha, width) {
+        if (!sets.length) return;
+        ctx.strokeStyle = token("--text-secondary");
+        ctx.globalAlpha = alpha;
+        ctx.lineWidth = width;
+        ctx.beginPath();
+        sets.forEach(function (c) {
+          (c.lines || []).forEach(function (line) {
+            line.forEach(function (pt, i) { var s = w2s(pt[0], pt[1]); if (i === 0) ctx.moveTo(s[0], s[1]); else ctx.lineTo(s[0], s[1]); });
+          });
         });
-      });
-      ctx.stroke();
-      ctx.globalAlpha = 1;
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      };
+      var allSets = App.payload.map.contours;
+      strokeContours(allSets.filter(function (c) { return !c.major; }), 0.6, 1);
+      strokeContours(allSets.filter(function (c) { return c.major; }), 0.85, 2.25);
     }
 
     // outline rings

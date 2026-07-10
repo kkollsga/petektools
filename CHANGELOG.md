@@ -7,6 +7,9 @@ All notable changes to petekTools are recorded here. Format follows
 ## [Unreleased]
 
 ### Added
+- Contour sets carry an additive `major` flag: with `contours=<interval>`,
+  index levels at the round step nearest 4–5× the interval (e.g. 25 m → 100 m)
+  render as a second, bolder batched stroke — classic index-contour styling.
 - With `color=` on, `view2d` also colour-codes plain points by their z value
   through the active colormap (additive `map.point_color` field); non-finite z
   keeps the accent colour, and a points-only coloured view gets the ramp

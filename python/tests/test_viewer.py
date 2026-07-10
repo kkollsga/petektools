@@ -287,6 +287,22 @@ def test_view2d_payload_renders_trimesh_edges_and_edge_outline():
     assert "mesh_edge_stride" not in p["summary"]
 
 
+def test_view2d_payload_flags_major_contour_levels():
+    class Contoured:
+        def iso_lines(self, interval=None, levels=None, attr=None):
+            if interval is not None:  # pretend levels aligned to the interval
+                return [(v, [[[0.0, 0.0], [1.0, 1.0]]]) for v in (-150.0, -125.0, -100.0, -75.0)]
+            return [(v, [[[0.0, 0.0], [1.0, 1.0]]]) for v in levels]
+
+    p = viewer.view2d_payload([Contoured()], contours=25.0)
+    majors = {c["level"]: c["major"] for c in p["map"]["contours"]}
+    # 25 m interval -> 100 m index step (4x lands on a round number)
+    assert majors == {-150.0: False, -125.0: False, -100.0: True, -75.0: False}
+
+    explicit = viewer.view2d_payload([Contoured()], contours=[-110.0, -100.0])
+    assert all(c["major"] is False for c in explicit["map"]["contours"])
+
+
 def test_view2d_payload_color_codes_points_by_z():
     class Points:
         def xyz(self):

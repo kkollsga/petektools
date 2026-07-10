@@ -84,10 +84,13 @@ absent; a payload without them renders exactly as before (no `schema_version`
 bump — additive fields are non-breaking).
 
 **ContourSet (additive; the `view2d` `contours=` output):** `{level: float,
-lines: [[[x, y], …], …]}` — the world-coordinate polylines of one iso level.
-All levels of all sets stroke together as **one batched path** in a neutral
-text token, slightly darker/stronger than the grid lines. No labels (yet); a
-"Contours" toggle controls visibility.
+major: bool, lines: [[[x, y], …], …]}` — the world-coordinate polylines of one
+iso level. Minor levels stroke together as **one batched path** in a neutral
+text token, slightly darker/stronger than the grid lines; `major` (index)
+levels stroke as a second batched path, bolder (≈2.25 px at α 0.85). In
+interval mode the payload builder flags majors at the round step nearest 4–5×
+the interval (25 → 100, 20 → 100, 10 → 50); explicit level lists carry no
+majors. No labels (yet); a "Contours" toggle controls visibility of both.
 
 **Contact:** `{kind: str, depth_m: float, crossing: bool[ncol·nrow],
 display_name?: str}` — `crossing` marks the columns the contact plane cuts
