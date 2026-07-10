@@ -767,5 +767,129 @@ def test_long_fence_labels_stagger_not_cluster(tmp_path):
           f"x-range {min(L['x'] for L in light):.0f}..{max_x:.0f}")
 
 
+# --- color spec + per-layer legend: inferno points, clamped range, names ------
+# Drives the P2 semantics end to end in a real browser: a view2d payload built
+# with color="inferno_-2700_-2500" over NAMED points + a geometry must render
+# the cloud in the payload-pinned inferno ramp with the explicit range CLAMPING
+# out-of-range values to the ramp ends, show per-layer legend entries (type
+# icon + duck-typed name, ramp + clamped range on the value-coloured points),
+# initialize the colormap selector from the payload, and survive a theme flip.
+_LEGEND_JS = Path(__file__).parent / "viewer_perf" / "legend_bench.mjs"
+
+# world coordinates of the three probe blobs (z = max / min / below-min)
+_BLOB_MAX = (100.0, 100.0)
+_BLOB_MIN = (500.0, 100.0)
+_BLOB_CLAMP = (900.0, 100.0)
+
+
+def _build_inferno_points_view(tmp_path: Path) -> tuple[Path, dict]:
+    import random
+
+    from petektools import viewer
+
+    rng = random.Random(11)
+
+    class Points:
+        name = "Top Agat"
+
+        def xyz(self):
+            rows = []
+            for (cx, cy), z in (
+                (_BLOB_MAX, -2500.0),    # == range max -> inferno t=1
+                (_BLOB_MIN, -2700.0),    # == range min -> inferno t=0
+                (_BLOB_CLAMP, -3000.0),  # below min -> CLAMPS to t=0
+            ):
+                for _ in range(1500):
+                    rows.append([cx + rng.uniform(-20, 20), cy + rng.uniform(-20, 20), z])
+            return rows
+
+    class Geom:
+        name = "Agat grid"
+        xori = 0.0
+        yori = 0.0
+        xinc = 200.0
+        yinc = 200.0
+        ncol = 6
+        nrow = 6
+
+        def node_xy(self, i, j):
+            return (i * 200.0, j * 200.0)
+
+    payload = viewer.view2d_payload([Points(), Geom()], color="inferno_-2700_-2500")
+    out = tmp_path / "inferno_points.html"
+    save_view(payload, out)
+    return out, payload
+
+
+def _run_legend(view: Path, shots: Path, timeout: int = 90) -> dict:
+    out = subprocess.run(
+        [_NODE, str(_LEGEND_JS), str(view),
+         f"--p1={_BLOB_MAX[0]},{_BLOB_MAX[1]}",
+         f"--p2={_BLOB_MIN[0]},{_BLOB_MIN[1]}",
+         f"--p3={_BLOB_CLAMP[0]},{_BLOB_CLAMP[1]}",
+         f"--shot-light={shots / 'map-inferno-light.png'}",
+         f"--shot-dark={shots / 'map-inferno-dark.png'}"],
+        capture_output=True, text=True, timeout=timeout,
+    )
+    line = (out.stdout.strip().splitlines() or ["{}"])[-1]
+    data = json.loads(line) if line.startswith("{") else {}
+    return {"rc": out.returncode, "stderr": out.stderr, **data}
+
+
+def _num(text: str) -> float:
+    """A legend scale label back to its number (locale separators stripped)."""
+    return float(text.replace(",", "").replace(" ", "").replace(" ", ""))
+
+
+def _close(a, b, tol: int = 30) -> bool:
+    return a is not None and b is not None and all(abs(x - y) <= tol for x, y in zip(a, b))
+
+
+@pytest.mark.skipif(not _HAVE_PW, reason="playwright + chromium not available (browser leg)")
+def test_map_inferno_points_clamped_legend_names_both_themes(tmp_path):
+    view, payload = _build_inferno_points_view(tmp_path)
+    # payload-side sanity: colormap pinned, explicit clamp range, NO fill
+    assert payload["map"]["colormap"] == "inferno"
+    assert payload["map"]["point_color"] == {"by": "z", "range": [-2700.0, -2500.0]}
+    assert payload["map"]["fills"] == []
+    assert {"kind": "points", "name": "Top Agat"} in payload["map"]["layers"]
+
+    shots = Path(os.environ.get("PETEK_SHOTS_DIR", str(tmp_path)))
+    shots.mkdir(parents=True, exist_ok=True)
+    r = _run_legend(view, shots)
+    assert r["rc"] == 0, r.get("stderr")
+    assert not r.get("consoleErrors"), r["consoleErrors"]
+
+    inferno_lo, inferno_hi = [0, 0, 4], [252, 255, 164]  # ramp ends (t=0 / t=1)
+    alpha = 0.7  # the batched point path's fill alpha (< 20k points)
+
+    def _blend(c, bg):  # a point bin composites ONCE over the background
+        return [alpha * ci + (1 - alpha) * bi for ci, bi in zip(c, bg)]
+
+    for mode in ("light", "dark"):
+        s = r[mode]
+        # the cloud rendered in the inferno ramp: max blob at the hot end,
+        # min blob at the dark end (colours composite over the theme surface)
+        assert _close(s["blobMax"], _blend(inferno_hi, s["bg"]), tol=12), (mode, s)
+        assert _close(s["blobMin"], _blend(inferno_lo, s["bg"]), tol=12), (mode, s)
+        # CLAMP: the below-range blob paints exactly like the min blob
+        assert _close(s["blobClamped"], s["blobMin"], tol=10), (mode, s)
+        assert not _close(s["blobClamped"], s["blobMax"]), (mode, s)
+        # legend: the points layer wears its duck-typed NAME + the clamped range
+        pts_hdr = [h for h in s["headers"] if "Top Agat" in h]
+        assert pts_hdr, (mode, s["headers"])
+        scale = s["scales"][0]
+        assert _num(scale[0]) == -2700.0 and _num(scale[1]) == -2500.0, (mode, s["scales"])
+        # the geometry layer's name appears as a key row, with type icons drawn
+        assert any("Agat grid" in k for k in s["keys"]), (mode, s["keys"])
+        assert s["icons"] >= 2, (mode, s)  # points block icon + lines row icon
+        # the colormap selector initialized from the payload
+        assert s["colormap"] == "inferno", (mode, s["colormap"])
+    assert r["dark"]["theme"] == "dark", r["dark"]
+    print(f"\n[legend] blobs max/min/clamped (light) = {r['light']['blobMax']}/"
+          f"{r['light']['blobMin']}/{r['light']['blobClamped']} | "
+          f"headers = {r['light']['headers']} | keys = {r['light']['keys']}")
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-s"]))

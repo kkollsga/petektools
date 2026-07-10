@@ -1,32 +1,118 @@
   // ---- legends -------------------------------------------------------------
+  // A small canvas TYPE GLYPH for a legend entry — the layer-kind icons: dot
+  // cluster = points, lattice lines = geometry/grid lines, filled colormap
+  // swatch = value fill, squiggle = contours, marker-with-leader = wells.
+  // Drawn from the live tokens/colormap, so a theme flip or colormap change
+  // restyles it on the next legend rebuild.
+  function typeIcon(kind, color) {
+    var c = document.createElement("canvas");
+    c.width = 18; c.height = 12; c.className = "type-icon";
+    var x = c.getContext("2d");
+    if (kind === "points") {
+      x.fillStyle = color || token("--accent");
+      [[4, 6], [9, 3], [13, 8], [8, 9]].forEach(function (p) {
+        x.beginPath(); x.arc(p[0], p[1], 1.7, 0, 6.2832); x.fill();
+      });
+    } else if (kind === "lines") {
+      x.strokeStyle = color || token("--muted"); x.lineWidth = 1.2;
+      x.beginPath();
+      x.moveTo(1, 3.5); x.lineTo(17, 3.5); x.moveTo(1, 8.5); x.lineTo(17, 8.5);
+      x.moveTo(6, 1); x.lineTo(6, 11); x.moveTo(12, 1); x.lineTo(12, 11);
+      x.stroke();
+    } else if (kind === "contours") {
+      x.strokeStyle = color || token("--text-secondary"); x.lineWidth = 1.5;
+      x.beginPath(); x.moveTo(1, 8); x.bezierCurveTo(5, 1, 8, 12, 12, 5); x.quadraticCurveTo(15, 1, 17, 4); x.stroke();
+    } else if (kind === "wells") {
+      x.fillStyle = color || token("--text-secondary");
+      x.beginPath(); x.arc(7, 6, 3.2, 0, 6.2832); x.fill();
+      x.strokeStyle = token("--surface-1"); x.lineWidth = 1.2; x.stroke();
+      x.strokeStyle = color || token("--text-secondary"); x.lineWidth = 1;
+      x.beginPath(); x.moveTo(11, 6); x.lineTo(16, 6); x.stroke();
+    } else { // "fill": a filled swatch carrying the active colormap ramp
+      var g = x.createLinearGradient(0, 0, 18, 0);
+      var stops = COLORMAPS[S.colormap] || COLORMAPS.viridis;
+      stops.forEach(function (s, i) { g.addColorStop(i / (stops.length - 1), "rgb(" + s[0] + "," + s[1] + "," + s[2] + ")"); });
+      x.fillStyle = g;
+      x.fillRect(1, 1, 16, 10);
+    }
+    return c;
+  }
+  function iconKeyRow(kind, label, color) {
+    var k = el("div", "k");
+    k.appendChild(typeIcon(kind, color));
+    k.appendChild(el("span", null, label));
+    return k;
+  }
+  // One value-coloured legend block: [icon] name header + colormap ramp +
+  // min/max scale (the range already reflects any user clamp — out-of-range
+  // values render at the ramp ends).
+  function rampBlock(lg, icon, label, lo, hi) {
+    var h = el("h3");
+    if (icon) h.appendChild(icon);
+    h.appendChild(el("span", null, label));
+    lg.appendChild(h);
+    var ramp = el("div", "ramp"); ramp.style.background = rampGradient(S.colormap);
+    lg.appendChild(ramp);
+    var sc = el("div", "scale");
+    sc.appendChild(el("span", null, fmt(lo)));
+    sc.appendChild(el("span", null, fmt(hi)));
+    lg.appendChild(sc);
+  }
+  // The map's per-layer legend entries. `map.layers` (additive) carries one
+  // {kind, name} per emitted layer, `name` duck-typed from the producer object
+  // (e.g. "Top Agat"); an older payload without it derives plain kind entries.
+  function mapLegendLayers(m) {
+    if (m.layers && m.layers.length) return m.layers;
+    var out = [];
+    if ((m.points || []).length) out.push({ kind: "points", name: null });
+    if ((m.grid_lines || []).length) out.push({ kind: "lines", name: null });
+    if ((m.contours || []).length) out.push({ kind: "contours", name: null });
+    return out;
+  }
   function drawFieldLegend(layer, fill) {
     var lg = document.getElementById("legend"); lg.innerHTML = "";
     if (layer) {
-      lg.appendChild(el("h3", null, (layer.display || layer.name) + (layer.units ? "  (" + layer.units + ")" : "")));
-      var ramp = el("div", "ramp"); ramp.style.background = rampGradient(S.colormap);
-      lg.appendChild(ramp);
-      var sc = el("div", "scale");
-      sc.appendChild(el("span", null, fmt(layer.range.min)));
-      sc.appendChild(el("span", null, fmt(layer.range.max)));
-      lg.appendChild(sc);
+      rampBlock(lg, App.tab === "map" ? typeIcon("fill") : null,
+        (layer.display || layer.name) + (layer.units ? "  (" + layer.units + ")" : ""),
+        layer.range.min, layer.range.max);
     }
-    // active value-coloured fill: name + colour ramp + min/max. Its `range` is
-    // the seam's two-float [min, max] (not the {min, max} object).
+    // active value-coloured fill: type icon + display name + ramp + min/max.
+    // Its `range` is the seam's two-float [min, max] (not the {min, max}
+    // object) — the user's fill= clamp range when one was specified.
     if (fill) {
-      lg.appendChild(el("h3", null, disp(fill, fill.name)));
-      var framp = el("div", "ramp"); framp.style.background = rampGradient(S.colormap);
-      lg.appendChild(framp);
       var fr = fill.range || [];
-      var fsc = el("div", "scale");
-      fsc.appendChild(el("span", null, fmt(fr[0])));
-      fsc.appendChild(el("span", null, fmt(fr[1])));
-      lg.appendChild(fsc);
+      rampBlock(lg, typeIcon("fill"), disp(fill, fill.name), fr[0], fr[1]);
     }
     // identity keys present in this view
     var keys = el("div", "keys");
     if (App.tab === "map") {
-      (App.payload.map.contacts || []).forEach(function (c, i) { if (S.contactVis[i]) keys.appendChild(keyRow(disp(c, c.kind), idColor("ct:" + c.kind), false)); });
-      (App.payload.wells || []).forEach(function (w, i) { if (S.wellVis[i]) keys.appendChild(keyRow(disp(w, w.id), idColor("well:" + w.id), false)); });
+      var m = App.payload.map;
+      // one entry per visible layer: type icon + display name (fallback: the
+      // layer kind); value-coloured points get the ramp + their clamped range.
+      var pc = m.point_color;
+      var pointsRampDrawn = false;
+      mapLegendLayers(m).forEach(function (ly) {
+        if (ly.kind === "points") {
+          if (!S.showPoints || !(m.points || []).length) return;
+          var plabel = ly.name ? pretty(ly.name) : "points";
+          if (pc && pc.range && !pointsRampDrawn) {
+            pointsRampDrawn = true;
+            rampBlock(lg, typeIcon("points", rampCss(S.colormap, 0.75)),
+              plabel + " · " + (pc.by || "z"), pc.range[0], pc.range[1]);
+          } else {
+            keys.appendChild(iconKeyRow("points", plabel,
+              pc && pc.range ? rampCss(S.colormap, 0.75) : token("--accent")));
+          }
+        } else if (ly.kind === "lines") {
+          if (!S.showGridLines || !(m.grid_lines || []).length) return;
+          keys.appendChild(iconKeyRow("lines", ly.name ? pretty(ly.name) : "grid lines", token("--muted")));
+        } else if (ly.kind === "contours") {
+          if (!S.showContours || !(m.contours || []).length) return;
+          keys.appendChild(iconKeyRow("contours", ly.name ? pretty(ly.name) : "contours", token("--text-secondary")));
+        }
+      });
+      (m.contacts || []).forEach(function (c, i) { if (S.contactVis[i]) keys.appendChild(keyRow(disp(c, c.kind), idColor("ct:" + c.kind), false)); });
+      (App.payload.wells || []).forEach(function (w, i) { if (S.wellVis[i]) keys.appendChild(iconKeyRow("wells", disp(w, w.id), idColor("well:" + w.id))); });
     } else if (App.tab === "section") {
       var b = S.sections[S.sectionIdx];
       if (b) {

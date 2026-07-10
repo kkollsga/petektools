@@ -123,13 +123,17 @@
   function token(name) { return cssvar(name); }
 
   // ---- perceptually-uniform colormaps (continuous fields) ------------------
-  // Anchor stops (sRGB 0..1) — viridis/magma sampled at 0,.25,.5,.75,1; linear
-  // interpolation between is smooth enough for a raster/mesh ramp.
+  // Anchor stops (sRGB 0..1) — each map sampled at 0,.25,.5,.75,1; linear
+  // interpolation between is smooth enough for a raster/mesh ramp. The name
+  // set is the registry the Python color=/fill= spec grammar matches against
+  // (petektools.viewer._view2d._COLORMAPS) — keep the two in sync.
   var COLORMAPS = {
     viridis: [[68, 1, 84], [59, 82, 139], [33, 145, 140], [94, 201, 98], [253, 231, 37]],
     magma: [[0, 0, 4], [81, 18, 124], [183, 55, 121], [252, 137, 97], [252, 253, 191]],
     grays: [[30, 30, 30], [90, 90, 90], [140, 140, 140], [195, 195, 195], [245, 245, 245]],
+    inferno: [[0, 0, 4], [87, 16, 110], [188, 55, 84], [249, 142, 9], [252, 255, 164]],
   };
+  var COLORMAP_NAMES = ["viridis", "magma", "grays", "inferno"];
   function rampColor(name, t) {
     if (!isFinite(t)) return null;
     t = t < 0 ? 0 : t > 1 ? 1 : t;
@@ -197,7 +201,9 @@
     // to the first property map only when there are no horizon layers.
     S.mapLayerIdx = 0;
     if (S.mapLayerIdx >= S.mapLayers.length) S.mapLayerIdx = Math.max(0, S.mapLayers.length - 1);
-    S.colormap = "viridis";
+    // The payload may pin the initial colormap (a view2d color=/fill= "<cmap>"
+    // spec travels as map.colormap); the panel selector can still change it.
+    S.colormap = m.colormap && COLORMAPS[m.colormap] ? m.colormap : "viridis";
     S.showOutline = true;
     S.clipRaster = true; // clip the areal raster to the outline polygon (QC toggle)
     S.showGridLines = true;

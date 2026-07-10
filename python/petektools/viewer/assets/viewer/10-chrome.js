@@ -118,8 +118,8 @@
     return lab;
   }
   function colormapRow() {
-    return selectRow("Colormap", ["viridis", "magma", "grays"], ["viridis", "magma", "grays"].indexOf(S.colormap), function (i) {
-      S.colormap = ["viridis", "magma", "grays"][i]; renderActive();
+    return selectRow("Colormap", COLORMAP_NAMES, COLORMAP_NAMES.indexOf(S.colormap), function (i) {
+      S.colormap = COLORMAP_NAMES[i]; renderActive();
     });
   }
 

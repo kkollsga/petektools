@@ -31,6 +31,14 @@
       body.appendChild(fg);
     }
 
+    // value-coloured points with no raster layer and no fill still need the
+    // colormap selector (the ramp colours the point cloud + its legend).
+    if (!S.mapLayers.length && !fills.length && App.payload.map.point_color) {
+      var pg = group("Points");
+      pg.appendChild(colormapRow());
+      body.appendChild(pg);
+    }
+
     var t = group("Layers");
     t.appendChild(toggleRow("Outline", S.showOutline, token("--text-secondary"), true, function (v) { S.showOutline = v; renderMap(); }));
     if (fills.length) {

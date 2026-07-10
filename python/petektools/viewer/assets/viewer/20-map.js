@@ -303,12 +303,12 @@
       S.fence.pts.forEach(function (pt) { var s = w2s(pt[0], pt[1]); ctx.beginPath(); ctx.arc(s[0], s[1], 3, 0, 6.28); ctx.fillStyle = token("--accent"); ctx.fill(); });
     }
 
-    var legendFill = S.showFills ? activeFill : null;
-    if (!layer && !legendFill && S.showPoints && App.payload.map.point_color) {
-      // points-only depth coding still deserves a ramp legend
-      legendFill = { name: "points · " + App.payload.map.point_color.by, range: App.payload.map.point_color.range };
-    }
-    drawFieldLegend(layer, legendFill);
+    // Per-layer legend entries (type icon + display name; a ramp + clamped
+    // range where the layer is value-coloured) are assembled in
+    // drawFieldLegend from map.layers / point_color / the active fill.
+    drawFieldLegend(layer, S.showFills ? activeFill : null);
+    // world→screen transform, exposed for the browser test harness
+    window.__PETEK_MAP_VIEW = { scale: mapView.scale, ox: mapView.ox, oy: mapView.oy };
   }
 
   // ---- point cloud: batched colour bins + offscreen bake + rAF coalescing ----

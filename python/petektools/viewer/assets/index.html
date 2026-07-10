@@ -121,7 +121,9 @@
     border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px;
     max-width: 260px; backdrop-filter: blur(3px);
   }
-  .legend h3 { margin: 0 0 6px; font-size: 11px; color: var(--text-secondary); font-weight: 600; }
+  .legend h3 { margin: 0 0 6px; font-size: 11px; color: var(--text-secondary); font-weight: 600; display: flex; align-items: center; gap: 6px; }
+  .legend h3 + .ramp, .legend .scale + h3 { margin-top: 6px; }
+  .legend .type-icon { flex: none; border-radius: 2px; }
   .legend .ramp { height: 10px; border-radius: 3px; margin: 4px 0; }
   .legend .scale { display: flex; justify-content: space-between; font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; }
   .legend .keys { margin-top: 6px; display: grid; gap: 3px; }
