@@ -6,6 +6,8 @@ All notable changes to petekTools are recorded here. Format follows
 
 ## [Unreleased]
 
+## [0.2.10] - 2026-07-10
+
 ### Added
 - Contour sets carry an additive `major` flag: with `contours=<interval>`,
   index levels at the round step nearest 4–5× the interval (e.g. 25 m → 100 m)
