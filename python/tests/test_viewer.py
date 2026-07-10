@@ -586,6 +586,155 @@ def test_view2d_malformed_value_layer_raises():
         viewer.view2d_payload([BadMesh()], fill=True)
 
 
+# --- stride-ladder LOD (view2d lod=) ------------------------------------------
+class _LodMesh:
+    """A trimesh whose producer ducks accept the LOD striding kwargs:
+    ``value_layer(stride=)``, ``wireframe_edges(stride=)``, ``iso_lines(simplify=)``.
+    A coarse call (stride > 1 / simplify set) returns a decimated ring; it records
+    every kwarg it saw so the tests can assert the derived defaults."""
+
+    name = "Top"
+
+    def __init__(self):
+        self.seen: dict = {}
+
+    def xyz(self):
+        return [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [10.0, 10.0, 0.0]]
+
+    def points(self):
+        return self.xyz()
+
+    def triangles(self):
+        return [(0, 1, 2), (1, 3, 2)]
+
+    def wireframe_edges(self, stride=None):
+        self.seen["wf_stride"] = stride
+        if stride and stride > 1:
+            return [(0, 1), (1, 3)]
+        return [(0, 1), (1, 2), (2, 3), (3, 0), (0, 3)]
+
+    def value_layer(self, attr=None, stride=None):
+        self.seen.setdefault("vl_strides", []).append(stride)
+        if stride and stride > 1:
+            return {"name": attr or "z", "nodes": [[0.0, 0.0], [10.0, 10.0]],
+                    "triangles": [(0, 1, 0)], "values": [1.0, 2.0], "range": [1.0, 4.0]}
+        return {"name": attr or "z",
+                "nodes": [[0.0, 0.0], [10.0, 0.0], [0.0, 10.0], [10.0, 10.0]],
+                "triangles": [(0, 1, 2), (1, 3, 2)], "values": [1.0, 2.0, 3.0, 4.0],
+                "range": [1.0, 4.0]}
+
+    def iso_lines(self, interval=None, levels=None, attr=None, simplify=None):
+        self.seen.setdefault("iso_simplify", []).append(simplify)
+        # same LEVELS full vs coarse (only the geometry is simplified) — a real
+        # Douglas–Peucker producer keeps the level set, so full and coarse align
+        if simplify:
+            return [(1.5, [[[0.0, 1.0], [5.0, 6.0]]]),
+                    (2.5, [[[0.0, 3.0], [10.0, 8.0]]])]
+        return [(1.5, [[[0.0, 1.0], [2.0, 3.0], [5.0, 6.0]]]),
+                (2.5, [[[0.0, 3.0], [10.0, 8.0]]])]
+
+
+def test_view2d_lod_emits_full_and_coarse_rings():
+    mesh = _LodMesh()
+    p = viewer.view2d_payload([mesh], fill=True, contours=25.0, lod=True, encoding="json")
+    m = p["map"]
+    # fill LOD ring: additive `lod` sub-dict, full-res range kept (stable colours)
+    lod = m["fills"][0]["lod"]
+    assert set(lod) == {"stride", "nodes", "triangles", "values", "range"}
+    assert lod["stride"] == 4
+    assert lod["nodes"] == [[0.0, 0.0], [10.0, 10.0]]
+    assert lod["triangles"] == [[0, 1, 0]]
+    assert lod["range"] == [1.0, 4.0]  # the FULL-res range, not a coarse re-range
+    # coarse mesh grid lines: fewer unique edges than the full ring (2 vs 4;
+    # the full wireframe's (3,0)/(0,3) collapse to one undirected edge)
+    assert "grid_lines_lod" in m
+    assert sum(len(l) - 1 for l in m["grid_lines_lod"]) == 2
+    assert sum(len(l) - 1 for l in m["grid_lines"]) == 4
+    assert mesh.seen["wf_stride"] == 4
+    # coarse contour ring on each set
+    assert all("lines_lod" in c for c in m["contours"])
+    assert m["contours"][0]["lines_lod"] == [[[0.0, 1.0], [5.0, 6.0]]]
+
+
+def test_view2d_lod_false_emits_no_rings():
+    mesh = _LodMesh()
+    p = viewer.view2d_payload([mesh], fill=True, contours=25.0, lod=False, encoding="json")
+    m = p["map"]
+    assert "lod" not in m["fills"][0]
+    assert "grid_lines_lod" not in m
+    assert all("lines_lod" not in c for c in m["contours"])
+    # the producer's coarse (stride>1) path was never requested
+    assert all(s is None for s in mesh.seen.get("vl_strides", []))
+    assert mesh.seen.get("wf_stride") is None
+    assert all(s is None for s in mesh.seen.get("iso_simplify", []))
+
+
+def test_view2d_lod_default_matches_lod_false_when_unsupported():
+    # A producer whose ducks DON'T accept the striding kwargs: lod=True must
+    # feature-detect (TypeError) and degrade to a payload byte-identical to
+    # lod=False (the "no coarse ring, no error, no change" contract).
+    on = viewer.view2d_payload([_ValueMesh()], fill=True, contours=25.0, lod=True, encoding="json")
+    off = viewer.view2d_payload([_ValueMesh()], fill=True, contours=25.0, lod=False, encoding="json")
+    assert json.dumps(on, sort_keys=True) == json.dumps(off, sort_keys=True)
+    assert "lod" not in on["map"]["fills"][0]
+
+
+def test_view2d_lod_feature_detect_fill_fallback():
+    # The explicit mock from the brief: value_layer rejects stride → no ring, no
+    # error. _ValueMesh.value_layer(self, attr=None) has no `stride` parameter.
+    p = viewer.view2d_payload([_ValueMesh()], fill=True, lod=True, encoding="json")
+    assert "lod" not in p["map"]["fills"][0]
+    assert p["map"]["fills"][0]["nodes"]  # the full ring is unaffected
+
+
+def test_view2d_lod_simplify_default_derives_from_extent():
+    mesh = _LodMesh()
+    viewer.view2d_payload([mesh], contours=25.0, lod=True, encoding="json")
+    # full contour coords span x 0..10, y 1..8 → max extent 10 → simplify 10/512
+    simplifies = [s for s in mesh.seen["iso_simplify"] if s is not None]
+    assert len(simplifies) == 1
+    assert simplifies[0] == pytest.approx(10.0 / 512.0)
+
+
+def test_view2d_lod_tuple_overrides_stride_and_simplify():
+    mesh = _LodMesh()
+    p = viewer.view2d_payload([mesh], fill=True, contours=25.0, lod=(8, 2.5), encoding="json")
+    assert p["map"]["fills"][0]["lod"]["stride"] == 8
+    assert mesh.seen["wf_stride"] == 8
+    assert 8 in mesh.seen["vl_strides"]
+    assert 2.5 in mesh.seen["iso_simplify"]  # explicit simplify, not the auto value
+    # single-element tuple = stride only, simplify auto
+    mesh2 = _LodMesh()
+    viewer.view2d_payload([mesh2], fill=True, lod=(6,), encoding="json")
+    assert 6 in mesh2.seen["vl_strides"]
+
+
+def test_view2d_lod_rejects_bad_tuple():
+    with pytest.raises(ValueError, match="stride must be >= 2"):
+        viewer.view2d_payload([_LodMesh()], lod=(1,))
+    with pytest.raises(ValueError, match=r"\(stride,\) or \(stride, simplify\)"):
+        viewer.view2d_payload([_LodMesh()], lod=(2, 3, 4))
+
+
+def test_view2d_lod_rings_are_block_encoded():
+    # With blocks on (threshold 0), every LOD ring is a typed block / CSR marker
+    # in the same table as the full rings, and round-trips.
+    mesh = _LodMesh()
+    p = viewer.view2d_payload([mesh], fill=True, contours=25.0, lod=True,
+                              encoding="blocks", block_threshold_bytes=0)
+    m = p["map"]
+    lod = m["fills"][0]["lod"]
+    assert set(lod["nodes"]) == {"__block__"}
+    assert set(lod["triangles"]) == {"__block__"}
+    assert set(lod["values"]) == {"__block__"}
+    assert set(m["grid_lines_lod"]) == {"__csr__"}
+    assert all(set(c["lines_lod"]) == {"__csr__"} for c in m["contours"])
+    table = m["blocks"]
+    # the coarse fill nodes decode back to the 2-node coarse ring
+    coarse_nodes = _decode_block(table[lod["nodes"]["__block__"]])
+    assert list(coarse_nodes) == [0.0, 0.0, 10.0, 10.0]
+
+
 # --- bare value-bearing items (the petekio regular-Surface duck) ---------------
 class _SurfaceGeom:
     xori = 0.0
@@ -983,6 +1132,24 @@ def test_viewer_bundle_assembles_one_iife():
     assert "import " not in src.split("\n")[0]
     # Every part contributes (no empty fragment silently dropped from the bundle).
     assert all(p.read_text().strip() for p in parts)
+
+
+def test_viewer_bundle_parses_under_node(tmp_path):
+    """The assembled bundle is syntactically valid JS (`node --check`). The parts
+    are IIFE fragments (not standalone) — only the concatenation is checkable, and
+    it is the artifact the browser actually loads."""
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not available")
+    from petektools.viewer import _bundle
+
+    src = tmp_path / "viewer.js"
+    src.write_text(_bundle.viewer_js())
+    out = subprocess.run([node, "--check", str(src)], capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0, out.stderr
 
 
 def test_save_view_accepts_json_string(payload):

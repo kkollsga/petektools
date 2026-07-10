@@ -55,6 +55,7 @@ state. `sections` may be empty (live mode adds them via `/section`).
 | `points` | list[Point] | optional 2-D QA overlay; `Point` = `[x, y, z?]` |
 | `fills` | list[TriFill] | **additive:** selectable value-coloured trimesh fills, drawn UNDER `grid_lines`/`outline`/`points` |
 | `contours` | list[ContourSet] | **additive:** iso-lines; all levels stroke as one batched path, stronger than grid lines |
+| `grid_lines_lod` | list[Line] \| absent | **additive (LOD):** the coarse (strided) `grid_lines` ring — present only when a mesh producer supplied one; see **Stride-ladder LOD** |
 | `point_color` | PointColor \| null | **additive:** `{by: "z", range: [min, max]}` — points with a finite third component colour through the active colormap (non-finite z falls back to the accent). `range` is the producer's data range or the user's explicit `color=` clamp range — values outside it clamp to the ramp ends; the legend's points entry shows this range |
 | `colormap` | str \| null | **additive:** the initial colormap for this payload (`viridis`\|`magma`\|`grays`\|`inferno`) — the parsed `<cmap>` of a `view2d` `color=`/`fill=` spec (`color`'s wins over `fill`'s). The panel selector can still change it; an unknown/absent name keeps the viridis default |
 | `layers` | list[LayerName] | **additive:** per-emitted-layer legend names, in emission order — `{kind: "points"\|"lines"\|"contours", name: str \| null}` with `name` duck-typed from the producer object (e.g. a dataset name like `"Top Agat"`); the legend falls back to the layer kind when `null`. Fills self-describe via their own `display_name` |
@@ -90,7 +91,8 @@ several are present); a "Fill" toggle controls visibility, and the active fill
 drives a legend entry (type icon + display name + ramp + min/max). Both
 `fills` and `contours` are `[]` when absent; a payload without them renders
 exactly as before (no `schema_version` bump — additive fields are
-non-breaking).
+non-breaking). A fill may additionally carry a coarse **`lod`** ring
+(`{stride, nodes, triangles, values, range}` — see **Stride-ladder LOD**).
 
 **Per-layer legend entries (additive).** On the Map tab the legend renders one
 entry per **visible** layer: a small canvas **type icon** (dot cluster =
@@ -109,7 +111,35 @@ text token, slightly darker/stronger than the grid lines; `major` (index)
 levels stroke as a second batched path, bolder (≈2.25 px at α 0.85). In
 interval mode the payload builder flags majors at the round step nearest 4–5×
 the interval (25 → 100, 20 → 100, 10 → 50); explicit level lists carry no
-majors. No labels (yet); a "Contours" toggle controls visibility of both.
+majors. No labels (yet); a "Contours" toggle controls visibility of both. A set
+may additionally carry a coarse **`lines_lod`** ring (simplified polylines — see
+**Stride-ladder LOD**).
+
+**Stride-ladder LOD (additive; the `view2d` `lod=` output).** A payload may carry
+ONE coarse display ring beside each full-resolution field, so the viewer can drop
+to it when a data cell shrinks below a few screen pixels — **geometry truth is
+never decimated; the coarse ring is display-only additive data**, and colours stay
+stable across rings (the coarse fill ring keeps the FULL-resolution `range`). The
+coarse rings, all optional and each block-encoded exactly like its full ring:
+
+- `fills[i].lod` — `{stride: int, nodes, triangles, values, range}`, the same
+  shape as its `TriFill` (a `value_layer(stride=…)`-decimated mesh; `range` is the
+  full-resolution range).
+- `map.grid_lines_lod` — a coarse `grid_lines` set (a `wireframe_edges(stride=…)`
+  ring), the union across all mesh items that supplied one.
+- `contours[i].lines_lod` — a coarse `lines` set (an `iso_lines(…, simplify=…)`
+  Douglas–Peucker ring).
+
+`lod=True` (the default) asks producers for a `stride=4` ring and derives the
+contour `simplify` tolerance from the data extent (`extent / 512`); `lod=(stride,)`
+/ `lod=(stride, simplify)` override; `lod=False` emits no rings (a payload
+byte-identical to the pre-LOD shape). A producer that does not accept the striding
+kwarg is feature-detected and simply contributes no coarse ring. **Renderer:** the
+map picks the ring on **zoom-settle** (a ~150 ms debounce after the last wheel
+event, never per frame — no flicker), switching when a full-resolution cell falls
+below ~4 px on screen; fills, mesh grid lines and contours all switch together
+(points keep their own baked path). A small "LOD" chip shows while the coarse ring
+is active.
 
 **Binary blocks (additive; the `view2d` `encoding="blocks"` output — the
 default).** The map's bulk arrays optionally travel as **content-addressed typed
@@ -137,6 +167,10 @@ stays JSON regardless (the block envelope is not worth it).
     `f32 [total_points, 2]` block of every point concatenated, `offsets` a
     `u32 [n_lines + 1]` block where line `k` is `coords[offsets[k]:offsets[k+1]]`.
     Used for `grid_lines` and each `contours[i].lines`.
+  - The additive LOD rings encode identically — `fills[i].lod` `nodes`/`triangles`/
+    `values` as `__block__`, `grid_lines_lod` and each `contours[i].lines_lod` as
+    `__csr__` — all sharing the one `blocks` table (a coarse ring identical to any
+    other block ships once).
 
 The viewer's decode kernel (`assets/decode.js`) reads both shapes; the renderer's
 accessors index the typed arrays or the plain nested arrays transparently.

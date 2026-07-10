@@ -7,6 +7,25 @@ All notable changes to petekTools are recorded here. Format follows
 ## [Unreleased]
 
 ### Added
+- `view2d` / `view2d_payload` gain `lod: bool | tuple = True` — an additive
+  **stride-ladder LOD** for the map. When on, every item whose producer duck
+  accepts the striding kwargs emits ONE coarse display ring beside its full
+  ring: `value_layer(stride=…)` → `fills[i].lod`
+  (`{stride, nodes, triangles, values, range}` — the range is the
+  full-resolution range, so colours stay stable across rings),
+  `wireframe_edges(stride=…)` → `map.grid_lines_lod`, and
+  `iso_lines(…, simplify=…)` → `contours[i].lines_lod`. `lod=True` uses
+  `stride=4` and derives the contour `simplify` tolerance from the data extent
+  (`extent / 512`); `lod=(stride,)` / `lod=(stride, simplify)` override;
+  `lod=False` is byte-identical to the pre-LOD payload. A producer that does not
+  accept the striding kwarg is feature-detected (`TypeError`) and simply
+  contributes no coarse ring — **geometry truth is never decimated; the coarse
+  ring is display-only**. Every LOD ring is block-encoded like its full ring and
+  shares the one `map.blocks` table. The viewer picks the ring on **zoom-settle**
+  (a ~150 ms debounce, never per frame) when a full-resolution data cell falls
+  below ~4 px on screen — fills, mesh grid lines and contours switch together
+  (points keep their baked path), with a small "LOD" chip while coarse is showing.
+  See `SCHEMA.md` (MapBundle → **Stride-ladder LOD**).
 - `view2d` / `view2d_payload` gain `encoding="blocks"|"json"` (default
   `"blocks"`): the 2-D map's bulk arrays (`points`, each fill's
   `nodes`/`triangles`/`values`, `grid_lines`, `contours[i].lines`) now ship as

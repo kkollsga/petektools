@@ -108,10 +108,19 @@ def _map_bulk_bytes(m: Dict[str, Any]) -> int:
         total += len(f.get("nodes") or []) * 2
         total += len(f.get("triangles") or []) * 3
         total += len(f.get("values") or [])
+        lod = f.get("lod")
+        if lod:
+            total += len(lod.get("nodes") or []) * 2
+            total += len(lod.get("triangles") or []) * 3
+            total += len(lod.get("values") or [])
     for line in m.get("grid_lines") or []:
+        total += len(line) * 2
+    for line in m.get("grid_lines_lod") or []:
         total += len(line) * 2
     for c in m.get("contours") or []:
         for line in c.get("lines") or []:
+            total += len(line) * 2
+        for line in c.get("lines_lod") or []:
             total += len(line) * 2
     return total * 4
 
@@ -125,7 +134,9 @@ def encode_map(m: Dict[str, Any], *, threshold_bytes: int = DEFAULT_THRESHOLD_BY
     The encoded fields: ``points`` (``f32 [n, 3]``, NaN z allowed), each
     ``fills[i]`` ``nodes`` (``f32 [n, 2]``) / ``triangles`` (``u32 [n, 3]``) /
     ``values`` (``f32 [n]``, null -> NaN), ``grid_lines`` (CSR), and each
-    ``contours[i].lines`` (CSR).
+    ``contours[i].lines`` (CSR). The additive stride-ladder LOD rings encode the
+    same way — each ``fills[i].lod`` ``nodes``/``triangles``/``values``,
+    ``grid_lines_lod`` (CSR), and each ``contours[i].lines_lod`` (CSR).
     """
     if _map_bulk_bytes(m) < threshold_bytes:
         return False
@@ -142,31 +153,48 @@ def encode_map(m: Dict[str, Any], *, threshold_bytes: int = DEFAULT_THRESHOLD_BY
         m["points"] = tbl.block_marker(flat, "f32", [len(points), 3])
 
     for f in m.get("fills") or []:
-        nodes = f.get("nodes") or []
-        if nodes:
-            nf: List[float] = []
-            for nd in nodes:
-                nf.append(float(nd[0]))
-                nf.append(float(nd[1]))
-            f["nodes"] = tbl.block_marker(nf, "f32", [len(nodes), 2])
-        tris = f.get("triangles") or []
-        if tris:
-            tf: List[int] = []
-            for t in tris:
-                tf.extend((int(t[0]), int(t[1]), int(t[2])))
-            f["triangles"] = tbl.block_marker(tf, "u32", [len(tris), 3])
-        vals = f.get("values")
-        if vals:
-            f["values"] = tbl.block_marker([_nan_if_none(v) for v in vals], "f32", [len(vals)])
+        _encode_fill_arrays(tbl, f)
+        # The coarse LOD ring (additive; ``view2d(lod=...)``) block-encodes its
+        # own ``nodes``/``triangles``/``values`` — content-addressed, so a ring
+        # identical to another block ships once.
+        if f.get("lod"):
+            _encode_fill_arrays(tbl, f["lod"])
 
     grid_lines = m.get("grid_lines") or []
     if grid_lines:
         m["grid_lines"] = tbl.csr_marker(grid_lines)
+    grid_lines_lod = m.get("grid_lines_lod") or []
+    if grid_lines_lod:
+        m["grid_lines_lod"] = tbl.csr_marker(grid_lines_lod)
 
     for c in m.get("contours") or []:
         lines = c.get("lines") or []
         if lines:
             c["lines"] = tbl.csr_marker(lines)
+        lines_lod = c.get("lines_lod") or []
+        if lines_lod:
+            c["lines_lod"] = tbl.csr_marker(lines_lod)
 
     m["blocks"] = tbl.table
     return True
+
+
+def _encode_fill_arrays(tbl: "BlockTable", f: Dict[str, Any]) -> None:
+    """Block-encode a fill's (or a fill LOD ring's) ``nodes``/``triangles``/
+    ``values`` in place — the shared shape of a full and a coarse ring."""
+    nodes = f.get("nodes") or []
+    if nodes:
+        nf: List[float] = []
+        for nd in nodes:
+            nf.append(float(nd[0]))
+            nf.append(float(nd[1]))
+        f["nodes"] = tbl.block_marker(nf, "f32", [len(nodes), 2])
+    tris = f.get("triangles") or []
+    if tris:
+        tf: List[int] = []
+        for t in tris:
+            tf.extend((int(t[0]), int(t[1]), int(t[2])))
+        f["triangles"] = tbl.block_marker(tf, "u32", [len(tris), 3])
+    vals = f.get("values")
+    if vals:
+        f["values"] = tbl.block_marker([_nan_if_none(v) for v in vals], "f32", [len(vals)])

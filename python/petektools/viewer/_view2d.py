@@ -40,6 +40,7 @@ def view2d_payload(
     max_line_points: int = 1000,
     point_limit: int | None = 200_000,
     max_mesh_edges: int | None = 150_000,
+    lod: bool | tuple = True,
     encoding: str = "blocks",
     block_threshold_bytes: int = _blocks.DEFAULT_THRESHOLD_BYTES,
 ) -> dict[str, Any]:
@@ -111,6 +112,24 @@ def view2d_payload(
     not imply grid-line rendering; pass a geometry, structured surface, or
     trimesh when the grid itself should be visible.
 
+    ``lod`` controls the display-only **stride-ladder LOD**: when on (default),
+    every item whose producer duck accepts the striding kwargs emits BOTH a
+    full-resolution ring and ONE coarse ring, so the viewer can drop to the
+    coarse ring when a data cell shrinks below a few screen pixels (geometry
+    truth is never decimated — the coarse ring is additive display data). The
+    coarse ring is requested from the producer: ``value_layer(stride=...)`` for
+    a fill (``fills[i]["lod"] = {stride, nodes, triangles, values, range}`` —
+    the range is the FULL-resolution range so colours stay stable across rings),
+    ``wireframe_edges(stride=...)`` for mesh grid lines (``map["grid_lines_lod"]``),
+    and ``iso_lines(..., simplify=tol)`` for contours (``contours[i]["lines_lod"]``).
+    ``lod=True`` uses ``stride=4`` and derives the contour ``simplify`` tolerance
+    from the contour extent (``extent / 512`` ≈ two coarse-ring pixels);
+    ``lod=(stride,)`` or ``lod=(stride, simplify)`` overrides those; ``lod=False``
+    emits no coarse ring (a payload byte-identical to the pre-LOD shape). A
+    producer method that does not accept the striding kwarg is feature-detected
+    (``TypeError``) and degrades silently to no coarse ring for that item — all
+    LOD fields are additive and every one is block-encoded like its full ring.
+
     ``encoding`` controls how the bulk arrays travel. ``"blocks"`` (default)
     encodes ``points``, each fill's ``nodes``/``triangles``/``values``,
     ``grid_lines`` and ``contours[i].lines`` as content-addressed typed binary
@@ -123,9 +142,11 @@ def view2d_payload(
     """
     color_spec = _parse_spec(color, "color")
     fill_spec = _parse_spec(fill, "fill")
+    lod_cfg = _parse_lod(lod)
     scene_items = _scene_items(items)
     points: list[list[float]] = []
     grid_lines: list[list[list[float]]] = []
+    grid_lines_lod: list[list[list[float]]] = []
     outlines: list[list[list[float]]] = []
     fills: list[dict[str, Any]] = []
     contour_sets: list[dict[str, Any]] = []
@@ -142,10 +163,20 @@ def view2d_payload(
                 fill_entry["display_name"] = name
                 if fill_spec["range"] is not None:
                     fill_entry["range"] = list(fill_spec["range"])
+                if lod_cfg["enabled"]:
+                    ring = _value_fill_lod(item, fill_spec["attr"], lod_cfg["stride"])
+                    if ring is not None:
+                        fill_entry["lod"] = {
+                            "stride": lod_cfg["stride"],
+                            "nodes": ring["nodes"],
+                            "triangles": ring["triangles"],
+                            "values": ring["values"],
+                            "range": list(fill_entry["range"]),
+                        }
                 fills.append(fill_entry)
                 contributed = True
         if contours is not None:
-            iso = _iso_contours(item, contours, color_spec["attr"])
+            iso = _iso_contours(item, contours, color_spec["attr"], lod_cfg)
             if iso is not None:
                 contour_sets.extend(iso)
                 layers.append({"kind": "contours", "name": name})
@@ -180,6 +211,12 @@ def view2d_payload(
                 item, max_mesh_edges, max_line_points
             )
             grid_lines.extend(mesh_lines)
+            if lod_cfg["enabled"]:
+                lod_lines = _mesh_lines_lod(
+                    item, max_mesh_edges, max_line_points, lod_cfg["stride"]
+                )
+                if lod_lines:
+                    grid_lines_lod.extend(lod_lines)
             outlines.extend(edge_rings)
             summary["triangles"] = n_triangles
             if edge_stride > 1:
@@ -231,6 +268,13 @@ def view2d_payload(
                 _LayerMesh(layer), max_mesh_edges, max_line_points
             )
             grid_lines.extend(mesh_lines)
+            if lod_cfg["enabled"]:
+                ring = _value_fill_lod(item, None, lod_cfg["stride"])
+                if ring is not None:
+                    lod_ml, _, _ = _mesh_lines(
+                        _LayerMesh(ring), max_mesh_edges, max_line_points
+                    )
+                    grid_lines_lod.extend(lod_ml)
             summary["triangles"] = n_triangles
             if edge_stride > 1:
                 summary["mesh_edge_stride"] = edge_stride
@@ -296,6 +340,12 @@ def view2d_payload(
         "wells": [],
         "charts": [],
     }
+    # Additive stride-ladder LOD: the coarse mesh-grid-line ring (fills / contours
+    # carry their own coarse rings inline). Attached only when non-empty, so a
+    # `lod=False` or LOD-unsupported payload stays byte-identical to the pre-LOD
+    # shape (no empty `grid_lines_lod` key).
+    if grid_lines_lod:
+        payload["map"]["grid_lines_lod"] = grid_lines_lod
     # Additive: encode the bulk arrays as content-addressed typed blocks (the v3
     # wire format) unless asked for plain JSON or the payload is below threshold.
     # A JSON-shaped payload still renders (the viewer decodes both).
@@ -319,6 +369,7 @@ def view2d(
     max_line_points: int = 1000,
     point_limit: int | None = 200_000,
     max_mesh_edges: int | None = 150_000,
+    lod: bool | tuple = True,
     encoding: str = "blocks",
     block_threshold_bytes: int = _blocks.DEFAULT_THRESHOLD_BYTES,
 ) -> str | dict[str, Any]:
@@ -343,6 +394,7 @@ def view2d(
         max_line_points=max_line_points,
         point_limit=point_limit,
         max_mesh_edges=max_mesh_edges,
+        lod=lod,
         encoding=encoding,
         block_threshold_bytes=block_threshold_bytes,
     )
@@ -448,7 +500,11 @@ def _value_fill(item: Any, attr: str | None) -> dict[str, Any] | None:
     layer = fn(attr=attr) if attr is not None else fn()
     if layer is None:
         return None
-    name = type(item).__name__
+    return _coerce_fill(layer, type(item).__name__)
+
+
+def _coerce_fill(layer: Any, name: str) -> dict[str, Any]:
+    """Validate and normalize a ``value_layer()`` dict into a fill entry."""
     if not isinstance(layer, dict):
         raise TypeError(
             f"value_layer() on {name} must return a dict, got {type(layer).__name__}"
@@ -478,8 +534,54 @@ def _value_fill(item: Any, attr: str | None) -> dict[str, Any] | None:
     }
 
 
+def _value_fill_lod(item: Any, attr: str | None, stride: int) -> dict[str, Any] | None:
+    """A coarse value-fill ring via ``value_layer(stride=...)``.
+
+    Feature-detects producer support: returns ``None`` when the item offers no
+    ``value_layer``, when the method rejects the ``stride`` kwarg (``TypeError``
+    → no LOD ring, silently), or when it returns ``None``. A supported coarse
+    layer is coerced exactly like the full ring, so the two share a shape."""
+    fn = getattr(item, "value_layer", None)
+    if not callable(fn):
+        return None
+    try:
+        layer = fn(attr=attr, stride=stride) if attr is not None else fn(stride=stride)
+    except TypeError:
+        return None
+    if layer is None:
+        return None
+    return _coerce_fill(layer, type(item).__name__)
+
+
+def _parse_lod(lod: bool | tuple) -> dict[str, Any]:
+    """Parse the ``lod=`` value into ``{"enabled", "stride", "simplify"}``.
+
+    ``True`` → enabled with ``stride=4`` and auto contour ``simplify`` (``None``
+    = derive from the contour extent); ``False``/``None`` → disabled;
+    ``(stride,)`` or ``(stride, simplify)`` → enabled with those overrides
+    (``stride`` must be ``>= 2`` — a coarse ring at stride 1 is the full ring)."""
+    if lod is False or lod is None:
+        return {"enabled": False, "stride": 4, "simplify": None}
+    if lod is True:
+        return {"enabled": True, "stride": 4, "simplify": None}
+    if isinstance(lod, tuple):
+        if len(lod) not in (1, 2):
+            raise ValueError(
+                f"lod= tuple must be (stride,) or (stride, simplify), got {lod!r}"
+            )
+        stride = int(lod[0])
+        if stride < 2:
+            raise ValueError(f"lod= stride must be >= 2, got {stride}")
+        simplify = float(lod[1]) if len(lod) == 2 else None
+        return {"enabled": True, "stride": stride, "simplify": simplify}
+    raise TypeError(f"lod= must be a bool or tuple, got {type(lod).__name__}")
+
+
 def _iso_contours(
-    item: Any, contours: float | list[float], attr: str | None
+    item: Any,
+    contours: float | list[float],
+    attr: str | None,
+    lod: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]] | None:
     """Contour sets from an item's ``iso_lines()`` duck.
 
@@ -491,10 +593,34 @@ def _iso_contours(
     carry no majors). Returns ``None`` when the item does not offer the method;
     raises ``TypeError`` on a malformed result (each entry must be
     ``(level, [polyline, ...])``).
+
+    When ``lod`` is enabled, a coarse ``lines_lod`` ring is attached to each set
+    via ``iso_lines(..., simplify=tol)`` (Douglas–Peucker in world units);
+    ``simplify`` defaults to the contour extent / 512 (≈ two coarse-ring pixels).
     """
     fn = getattr(item, "iso_lines", None)
     if not callable(fn):
         return None
+    kwargs, major_step = _iso_kwargs(contours, attr)
+    name = type(item).__name__
+    out: list[dict[str, Any]] = []
+    for entry in fn(**kwargs):
+        level, lines = _iso_entry(entry, name)
+        out.append(
+            {
+                "level": level,
+                "major": _is_major(level, major_step),
+                "lines": [[_xy(p) for p in line] for line in lines],
+            }
+        )
+    if lod is not None and lod["enabled"] and out:
+        _attach_iso_lod(fn, kwargs, out, lod["simplify"], name)
+    return out
+
+
+def _iso_kwargs(
+    contours: float | list[float], attr: str | None
+) -> tuple[dict[str, Any], float | None]:
     kwargs: dict[str, Any] = {}
     major_step = None
     if isinstance(contours, (int, float)) and not isinstance(contours, bool):
@@ -504,29 +630,73 @@ def _iso_contours(
         kwargs["levels"] = [float(v) for v in contours]
     if attr is not None:
         kwargs["attr"] = attr
-    name = type(item).__name__
-    out: list[dict[str, Any]] = []
-    for entry in fn(**kwargs):
-        try:
-            level, lines = entry
-        except (TypeError, ValueError):
-            raise TypeError(
-                f"iso_lines() on {name} must yield (level, [polyline, ...]) pairs, "
-                f"got {entry!r}"
-            ) from None
-        level = float(level)
-        major = (
-            major_step is not None
-            and abs(level / major_step - round(level / major_step)) < 1e-6
-        )
-        out.append(
-            {
-                "level": level,
-                "major": major,
-                "lines": [[_xy(p) for p in line] for line in lines],
-            }
-        )
-    return out
+    return kwargs, major_step
+
+
+def _iso_entry(entry: Any, name: str) -> tuple[float, Any]:
+    try:
+        level, lines = entry
+    except (TypeError, ValueError):
+        raise TypeError(
+            f"iso_lines() on {name} must yield (level, [polyline, ...]) pairs, "
+            f"got {entry!r}"
+        ) from None
+    return float(level), lines
+
+
+def _is_major(level: float, major_step: float | None) -> bool:
+    return (
+        major_step is not None
+        and abs(level / major_step - round(level / major_step)) < 1e-6
+    )
+
+
+def _attach_iso_lod(
+    fn: Any,
+    kwargs: dict[str, Any],
+    out: list[dict[str, Any]],
+    simplify: float | None,
+    name: str,
+) -> None:
+    """Attach a coarse ``lines_lod`` ring to each contour set via
+    ``iso_lines(..., simplify=tol)``. Feature-detected (``TypeError`` → no ring);
+    also skipped when the simplified call does not align level-for-level with the
+    full ring (defensive — the two must share level order)."""
+    if simplify is None:  # auto: derive from the full contour extent (~2 coarse px)
+        span = _lines_span(o["lines"] for o in out)
+        if span <= 0:
+            return
+        simplify = span / 512.0
+    try:
+        coarse = list(fn(simplify=simplify, **kwargs))
+    except TypeError:
+        return
+    if len(coarse) != len(out):
+        return
+    for entry_out, entry in zip(out, coarse):
+        _level, lines = _iso_entry(entry, name)
+        entry_out["lines_lod"] = [[_xy(p) for p in line] for line in lines]
+
+
+def _lines_span(line_sets: Iterable[list[list[list[float]]]]) -> float:
+    """The larger of the x/y coordinate spans over a group of polyline sets."""
+    xmin = ymin = math.inf
+    xmax = ymax = -math.inf
+    for lines in line_sets:
+        for line in lines:
+            for pt in line:
+                x, y = float(pt[0]), float(pt[1])
+                if x < xmin:
+                    xmin = x
+                if x > xmax:
+                    xmax = x
+                if y < ymin:
+                    ymin = y
+                if y > ymax:
+                    ymax = y
+    if not math.isfinite(xmin):
+        return 0.0
+    return max(xmax - xmin, ymax - ymin)
 
 
 def _major_step(interval: float) -> float:
@@ -604,6 +774,37 @@ def _mesh_lines(
         stride = math.ceil(len(edge_list) / max_edges)
         edge_list = edge_list[::stride]
     return _chain_edges(edge_list, verts, max_line_points), n_triangles, stride
+
+
+def _mesh_lines_lod(
+    mesh: Any,
+    max_edges: int | None,
+    max_line_points: int,
+    stride: int,
+) -> list[list[list[float]]] | None:
+    """A coarse mesh-grid-line ring via ``wireframe_edges(stride=...)``.
+
+    Feature-detects producer support: returns ``None`` when the mesh has no
+    ``wireframe_edges`` or the method rejects the ``stride`` kwarg (``TypeError``
+    → no LOD ring, silently). The coarse edge pairs are chained into polylines
+    exactly like the full ring (and capped by ``max_edges`` the same way)."""
+    wireframe = getattr(mesh, "wireframe_edges", None)
+    if not callable(wireframe):
+        return None
+    try:
+        pairs = wireframe(stride=stride)
+    except TypeError:
+        return None
+    verts = mesh.xyz() if hasattr(mesh, "xyz") else mesh.points()
+    edges: set[tuple[int, int]] = set()
+    for pair in pairs:
+        u, v = int(pair[0]), int(pair[1])
+        edges.add((u, v) if u < v else (v, u))
+    edge_list = sorted(edges)
+    if max_edges is not None and len(edge_list) > max_edges:
+        s = math.ceil(len(edge_list) / max_edges)
+        edge_list = edge_list[::s]
+    return _chain_edges(edge_list, verts, max_line_points)
 
 
 def _chain_edges(

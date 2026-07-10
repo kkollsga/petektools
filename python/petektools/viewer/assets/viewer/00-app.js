@@ -224,6 +224,10 @@
     S.mapFillIdx = 0;
     S.showFills = true;
     S.showContours = true;
+    // Stride-ladder LOD (view2d lod=): false = full-resolution rings. Flipped on
+    // zoom-settle by the map renderer when a data cell shrinks below a few px and
+    // the payload carries coarse rings; a payload without LOD keeps it false.
+    S.lodActive = false;
     S.contactVis = (m.contacts || []).map(function () { return true; });
     S.wellVis = (p.wells || []).map(function () { return true; });
 

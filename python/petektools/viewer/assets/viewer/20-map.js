@@ -37,6 +37,9 @@
     mapView.ox = (cv.width - w * s) / 2 - Math.min(e.x0, e.x1) * s;
     mapView.oy = (cv.height - h * s) / 2 - Math.min(e.y0, e.y1) * s;
     mapView.fitted = true;
+    // Seed the LOD ring for the fitted zoom (a very fine mesh fitted whole may
+    // already want the coarse ring); later zooms flip it on settle.
+    if (typeof S !== "undefined") S.lodActive = computeLodActive();
   }
   function w2s(x, y) { return [x * mapView.scale + mapView.ox, y * mapView.scale + mapView.oy]; }
   function s2w(px, py) { return [(px - mapView.ox) / mapView.scale, (py - mapView.oy) / mapView.scale]; }
@@ -56,16 +59,25 @@
   // Replace every marker with a normalized object carrying the correct `.length`
   // (from the table metadata) up front, so the panel/legend length checks are
   // right before the typed data even arrives.
+  // Normalize a fill's (or a fill LOD ring's) nodes/triangles/values markers.
+  function prepFillArrays(f, t) {
+    if (isBlockMarker(f.nodes)) f.nodes = prepBlock(f.nodes, t);
+    if (isBlockMarker(f.triangles)) f.triangles = prepBlock(f.triangles, t);
+    if (isBlockMarker(f.values)) f.values = prepBlock(f.values, t);
+  }
   function prepMap2d(m) {
     var t = m.blocks;
     if (isBlockMarker(m.points)) m.points = prepBlock(m.points, t);
     (m.fills || []).forEach(function (f) {
-      if (isBlockMarker(f.nodes)) f.nodes = prepBlock(f.nodes, t);
-      if (isBlockMarker(f.triangles)) f.triangles = prepBlock(f.triangles, t);
-      if (isBlockMarker(f.values)) f.values = prepBlock(f.values, t);
+      prepFillArrays(f, t);
+      if (f.lod) prepFillArrays(f.lod, t); // additive coarse LOD ring
     });
     if (isCsrMarker(m.grid_lines)) m.grid_lines = prepCsr(m.grid_lines, t);
-    (m.contours || []).forEach(function (c) { if (isCsrMarker(c.lines)) c.lines = prepCsr(c.lines, t); });
+    if (isCsrMarker(m.grid_lines_lod)) m.grid_lines_lod = prepCsr(m.grid_lines_lod, t);
+    (m.contours || []).forEach(function (c) {
+      if (isCsrMarker(c.lines)) c.lines = prepCsr(c.lines, t);
+      if (isCsrMarker(c.lines_lod)) c.lines_lod = prepCsr(c.lines_lod, t);
+    });
   }
   function fillOne(o, cache) {
     if (o && o.__d != null) o.a = cache[o.__d];
@@ -73,9 +85,13 @@
   }
   function fillMap2d(m, cache) {
     fillOne(m.points, cache);
-    (m.fills || []).forEach(function (f) { fillOne(f.nodes, cache); fillOne(f.triangles, cache); fillOne(f.values, cache); });
+    (m.fills || []).forEach(function (f) {
+      fillOne(f.nodes, cache); fillOne(f.triangles, cache); fillOne(f.values, cache);
+      if (f.lod) { fillOne(f.lod.nodes, cache); fillOne(f.lod.triangles, cache); fillOne(f.lod.values, cache); }
+    });
     fillOne(m.grid_lines, cache);
-    (m.contours || []).forEach(function (c) { fillOne(c.lines, cache); });
+    fillOne(m.grid_lines_lod, cache);
+    (m.contours || []).forEach(function (c) { fillOne(c.lines, cache); fillOne(c.lines_lod, cache); });
   }
   function typedFromBuffer(buf, dtype) {
     return new (dtype === "f32" ? Float32Array : dtype === "u32" ? Uint32Array : Uint16Array)(buf);
@@ -235,6 +251,69 @@
     ctx.restore();
   }
 
+  // ---- stride-ladder LOD ring selection (view2d lod=) ------------------------
+  // A payload may carry a coarse ring beside each full-res field (fills[i].lod,
+  // map.grid_lines_lod, contours[i].lines_lod — decoded like the full ring).
+  // S.lodActive picks which ring draws; it flips only on ZOOM SETTLE (debounced,
+  // 150 ms after the last wheel event), never per frame, so a mid-gesture zoom
+  // never flickers between rings. Geometry truth is never decimated — the coarse
+  // ring is display-only additive data; a JSON/blockless or LOD-less payload has
+  // no coarse ring and always draws full resolution (S.lodActive stays false).
+  var LOD_CELL_PX = 4; // full-res data cell below this on-screen size → coarse
+  function mapHasLod() {
+    var m = App.payload.map; if (!m) return false;
+    if ((m.fills || []).some(function (f) { return f.lod; })) return true;
+    if (m.grid_lines_lod) return true;
+    if ((m.contours || []).some(function (c) { return c.lines_lod; })) return true;
+    return false;
+  }
+  // On-screen size (px) of one full-resolution data cell — the LOD switch signal.
+  // Prefer the active fill's node density (√(bbox area / node count)); else the
+  // frame lattice spacing. The fill's cell size is cached per fill identity
+  // (settle is rare, so the one bbox scan is cheap).
+  function fillCellWorld(fill) {
+    var N = fill.nodes, n = N.length || 0;
+    if (!n) return 0;
+    var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (var q = 0; q < n; q++) {
+      var x = ndX(N, q), y = ndY(N, q);
+      if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+    }
+    return Math.sqrt(Math.abs((x1 - x0) * (y1 - y0)) / n) || 0;
+  }
+  function fullCellPx() {
+    var m = App.payload.map;
+    var fill = (m.fills || [])[S.mapFillIdx];
+    if (fill && fill.lod && fill.nodes && fill.nodes.length) {
+      if (fill.__cellWorld == null) fill.__cellWorld = fillCellWorld(fill);
+      return fill.__cellWorld * mapView.scale;
+    }
+    var f = m.frame;
+    return Math.min(Math.abs(f.spacing_x), Math.abs(f.spacing_y)) * mapView.scale;
+  }
+  function computeLodActive() { return mapHasLod() && fullCellPx() < LOD_CELL_PX; }
+  // The ring to draw for a fill / a full-vs-lod field pair.
+  function fillRingFor(fill) { return (S.lodActive && fill && fill.lod) ? fill.lod : fill; }
+  function lineSetRing(full, lodField) { return (S.lodActive && lodField) ? lodField : full; }
+  // Zoom-settle debounce (shared): 150 ms after the last wheel event, recompute
+  // which LOD ring should show and repaint if it changed. Skipped for a hidden
+  // document / background tab (no work while unseen — the P3 visibility rule).
+  var _lodSettleTimer = 0;
+  function scheduleZoomSettle() {
+    if (_lodSettleTimer) clearTimeout(_lodSettleTimer);
+    _lodSettleTimer = setTimeout(function () {
+      _lodSettleTimer = 0;
+      if (App.tab !== "map") return;
+      if (typeof document !== "undefined" && document.hidden) return;
+      var want = computeLodActive();
+      if (want !== S.lodActive) {
+        S.lodActive = want;
+        if (!_mapRafPending) renderMap();
+        if (typeof buildPanel === "function") buildPanel();
+      }
+    }, 150);
+  }
+
   function renderMap() {
     var cv = document.getElementById("map-canvas");
     if (!App.payload.map) { showEmpty("No map bundle in this payload."); return; }
@@ -253,16 +332,18 @@
     // value-coloured trimesh fill (2-D QA payloads) — UNDER grid lines /
     // outline / points. One active fill at a time (the panel select).
     var activeFill = (App.payload.map.fills || [])[S.mapFillIdx] || null;
-    if (S.showFills && activeFill) drawTriFill(ctx, activeFill);
+    if (S.showFills && activeFill) drawTriFill(ctx, fillRingFor(activeFill));
 
     // regular-geometry / trimesh gridlines (2-D QA payloads); one batched
-    // stroke — per-line strokes crawl on dense meshes
-    if (S.showGridLines && App.payload.map.grid_lines) {
+    // stroke — per-line strokes crawl on dense meshes. Draws the coarse ring
+    // (grid_lines_lod) when S.lodActive, else full resolution.
+    var gridLines = lineSetRing(App.payload.map.grid_lines, App.payload.map.grid_lines_lod);
+    if (S.showGridLines && gridLines) {
       ctx.strokeStyle = token("--muted");
       ctx.globalAlpha = 0.32;
       ctx.lineWidth = 1;
       ctx.beginPath();
-      strokeLineSet(ctx, App.payload.map.grid_lines);
+      strokeLineSet(ctx, gridLines);
       ctx.stroke();
       ctx.globalAlpha = 1;
     }
@@ -276,7 +357,7 @@
         ctx.globalAlpha = alpha;
         ctx.lineWidth = width;
         ctx.beginPath();
-        sets.forEach(function (c) { strokeLineSet(ctx, c.lines); });
+        sets.forEach(function (c) { strokeLineSet(ctx, lineSetRing(c.lines, c.lines_lod)); });
         ctx.stroke();
         ctx.globalAlpha = 1;
       };
@@ -404,8 +485,25 @@
     // range where the layer is value-coloured) are assembled in
     // drawFieldLegend from map.layers / point_color / the active fill.
     drawFieldLegend(layer, S.showFills ? activeFill : null);
-    // world→screen transform, exposed for the browser test harness
+
+    // A small "LOD" chip while the coarse ring is showing (only when the payload
+    // actually carries LOD rings) — a quiet cue that display detail is reduced.
+    if (S.lodActive && mapHasLod()) {
+      ctx.save();
+      ctx.font = "600 10px system-ui";
+      var lw = ctx.measureText("LOD").width + 12;
+      ctx.globalAlpha = 0.85;
+      ctx.fillStyle = token("--surface-2") || token("--surface-1");
+      ctx.fillRect(10, 10, lw, 18);
+      ctx.strokeStyle = token("--muted"); ctx.lineWidth = 1; ctx.strokeRect(10, 10, lw, 18);
+      ctx.globalAlpha = 1; ctx.fillStyle = token("--text-secondary");
+      ctx.textBaseline = "middle"; ctx.fillText("LOD", 16, 20);
+      ctx.restore();
+    }
+
+    // world→screen transform + LOD state, exposed for the browser test harness
     window.__PETEK_MAP_VIEW = { scale: mapView.scale, ox: mapView.ox, oy: mapView.oy };
+    window.__PETEK_LOD_ACTIVE = !!S.lodActive;
   }
 
   // ---- point cloud: batched colour bins + offscreen bake + rAF coalescing ----
@@ -703,6 +801,7 @@
       mapView.ox = mx - w[0] * mapView.scale;
       mapView.oy = my - w[1] * mapView.scale;
       scheduleRenderMap();
+      scheduleZoomSettle(); // flip the LOD ring once the zoom settles
     };
     cv.onmousedown = function (ev) {
       if (S.fence.drawing) { addFencePoint(cv, ev); return; }
