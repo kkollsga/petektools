@@ -240,6 +240,75 @@ def test_view2d_payload_clips_geometry_grid_to_edge():
     assert all([10.0, 10.0] not in line for line in p["map"]["grid_lines"])
 
 
+class _Mesh:
+    """Duck-typed trimesh: two triangles sharing the (1, 2) diagonal."""
+
+    def xyz(self):
+        return [
+            [0.0, 0.0, 1.0],
+            [10.0, 0.0, 2.0],
+            [0.0, 10.0, 3.0],
+            [10.0, 10.0, 4.0],
+        ]
+
+    def triangles(self):
+        return [(0, 1, 2), (1, 3, 2)]
+
+    @property
+    def edge(self):
+        class Edge:
+            def rings(self):
+                return [[[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0], [0.0, 0.0]]]
+
+        return Edge()
+
+
+def test_view2d_payload_renders_trimesh_edges_and_edge_outline():
+    p = viewer.view2d_payload([_Mesh()], title="Top Agat trimesh")
+
+    drawn = set()
+    for line in p["map"]["grid_lines"]:
+        for a, b in zip(line, line[1:]):
+            drawn.add(frozenset((tuple(a), tuple(b))))
+    expected_edges = {
+        frozenset(((0.0, 0.0), (10.0, 0.0))),
+        frozenset(((10.0, 0.0), (0.0, 10.0))),
+        frozenset(((0.0, 10.0), (0.0, 0.0))),
+        frozenset(((10.0, 0.0), (10.0, 10.0))),
+        frozenset(((10.0, 10.0), (0.0, 10.0))),
+    }
+    assert drawn == expected_edges
+    assert sum(len(line) - 1 for line in p["map"]["grid_lines"]) == 5  # each edge once
+    assert p["summary"]["triangles"] == 2
+    assert p["map"]["outline"] == [
+        [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0], [0.0, 0.0]]
+    ]
+    assert p["map"]["points"] == []  # a mesh is lines, not a point cloud
+    assert "mesh_edge_stride" not in p["summary"]
+
+
+def test_view2d_payload_strides_trimesh_edges_over_budget():
+    p = viewer.view2d_payload([_Mesh()], max_mesh_edges=2)
+
+    assert sum(len(line) - 1 for line in p["map"]["grid_lines"]) == 2
+    assert p["summary"]["mesh_edge_stride"] == 3
+
+
+def test_view2d_payload_trimesh_without_edge_falls_back_to_frame_rect():
+    class BareMesh:
+        def points(self):
+            return [(0.0, 0.0, 1.0), (10.0, 0.0, 2.0), (0.0, 10.0, 3.0)]
+
+        def triangles(self):
+            return [(0, 1, 2)]
+
+    p = viewer.view2d_payload([BareMesh()])
+
+    assert p["summary"]["triangles"] == 1
+    assert sum(len(line) - 1 for line in p["map"]["grid_lines"]) == 3
+    assert p["map"]["outline"]  # frame-rect fallback still supplies an outline
+
+
 # --- the generic chart-mark schema (Charts tab) ------------------------------
 def test_schema_version_bumped(payload):
     assert payload["schema_version"] == 3  # v3: volume exterior-shell + binary blocks
