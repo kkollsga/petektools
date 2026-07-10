@@ -6,6 +6,12 @@ All notable changes to petekTools are recorded here. Format follows
 
 ## [Unreleased]
 
+## [0.2.12] - 2026-07-10
+
+### Changed
+- Documentation, examples, and test fixtures now use synthetic dataset names
+  throughout.
+
 ## [0.2.11] - 2026-07-10
 
 ### Added
