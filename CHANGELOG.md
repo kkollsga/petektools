@@ -6,7 +6,30 @@ All notable changes to petekTools are recorded here. Format follows
 
 ## [Unreleased]
 
+### Added
+- `view2d` / `view2d_payload` gain `fill=` (bool | spec string): value-coloured
+  trimesh fills are now an explicit opt-in, no longer a `color=` side effect.
+- `color=` / `fill=` string specs parse by registry match:
+  `"[<attr>_]<cmap>[_<min>_<max>]"` with `<cmap>` in
+  `viridis|magma|grays|inferno` and up to two trailing floats (negatives fine,
+  e.g. `"inferno_-2700_-2500"`) as an explicit clamp range — values outside it
+  clamp to the ramp ends. A non-colormap string stays an attribute name
+  (back-compat, e.g. `color="porosity"`); a malformed spec raises `ValueError`.
+- The **inferno** colormap (renderer ramp anchors + panel selector), and an
+  additive `map.colormap` payload field that pins the initial colormap from
+  the parsed spec.
+- Per-layer legend entries on the Map tab: a small canvas type icon (points /
+  lines / fill / contours / wells) + a display name duck-typed from each
+  source object's `name` (additive `map.layers` + fill `display_name`;
+  fallback: the layer kind), with the ramp + clamped range on value-coloured
+  layers.
+
 ### Changed
+- **Behaviour change (owner-approved, pre-1.0):** `view2d(..., color=True)` no
+  longer fills items offering `value_layer()` — it colours points and selects
+  the colormap only. Pass `fill=` for value fills;
+  `view2d([pts, geom], color=True)` now shows coloured points + geometry lines
+  with no trimesh fill.
 - Map point clouds render at frame rate at 200k+ points (previously ~145 ms per
   repaint, re-run synchronously per wheel/drag event). Points batch into <=256
   colormap-bin `Path2D`s (squares at small radii) baked to a viewport-windowed,

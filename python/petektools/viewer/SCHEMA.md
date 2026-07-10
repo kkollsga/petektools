@@ -54,7 +54,9 @@ state. `sections` may be empty (live mode adds them via `/section`).
 | `points` | list[Point] | optional 2-D QA overlay; `Point` = `[x, y, z?]` |
 | `fills` | list[TriFill] | **additive:** selectable value-coloured trimesh fills, drawn UNDER `grid_lines`/`outline`/`points` |
 | `contours` | list[ContourSet] | **additive:** iso-lines; all levels stroke as one batched path, stronger than grid lines |
-| `point_color` | PointColor \| null | **additive:** `{by: "z", range: [min, max]}` — points with a finite third component colour through the active colormap (non-finite z falls back to the accent); when no fill/ScalarLayer owns the legend, the ramp legend shows this range |
+| `point_color` | PointColor \| null | **additive:** `{by: "z", range: [min, max]}` — points with a finite third component colour through the active colormap (non-finite z falls back to the accent). `range` is the producer's data range or the user's explicit `color=` clamp range — values outside it clamp to the ramp ends; the legend's points entry shows this range |
+| `colormap` | str \| null | **additive:** the initial colormap for this payload (`viridis`\|`magma`\|`grays`\|`inferno`) — the parsed `<cmap>` of a `view2d` `color=`/`fill=` spec (`color`'s wins over `fill`'s). The panel selector can still change it; an unknown/absent name keeps the viridis default |
+| `layers` | list[LayerName] | **additive:** per-emitted-layer legend names, in emission order — `{kind: "points"\|"lines"\|"contours", name: str \| null}` with `name` duck-typed from the producer object (e.g. a dataset name like `"Top Agat"`); the legend falls back to the layer kind when `null`. Fills self-describe via their own `display_name` |
 | `horizons` | list[ScalarLayer] | selectable depth/field layers |
 | `zone_averages` | list[ScalarLayer] | selectable property layers |
 | `k_slices` | list[ScalarLayer] | optional per-k property slices |
@@ -68,7 +70,8 @@ display_name?: str}`. `values` are **row-major** (`values[j·ncol + i]`);
 `null`/non-finite cells render transparent. Continuous fields use a
 perceptually-uniform colormap.
 
-**TriFill (additive; the `view2d` `color=` output):** `{name: str, nodes:
+**TriFill (additive; the `view2d` `fill=` output — fills are explicit, never a
+`color=` side effect):** `{name: str, display_name?: str | null, nodes:
 [[x, y], …], triangles: [[a, b, c], …], values: float[len(nodes)], range:
 [min, max]}`. Per-**node** values on a world-coordinate triangulation; each
 triangle flat-fills with the continuous-colormap colour of the **mean of its
@@ -77,11 +80,25 @@ value is **skipped** (renders as a hole — never colour-guessed). The renderer
 quantizes to ~64 colormap bins and fills one batched path per bin, so triangle
 count is unbounded in practice. `range` here is the **two-float `[min, max]`
 list** the producer seam emits (an exception to the `{min, max}` object
-convention above). One fill is active at a time (a panel selector when several
-are present); a "Fill" toggle controls visibility, and the active fill drives a
-legend entry (name + ramp + min/max). Both `fills` and `contours` are `[]` when
-absent; a payload without them renders exactly as before (no `schema_version`
-bump — additive fields are non-breaking).
+convention above) — the user's explicit `fill=` clamp range when one was
+specified (out-of-range values clamp to the ramp ends). `display_name` is the
+duck-typed source-object name (e.g. `"Top Agat"`; `name` stays the attribute
+identity, e.g. `"z"`). One fill is active at a time (a panel selector when
+several are present); a "Fill" toggle controls visibility, and the active fill
+drives a legend entry (type icon + display name + ramp + min/max). Both
+`fills` and `contours` are `[]` when absent; a payload without them renders
+exactly as before (no `schema_version` bump — additive fields are
+non-breaking).
+
+**Per-layer legend entries (additive).** On the Map tab the legend renders one
+entry per **visible** layer: a small canvas **type icon** (dot cluster =
+points, lattice = geometry/grid lines, filled ramp swatch = fill/raster,
+squiggle = contours, marker-with-leader = wells) + the display name (`layers`
+names / fill `display_name` / well ids; fallback: the layer kind), with the
+colormap ramp + the clamped `[min, max]` range wherever the layer is
+value-coloured (the active fill, `point_color`-coded points, the raster
+`ScalarLayer`). Icons draw from the live theme tokens and active colormap, so
+a theme flip or colormap change restyles them on the next repaint.
 
 **ContourSet (additive; the `view2d` `contours=` output):** `{level: float,
 major: bool, lines: [[[x, y], …], …]}` — the world-coordinate polylines of one
@@ -361,7 +378,8 @@ not the viewer).
 ## Colour discipline (rendered, not declared)
 
 Two colour jobs, never conflated: **continuous fields** (rasters, section fills,
-the volume) use a perceptually-uniform scientific colormap (viridis default);
+the volume) use a perceptually-uniform scientific colormap (viridis default;
+magma / grays / inferno selectable, or pinned by the payload's `map.colormap`);
 **categorical identity** (wells, horizons, contacts, zones, scatter groups,
 distribution series) uses the fixed token slots, assigned by entity and stable
 across tabs/theme. The payload supplies names, units and ranges; the renderer owns

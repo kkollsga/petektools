@@ -78,7 +78,29 @@ outside the baked window/zoom band draws the batched immediate path (re-baking
 only when the gesture pauses), and hover hit-tests a coarse world-space grid
 bucket — so a **200k-point coloured cloud pans/zooms/hovers at frame rate**
 (≲10 ms worst gesture frame, sub-ms steady-state; previously ~145 ms per event).
-Pan (drag), zoom (wheel); the hover readout shows the layer value + cell
+
+For the `view2d` QA path, `color=` and `fill=` are **separate, explicit
+semantics** (owner ruling 2026-07-10): `color=` colours **points** (and picks
+the colormap for whatever is value-coloured) — it never triggers fills; value
+**fills** come only from `fill=`; contour lines only from `contours=`. Both
+`color=` and `fill=` accept `True` or a string spec parsed by **registry
+match**: `"[<attr>_]<cmap>[_<min>_<max>]"`, where `<cmap>` is one of
+`viridis` / `magma` / `grays` / `inferno` and the two trailing floats are an
+explicit clamp range (negatives fine — `"inferno_-2700_-2500"`); a string with
+no colormap token stays an attribute name (`value_layer(attr=...)` /
+`iso_lines(attr=...)` back-compat), and `"porosity_inferno_0_0.3"` combines
+all three. Values outside an explicit range **clamp to the ramp ends**, the
+parsed colormap initializes the panel selector (`map.colormap`), and a
+malformed spec raises `ValueError`. So `view2d([pts, geom], color=True)` shows
+exactly coloured points + geometry lines — no surprise trimesh fill.
+
+The map **legend renders one entry per visible layer** — a small type icon
+(dot cluster = points, lattice = grid lines, filled ramp swatch = fill/raster,
+squiggle = contours, marker = wells) + the layer's display name, duck-typed
+from the source object's `name` (e.g. a petekIO dataset name like
+`"Top Agat"`; fallback: the layer kind), with the colormap ramp + the clamped
+range wherever the layer is value-coloured. Pan (drag), zoom (wheel); the
+hover readout shows the layer value + cell
 `i,j`, or — over a well marker — the well id + its mean/per-horizon surface-tie
 residuals. A well with ties also wears a small **tie-quality glyph** (3 pips filled
 by the mean-|residual| tier: ≤2 m good, ≤5 m fair, else poor; text tokens, never a
@@ -190,8 +212,9 @@ the renderer is horizontal capability.
 ## Design system (dataviz method)
 
 - **Two colour jobs, never conflated.** Continuous **fields** use a
-  perceptually-uniform scientific colormap (viridis default — magma / grays
-  optional); **never** rainbow. **Categorical identity** (wells, horizons,
+  perceptually-uniform scientific colormap (viridis default — magma / grays /
+  inferno optional, and a payload may pin the initial choice via
+  `map.colormap`); **never** rainbow. **Categorical identity** (wells, horizons,
   contacts, zones) uses the fixed token slots (`--c1..--c8`), assigned **by
   entity** and never recoloured when a toggle changes the visible count or the
   theme flips — an entity keeps its slot across all three tabs and across sessions

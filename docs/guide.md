@@ -193,21 +193,32 @@ triangle edges as grid lines with the mesh `edge` rings as the outline; a mesh
 that also offers `wireframe_edges()` index pairs draws exactly those instead —
 quad-dominant, with interior cell diagonals removed.
 
-Two opt-in kwargs add value rendering. `color=True` asks each item offering
-`value_layer()` for its primary per-node value layer and paints it as a
-value-coloured fill *under* the grid lines (each triangle flat-filled with the
-colormap colour of its mean node value; a triangle touching a NaN node is left
-unfilled); `color="phi"` asks for that attribute (`value_layer(attr="phi")`).
-`contours=25.0` asks each item offering `iso_lines()` for contour polylines at
-a 25-unit interval (`iso_lines(interval=25.0)`), while `contours=[1500, 1550]`
-requests exact levels (`iso_lines(levels=...)`); a string `color` forwards as
-`attr=` to `iso_lines` too. The viewer panel gets a fill selector (when several
-items contribute fills), "Fill"/"Contours" toggles, and a min/max colour-ramp
-legend for the active fill. Items without these methods are silently
-unaffected:
+Three opt-in kwargs add value rendering, each explicit. `color=` colours
+**points** by their z value (and selects the colormap for whatever is
+value-coloured) — it never triggers fills. `fill=` asks each item offering
+`value_layer()` for a per-node value layer and paints it as a value-coloured
+fill *under* the grid lines (each triangle flat-filled with the colormap
+colour of its mean node value; a triangle touching a NaN node is left
+unfilled). `contours=25.0` asks each item offering `iso_lines()` for contour
+polylines at a 25-unit interval (`iso_lines(interval=25.0)`), while
+`contours=[1500, 1550]` requests exact levels (`iso_lines(levels=...)`).
+
+`color=` and `fill=` accept `True` or a string spec parsed by registry match:
+`"[<attr>_]<cmap>[_<min>_<max>]"` with `<cmap>` one of `viridis` / `magma` /
+`grays` / `inferno` — so `color="inferno"` picks the colormap,
+`color="inferno_-2700_-2500"` adds an explicit clamp range (out-of-range
+values clamp to the ramp ends), `color="porosity"` stays an attribute name
+(forwarded as `attr=` to `iso_lines`; `fill="porosity"` asks
+`value_layer(attr="porosity")`), and `"porosity_inferno_0_0.3"` combines all
+three. A malformed spec (e.g. one trailing float) raises `ValueError`. The
+viewer panel gets a fill selector (when several items contribute fills),
+"Fill"/"Contours" toggles, and a per-layer legend — type icon + the item's
+duck-typed `name` (e.g. `"Top Agat"`) + the colour ramp and clamped range on
+value-coloured layers. Items without these methods are silently unaffected:
 
 ```python
-petektools.view2d([surface, well_points], color=True, contours=25.0)
+petektools.view2d([surface, well_points], color="inferno_-2700_-2500",
+                  fill=True, contours=25.0)
 ```
 
 ## Where to go next
