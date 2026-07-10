@@ -195,36 +195,10 @@
       });
     }
 
-    // point cloud overlay
-    if (S.showPoints && App.payload.map.points) {
-      var pts = App.payload.map.points;
-      var r = Math.max(1.5, Math.min(3.5, mapView.scale < 0.05 ? 1.5 : 2.5));
-      // depth-coded points: map.point_color carries the z range; precompute the
-      // css per LUT bin once, fall back to the accent for non-finite z
-      var pc = App.payload.map.point_color, pcss = null, plo = 0, pspan = 1, paccent = token("--accent");
-      if (pc && pc.range) {
-        var plut = colormapLUT(S.colormap); // flat Uint8Array of packed RGB triplets
-        pcss = [];
-        for (var pi = 0; pi + 2 < plut.length; pi += 3) {
-          pcss.push("rgb(" + plut[pi] + "," + plut[pi + 1] + "," + plut[pi + 2] + ")");
-        }
-        plo = pc.range[0]; pspan = (pc.range[1] - pc.range[0]) || 1;
-      }
-      ctx.fillStyle = paccent;
-      ctx.globalAlpha = pts.length > 20000 ? 0.45 : 0.7;
-      pts.forEach(function (pt) {
-        var s = w2s(pt[0], pt[1]);
-        if (s[0] < -r || s[1] < -r || s[0] > cv.width + r || s[1] > cv.height + r) return;
-        if (pcss) {
-          var z = pt[2];
-          ctx.fillStyle = (z == null || !isFinite(z)) ? paccent
-            : pcss[Math.max(0, Math.min(pcss.length - 1, Math.round((z - plo) / pspan * (pcss.length - 1))))];
-        }
-        ctx.beginPath();
-        ctx.arc(s[0], s[1], r, 0, 6.2832);
-        ctx.fill();
-      });
-      ctx.globalAlpha = 1;
+    // point cloud overlay — batched colour-bin paths + an offscreen bake
+    // (see drawMapPoints; a 200k-point cloud must pan/zoom at frame rate)
+    if (S.showPoints && App.payload.map.points && App.payload.map.points.length) {
+      drawMapPoints(ctx, cv);
     }
 
     // contact subcrop masks (crossed columns): a translucent identity fill,
@@ -334,6 +308,179 @@
     drawFieldLegend(layer, legendFill);
   }
 
+  // ---- point cloud: batched colour bins + offscreen bake + rAF coalescing ----
+  // The old path did beginPath/arc/fill (and a fresh fillStyle string) PER POINT —
+  // ~145 ms/frame at 200k coloured points, re-run synchronously per wheel/drag
+  // DOM event. Three fixes, layered:
+  //   1. BATCH: points bin into ≤256 colormap bins (+1 accent bin for non-finite
+  //      z), one Path2D + one fill() per bin — the drawTriFill idiom. Small radii
+  //      draw as squares (rect), which Path2D batches far faster than arcs.
+  //   2. BAKE: the whole cloud is rendered once into an offscreen canvas at the
+  //      current scale and re-blitted (a single drawImage) while panning/zooming
+  //      inside a zoom band; a band change / data / colormap / theme change
+  //      re-bakes. Memory-guarded: past the size caps (deep zoom) it falls back
+  //      to the batched immediate path, viewport-culled.
+  //   3. rAF: wheel/drag route through scheduleRenderMap() — state updates per
+  //      event, at most ONE repaint per animation frame.
+  function pointRadius() { return Math.max(1.5, Math.min(3.5, mapView.scale < 0.05 ? 1.5 : 2.5)); }
+  var PT_ACCENT_BIN = 256; // bin index for uncoloured / non-finite-z points
+  // Build the binned Path2D set under an affine transform sx = x*sc + oxx.
+  // cull=true skips points outside the [0..cw, 0..ch] rect (immediate mode).
+  function buildPointPaths(pts, sc, oxx, oyy, r, pc, cull, cw, ch) {
+    var square = r <= 2.5; // tiny marks: rects batch far faster than arcs
+    var paths = new Array(257);
+    var colored = !!(pc && pc.range), plo = 0, pf = 0;
+    if (colored) { plo = pc.range[0]; pf = 255 / ((pc.range[1] - pc.range[0]) || 1); }
+    var d = 2 * r;
+    for (var q = 0; q < pts.length; q++) {
+      var pt = pts[q];
+      var sx = pt[0] * sc + oxx, sy = pt[1] * sc + oyy;
+      if (cull && (sx < -r || sy < -r || sx > cw + r || sy > ch + r)) continue;
+      var bin = PT_ACCENT_BIN;
+      if (colored) {
+        var z = pt[2];
+        if (z != null && isFinite(z)) {
+          bin = ((z - plo) * pf + 0.5) | 0;
+          if (bin < 0) bin = 0; else if (bin > 255) bin = 255;
+        }
+      }
+      var p = paths[bin] || (paths[bin] = new Path2D());
+      if (square) p.rect(sx - r, sy - r, d, d);
+      else { p.moveTo(sx + r, sy); p.arc(sx, sy, r, 0, 6.2832); }
+    }
+    return paths;
+  }
+  // One fillStyle assignment + one fill() per non-empty bin (≤257 calls total).
+  function fillPointPaths(ctx, paths, alpha) {
+    var lut = colormapLUT(S.colormap);
+    ctx.globalAlpha = alpha;
+    for (var b = 0; b < 256; b++) {
+      if (!paths[b]) continue;
+      var l3 = b * 3;
+      ctx.fillStyle = "rgb(" + lut[l3] + "," + lut[l3 + 1] + "," + lut[l3 + 2] + ")";
+      ctx.fill(paths[b]);
+    }
+    if (paths[PT_ACCENT_BIN]) { ctx.fillStyle = token("--accent"); ctx.fill(paths[PT_ACCENT_BIN]); }
+    ctx.globalAlpha = 1;
+  }
+  // world bbox of the cloud, cached per points-array identity
+  var _ptBBox = { ref: null, x0: 0, y0: 0, x1: 0, y1: 0 };
+  function pointBBox(pts) {
+    if (_ptBBox.ref === pts) return _ptBBox;
+    var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (var q = 0; q < pts.length; q++) {
+      var x = pts[q][0], y = pts[q][1];
+      if (x < x0) x0 = x; if (x > x1) x1 = x;
+      if (y < y0) y0 = y; if (y > y1) y1 = y;
+    }
+    _ptBBox = { ref: pts, x0: x0, y0: y0, x1: x1, y1: y1 };
+    return _ptBBox;
+  }
+  // Offscreen bake caps: per-axis + total-pixel (a 4096² RGBA canvas is ~64 MB —
+  // the area cap keeps the worst case at ~48 MB). Past the caps (deep zoom, the
+  // cloud's screen footprint outgrows the canvas) → batched immediate mode.
+  var PT_CACHE_MAX_DIM = 4096;
+  var PT_CACHE_MAX_PX = 12 * 1024 * 1024;
+  // Zoom band around the baked scale: inside it the bake is blitted scaled (mark
+  // size drifts ≤ ~25% momentarily); outside it re-bakes at the current scale.
+  var PT_BAND_LO = 0.8, PT_BAND_HI = 1.25;
+  var _ptCache = { canvas: null, ref: null, key: "", scale: 0, cox: 0, coy: 0 };
+  function drawMapPoints(ctx, cv) {
+    var pts = App.payload.map.points;
+    var r = pointRadius();
+    var alpha = pts.length > 20000 ? 0.45 : 0.7;
+    var pc = App.payload.map.point_color;
+    // everything the baked pixels depend on, except geometry/scale
+    var key = S.colormap + "|" + token("--accent") + "|" + r + "|" + alpha + "|" +
+      (pc && pc.range ? pc.range[0] + "," + pc.range[1] : "-");
+    var C = _ptCache;
+    var k = C.canvas && C.scale > 0 ? mapView.scale / C.scale : 0;
+    var usable = C.canvas && C.ref === pts && C.key === key && k >= PT_BAND_LO && k <= PT_BAND_HI;
+    if (!usable) {
+      var bb = pointBBox(pts), pad = r + 2;
+      var w = Math.ceil((bb.x1 - bb.x0) * mapView.scale) + 2 * pad;
+      var h = Math.ceil((bb.y1 - bb.y0) * mapView.scale) + 2 * pad;
+      if (w <= PT_CACHE_MAX_DIM && h <= PT_CACHE_MAX_DIM && w * h <= PT_CACHE_MAX_PX) {
+        if (!C.canvas) C.canvas = document.createElement("canvas");
+        C.canvas.width = w; C.canvas.height = h; // also clears prior content
+        var cox = pad - bb.x0 * mapView.scale, coy = pad - bb.y0 * mapView.scale;
+        var cctx = C.canvas.getContext("2d");
+        fillPointPaths(cctx, buildPointPaths(pts, mapView.scale, cox, coy, r, pc, false, 0, 0), alpha);
+        C.ref = pts; C.key = key; C.scale = mapView.scale; C.cox = cox; C.coy = coy;
+        usable = true; k = 1;
+      }
+    }
+    if (usable) {
+      ctx.save();
+      ctx.imageSmoothingEnabled = true;
+      ctx.drawImage(C.canvas, mapView.ox - C.cox * k, mapView.oy - C.coy * k,
+        C.canvas.width * k, C.canvas.height * k);
+      ctx.restore();
+    } else {
+      // over the cache caps (deep zoom): batched immediate, viewport-culled
+      fillPointPaths(ctx, buildPointPaths(pts, mapView.scale, mapView.ox, mapView.oy, r, pc, true, cv.width, cv.height), alpha);
+    }
+  }
+
+  // rAF-coalesced map repaints: hot-path callers (wheel / drag) update mapView
+  // state per DOM event and schedule; the map draws AT MOST once per animation
+  // frame. The per-frame cost + frame count are exposed for the perf harness.
+  var _mapRafPending = false;
+  function scheduleRenderMap() {
+    if (_mapRafPending) return;
+    _mapRafPending = true;
+    requestAnimationFrame(function () {
+      _mapRafPending = false;
+      var t0 = performance.now();
+      renderMap();
+      window.__PETEK_MAP_FRAME_MS = performance.now() - t0;
+      window.__PETEK_MAP_FRAME_COUNT = (window.__PETEK_MAP_FRAME_COUNT || 0) + 1;
+    });
+  }
+
+  // Grid-bucketed hover hit-test: a coarse uniform world-space grid (built once
+  // per points array, ~4 points/bucket) — the cursor queries only the buckets its
+  // 8-px pick radius touches, never the whole cloud. Same hit rule as the old
+  // O(n) scan: nearest point within 8 screen px.
+  var _ptGrid = { ref: null };
+  function pointGrid(pts) {
+    if (_ptGrid.ref === pts) return _ptGrid;
+    var bb = pointBBox(pts);
+    var nb = Math.max(1, Math.min(256, Math.ceil(Math.sqrt(pts.length / 4))));
+    var fx = nb / ((bb.x1 - bb.x0) || 1), fy = nb / ((bb.y1 - bb.y0) || 1);
+    var buckets = new Array(nb * nb);
+    for (var q = 0; q < pts.length; q++) {
+      var ci = ((pts[q][0] - bb.x0) * fx) | 0; if (ci < 0) ci = 0; else if (ci >= nb) ci = nb - 1;
+      var cj = ((pts[q][1] - bb.y0) * fy) | 0; if (cj < 0) cj = 0; else if (cj >= nb) cj = nb - 1;
+      var b = cj * nb + ci;
+      (buckets[b] || (buckets[b] = [])).push(q);
+    }
+    _ptGrid = { ref: pts, x0: bb.x0, y0: bb.y0, fx: fx, fy: fy, nb: nb, buckets: buckets };
+    return _ptGrid;
+  }
+  function hitTestPoint(pts, px, py) {
+    var g = pointGrid(pts);
+    var w = s2w(px, py), rw = 8 / mapView.scale; // 8-px pick radius in world units
+    var i0 = ((w[0] - rw - g.x0) * g.fx) | 0, i1 = ((w[0] + rw - g.x0) * g.fx) | 0;
+    var j0 = ((w[1] - rw - g.y0) * g.fy) | 0, j1 = ((w[1] + rw - g.y0) * g.fy) | 0;
+    if (i1 < 0 || j1 < 0 || i0 >= g.nb || j0 >= g.nb) return null; // off the cloud
+    if (i0 < 0) i0 = 0; if (j0 < 0) j0 = 0;
+    if (i1 >= g.nb) i1 = g.nb - 1; if (j1 >= g.nb) j1 = g.nb - 1;
+    var best = null, bestD = Infinity;
+    for (var cj = j0; cj <= j1; cj++) {
+      for (var ci = i0; ci <= i1; ci++) {
+        var bucket = g.buckets[cj * g.nb + ci];
+        if (!bucket) continue;
+        for (var q = 0; q < bucket.length; q++) {
+          var pt = pts[bucket[q]];
+          var d = Math.hypot(pt[0] * mapView.scale + mapView.ox - px, pt[1] * mapView.scale + mapView.oy - py);
+          if (d <= 8 && d < bestD) { bestD = d; best = { point: pt, index: bucket[q] }; }
+        }
+      }
+    }
+    return best;
+  }
+
   // Value-coloured trimesh fill: each triangle flat-fills with the colormap
   // colour of the MEAN of its three node values; a triangle with any missing
   // (null) / non-finite node value is skipped (a hole). Triangles are BATCHED
@@ -419,7 +566,7 @@
       mapView.scale *= k;
       mapView.ox = mx - w[0] * mapView.scale;
       mapView.oy = my - w[1] * mapView.scale;
-      renderMap();
+      scheduleRenderMap();
     };
     cv.onmousedown = function (ev) {
       if (S.fence.drawing) { addFencePoint(cv, ev); return; }
@@ -430,7 +577,7 @@
       if (dragging) {
         mapView.ox += (ev.clientX - last[0]) * (cv.width / cv.getBoundingClientRect().width);
         mapView.oy += (ev.clientY - last[1]) * (cv.height / cv.getBoundingClientRect().height);
-        last = [ev.clientX, ev.clientY]; renderMap(); return;
+        last = [ev.clientX, ev.clientY]; scheduleRenderMap(); return;
       }
       mapHover(cv, ev);
     };
@@ -465,13 +612,8 @@
       showReadout(ev, wrows);
       return;
     }
-    var hitP = null, hitD = Infinity;
-    if (S.showPoints && App.payload.map.points) {
-      (App.payload.map.points || []).forEach(function (pt, pi) {
-        var s = w2s(pt[0], pt[1]);
-        var d = Math.hypot(s[0] - px[0], s[1] - px[1]);
-        if (d <= 8 && d < hitD) { hitD = d; hitP = { point: pt, index: pi }; }
-      });
+    if (S.showPoints && App.payload.map.points && App.payload.map.points.length) {
+      var hitP = hitTestPoint(App.payload.map.points, px[0], px[1]);
       if (hitP) {
         var hp = hitP.point;
         var rows = [["", "point " + hitP.index], ["x", fmt(hp[0], "m")], ["y", fmt(hp[1], "m")]];
