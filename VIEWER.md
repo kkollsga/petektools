@@ -81,8 +81,9 @@ bucket — so a **200k-point coloured cloud pans/zooms/hovers at frame rate**
 
 For the `view2d` QA path, `color=` and `fill=` are **separate, explicit
 semantics** (owner ruling 2026-07-10): `color=` colours **points** (and picks
-the colormap for whatever is value-coloured) — it never triggers fills; value
-**fills** come only from `fill=`; contour lines only from `contours=`. Both
+the colormap for whatever is value-coloured) — it never triggers fills, and it
+defaults ON (`color=False` for monochrome points); value **fills** come only
+from `fill=`; contour lines only from `contours=`. Both
 `color=` and `fill=` accept `True` or a string spec parsed by **registry
 match**: `"[<attr>_]<cmap>[_<min>_<max>]"`, where `<cmap>` is one of
 `viridis` / `magma` / `grays` / `inferno` and the two trailing floats are an

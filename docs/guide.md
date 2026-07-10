@@ -193,9 +193,10 @@ triangle edges as grid lines with the mesh `edge` rings as the outline; a mesh
 that also offers `wireframe_edges()` index pairs draws exactly those instead —
 quad-dominant, with interior cell diagonals removed.
 
-Three opt-in kwargs add value rendering, each explicit. `color=` colours
-**points** by their z value (and selects the colormap for whatever is
-value-coloured) — it never triggers fills. `fill=` asks each item offering
+Three kwargs add value rendering, each explicit. `color=` colours **points**
+by their z value (and selects the colormap for whatever is value-coloured) —
+it never triggers fills, and it defaults ON (pass `color=False` for
+monochrome points). `fill=` asks each item offering
 `value_layer()` for a per-node value layer and paints it as a value-coloured
 fill *under* the grid lines (each triangle flat-filled with the colormap
 colour of its mean node value; a triangle touching a NaN node is left
