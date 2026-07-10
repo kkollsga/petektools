@@ -1195,5 +1195,71 @@ def test_map_blocks_dedup_shared_mesh_ships_once():
           f"(nodes+tris shared, 2 distinct value blocks)")
 
 
+class _StridedMesh:
+    """A synthetic trimesh producer whose `value_layer(stride=)` returns a
+    coarser `stride`-decimated grid (≈ the petekio LOD seam), for a browserless
+    measure of the stride-ladder coarse ring's cost."""
+
+    def __init__(self, n: int):
+        self.n = n
+
+    @staticmethod
+    def _grid(n: int):
+        nodes = [[i * 25.0, j * 25.0] for j in range(n) for i in range(n)]
+        values = [0.1 + 0.2 * math.sin(i / 10.0) * math.cos(j / 10.0)
+                  for j in range(n) for i in range(n)]
+        tris = []
+        for j in range(n - 1):
+            for i in range(n - 1):
+                a = j * n + i
+                tris.append([a, a + 1, a + n])
+                tris.append([a + 1, a + n + 1, a + n])
+        return nodes, tris, values
+
+    def xyz(self):
+        return [[nd[0], nd[1], 0.0] for nd in self._grid(self.n)[0]]
+
+    def triangles(self):
+        return self._grid(self.n)[1]
+
+    def value_layer(self, attr=None, stride=None):
+        n = self.n if not stride or stride <= 1 else (self.n + stride - 1) // stride
+        nodes, tris, values = self._grid(n)
+        return {"name": "phi", "nodes": nodes, "triangles": tris,
+                "values": values, "range": [0.0, 0.4]}
+
+
+def test_map_lod_coarse_ring_shrinks_wire():
+    """The stride-4 coarse fill ring carries ≈k² fewer triangles and encodes to a
+    small fraction of the full ring's block bytes — the win the viewer trades a
+    few pixels of detail for when a data cell shrinks below ~4 px."""
+    from petektools.viewer import view2d_payload
+
+    mesh = _StridedMesh(MAP_FILL_GRID)  # 198×198 nodes → ~78k triangles
+    p = view2d_payload([mesh], fill=True, lod=(4,), encoding="json")
+    fill = p["map"]["fills"][0]
+    full_tris = len(fill["triangles"])
+    coarse_tris = len(fill["lod"]["triangles"])
+    ratio = full_tris / max(1, coarse_tris)
+
+    enc = view2d_payload([mesh], fill=True, lod=(4,), encoding="blocks",
+                         block_threshold_bytes=0)
+    m = enc["map"]
+    tbl = m["blocks"]
+
+    def blk_bytes(marker):
+        return len(tbl[marker["__block__"]]["data"])
+
+    full_b = blk_bytes(m["fills"][0]["nodes"]) + blk_bytes(m["fills"][0]["triangles"]) \
+        + blk_bytes(m["fills"][0]["values"])
+    lod = m["fills"][0]["lod"]
+    coarse_b = blk_bytes(lod["nodes"]) + blk_bytes(lod["triangles"]) + blk_bytes(lod["values"])
+    print(f"\n[map-lod] full {full_tris} tris / coarse {coarse_tris} tris = {ratio:.1f}x "
+          f"fewer | full ring {full_b/1e6:.2f} MB(b64) -> coarse {coarse_b/1e3:.0f} KB "
+          f"= {full_b/max(1,coarse_b):.0f}x smaller")
+    assert ratio >= 8.0, f"coarse ring only {ratio:.1f}x fewer triangles"
+    assert coarse_b * 8 < full_b, "coarse ring block bytes not materially smaller"
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-s"]))

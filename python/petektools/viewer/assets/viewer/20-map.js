@@ -295,22 +295,24 @@
   // The ring to draw for a fill / a full-vs-lod field pair.
   function fillRingFor(fill) { return (S.lodActive && fill && fill.lod) ? fill.lod : fill; }
   function lineSetRing(full, lodField) { return (S.lodActive && lodField) ? lodField : full; }
-  // Zoom-settle debounce (shared): 150 ms after the last wheel event, recompute
-  // which LOD ring should show and repaint if it changed. Skipped for a hidden
-  // document / background tab (no work while unseen — the P3 visibility rule).
-  var _lodSettleTimer = 0;
-  function scheduleZoomSettle() {
-    if (_lodSettleTimer) clearTimeout(_lodSettleTimer);
-    _lodSettleTimer = setTimeout(function () {
-      _lodSettleTimer = 0;
+  // ONE shared zoom/gesture-settle debounce: 150 ms after the last wheel/drag
+  // event that couldn't blit, do the deferred settle work — (1) recompute which
+  // LOD ring the settled zoom wants, then (2) one non-hot render, which re-BAKES
+  // the point cloud and the active fill for the (possibly new) ring. Skipped for
+  // a hidden document / background tab (the P3 visibility rule: no work while
+  // unseen). Both the LOD switch and the fill/point re-bake ride this one timer.
+  var _settleTimer = 0;
+  function scheduleSettle() {
+    if (_settleTimer) clearTimeout(_settleTimer);
+    _settleTimer = setTimeout(function () {
+      _settleTimer = 0;
       if (App.tab !== "map") return;
       if (typeof document !== "undefined" && document.hidden) return;
       var want = computeLodActive();
-      if (want !== S.lodActive) {
-        S.lodActive = want;
-        if (!_mapRafPending) renderMap();
-        if (typeof buildPanel === "function") buildPanel();
-      }
+      var lodChanged = want !== S.lodActive;
+      S.lodActive = want;
+      if (!_mapRafPending) requestAnimationFrame(function () { if (!_mapRafPending) renderMap(); });
+      if (lodChanged && typeof buildPanel === "function") buildPanel();
     }, 150);
   }
 
@@ -332,7 +334,7 @@
     // value-coloured trimesh fill (2-D QA payloads) — UNDER grid lines /
     // outline / points. One active fill at a time (the panel select).
     var activeFill = (App.payload.map.fills || [])[S.mapFillIdx] || null;
-    if (S.showFills && activeFill) drawTriFill(ctx, fillRingFor(activeFill));
+    if (S.showFills && activeFill) drawMapFill(ctx, cv, fillRingFor(activeFill));
 
     // regular-geometry / trimesh gridlines (2-D QA payloads); one batched
     // stroke — per-line strokes crawl on dense meshes. Draws the coarse ring
@@ -589,17 +591,9 @@
   var PT_BAND_LO = 0.8, PT_BAND_HI = 1.25;
   var _ptCache = { canvas: null, ref: null, key: "", scale: 0, cox: 0, coy: 0,
                    wx0: 0, wy0: 0, wx1: 0, wy1: 0 }; // w* = baked window, world coords
-  // Trailing re-bake: a hot frame that couldn't blit schedules one non-hot map
-  // render shortly after the gesture pauses — that render bakes synchronously.
-  var _ptBakeTimer = 0;
-  function scheduleDeferredPointBake() {
-    if (_ptBakeTimer) clearTimeout(_ptBakeTimer);
-    _ptBakeTimer = setTimeout(function () {
-      _ptBakeTimer = 0;
-      if (App.tab !== "map" || _mapRafPending) return;
-      requestAnimationFrame(function () { if (!_mapRafPending) renderMap(); });
-    }, 90);
-  }
+  // Trailing re-bake: a hot frame that couldn't blit schedules the shared settle
+  // (scheduleSettle), which after the gesture pauses does one non-hot render that
+  // bakes the point cloud (and the active fill) synchronously.
   function drawMapPoints(ctx, cv) {
     var pts = App.payload.map.points;
     var r = pointRadius();
@@ -649,7 +643,7 @@
     } else {
       // mid-gesture (or over the caps): batched immediate, viewport-culled
       fillPointPaths(ctx, buildPointPaths(pts, mapView.scale, mapView.ox, mapView.oy, r, pc, true, cv.width, cv.height), alpha);
-      if (_mapHotFrame) scheduleDeferredPointBake();
+      if (_mapHotFrame) scheduleSettle();
     }
   }
 
@@ -721,7 +715,11 @@
   // so a ~78k-triangle mesh costs ~64 fill calls, never 78k. Bins reuse the
   // raster's colormap LUT (the same ramp the ScalarLayer rasters use).
   var FILL_BINS = 64;
-  function drawTriFill(ctx, fill) {
+  // Draw the value-coloured trimesh under an affine (sx = x·sc + oxx). The
+  // transform defaults to the live map view; the fill BAKE (drawMapFill) passes
+  // an offscreen-window transform so the bitmap can be blitted on pan/zoom.
+  function drawTriFill(ctx, fill, sc, oxx, oyy) {
+    if (sc == null) { sc = mapView.scale; oxx = mapView.ox; oyy = mapView.oy; }
     var nodes = fill.nodes, tris = fill.triangles, vals = fill.values;
     var nN = nodes ? nodes.length : 0, nT = trN(tris);
     if (!nN || !nT) return;
@@ -733,9 +731,9 @@
       if (!isFinite(lo)) return; // nothing finite to colour
       span = (hi - lo) || 1;
     }
-    // project every node once (not 3× per triangle)
+    // project every node once (not 3× per triangle) under the given affine
     var sx = new Float64Array(nN), sy = new Float64Array(nN);
-    for (var k = 0; k < nN; k++) { var s = w2s(ndX(nodes, k), ndY(nodes, k)); sx[k] = s[0]; sy[k] = s[1]; }
+    for (var k = 0; k < nN; k++) { sx[k] = ndX(nodes, k) * sc + oxx; sy[k] = ndY(nodes, k) * sc + oyy; }
     var paths = new Array(FILL_BINS);
     for (var t = 0; t < nT; t++) {
       var a = trAt(tris, t, 0), b = trAt(tris, t, 1), c = trAt(tris, t, 2);
@@ -756,6 +754,75 @@
       // hairline same-colour stroke closes the antialiasing seams between
       // adjacent flat-filled triangles (per bin, not per triangle).
       ctx.strokeStyle = css; ctx.lineWidth = 1; ctx.stroke(paths[i]);
+    }
+  }
+
+  // ---- fill baking: offscreen bitmap blitted on pan, re-baked on settle -------
+  // The active value-fill rasterizes ONCE into an offscreen canvas (viewport +
+  // margin, clamped to the fill bbox and the shared bake caps); pan blits the
+  // bitmap (one drawImage), an in-band zoom blits it scaled (stale but instant),
+  // and a zoom out of band / a ring switch / over-the-caps falls back to the
+  // batched immediate draw and re-bakes on the shared settle. This is the exact
+  // baked-blit pattern the point cloud uses (same PT_* caps, band and margin, and
+  // the same _mapHotFrame gate), so a 78k-triangle fill never re-triangulates per
+  // pan frame. The bake key is (colormap, range) and the ring OBJECT identity, so
+  // an LOD ring switch (full ↔ coarse) invalidates the bitmap and re-bakes.
+  var _fillCache = { canvas: null, ref: null, key: "", scale: 0, cox: 0, coy: 0,
+                     wx0: 0, wy0: 0, wx1: 0, wy1: 0 };
+  function fillNodesBBox(ring) {
+    if (ring.__bbox) return ring.__bbox;
+    var N = ring.nodes, n = N ? N.length : 0;
+    var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (var q = 0; q < n; q++) {
+      var x = ndX(N, q), y = ndY(N, q);
+      if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+    }
+    return (ring.__bbox = { x0: x0, y0: y0, x1: x1, y1: y1 });
+  }
+  function drawMapFill(ctx, cv, fill) {
+    if (!fill || !fill.nodes || !fill.nodes.length) return;
+    var key = S.colormap + "|" + (fill.range ? fill.range[0] + "," + fill.range[1] : "-");
+    var bb = fillNodesBBox(fill);
+    // the viewport in world coords, clamped to the fill bbox — the region a blit
+    // must cover to be valid
+    var nx0 = Math.max(-mapView.ox / mapView.scale, bb.x0);
+    var ny0 = Math.max(-mapView.oy / mapView.scale, bb.y0);
+    var nx1 = Math.min((cv.width - mapView.ox) / mapView.scale, bb.x1);
+    var ny1 = Math.min((cv.height - mapView.oy) / mapView.scale, bb.y1);
+    var C = _fillCache;
+    var k = C.canvas && C.scale > 0 ? mapView.scale / C.scale : 0;
+    var usable = !!C.canvas && C.ref === fill && C.key === key &&
+      k >= PT_BAND_LO && k <= PT_BAND_HI &&
+      (nx0 >= nx1 || ny0 >= ny1 || // fill fully off-screen: any valid bake will do
+        (nx0 >= C.wx0 && ny0 >= C.wy0 && nx1 <= C.wx1 && ny1 <= C.wy1));
+    if (!usable && !_mapHotFrame) {
+      // (re)bake: viewport + margin, clamped to the fill bbox and the caps
+      var mx = cv.width * PT_MARGIN, my = cv.height * PT_MARGIN;
+      var wx0 = Math.max((-mx - mapView.ox) / mapView.scale, bb.x0);
+      var wy0 = Math.max((-my - mapView.oy) / mapView.scale, bb.y0);
+      var wx1 = Math.min((cv.width + mx - mapView.ox) / mapView.scale, bb.x1);
+      var wy1 = Math.min((cv.height + my - mapView.oy) / mapView.scale, bb.y1);
+      var w = Math.ceil((wx1 - wx0) * mapView.scale), h = Math.ceil((wy1 - wy0) * mapView.scale);
+      if (w > 0 && h > 0 && w <= PT_CACHE_MAX_DIM && h <= PT_CACHE_MAX_DIM && w * h <= PT_CACHE_MAX_PX) {
+        if (!C.canvas) C.canvas = document.createElement("canvas");
+        C.canvas.width = w; C.canvas.height = h; // also clears prior content
+        var cox = -wx0 * mapView.scale, coy = -wy0 * mapView.scale;
+        drawTriFill(C.canvas.getContext("2d"), fill, mapView.scale, cox, coy);
+        C.ref = fill; C.key = key; C.scale = mapView.scale; C.cox = cox; C.coy = coy;
+        C.wx0 = wx0; C.wy0 = wy0; C.wx1 = wx1; C.wy1 = wy1;
+        usable = true; k = 1;
+      }
+    }
+    if (usable) {
+      ctx.save();
+      ctx.imageSmoothingEnabled = true;
+      ctx.drawImage(C.canvas, mapView.ox - C.cox * k, mapView.oy - C.coy * k,
+        C.canvas.width * k, C.canvas.height * k);
+      ctx.restore();
+    } else {
+      // mid-gesture (or over the caps): batched immediate draw at the live view
+      drawTriFill(ctx, fill);
+      if (_mapHotFrame) scheduleSettle();
     }
   }
 
@@ -788,7 +855,23 @@
     }
   }
 
+  // Visibility-driven rendering: this viewer renders ON DEMAND — only the active
+  // tab's render fn runs (renderActive), scene3d/volume repaint on control-change,
+  // and the map coalesces interaction repaints through rAF; there is NO persistent
+  // animation loop to burn a hidden tab. The one thing that CAN fire while hidden
+  // is the settle setTimeout, so a hidden document cancels it (browsers already
+  // suspend rAF for a hidden document). Wired once (single map canvas per page —
+  // there is no multi-view/embedded-canvas machinery, so no IntersectionObserver
+  // is needed here).
+  function wireVisibilityPause() {
+    if (typeof document === "undefined" || window.__PETEK_VIS_WIRED) return;
+    window.__PETEK_VIS_WIRED = true;
+    document.addEventListener("visibilitychange", function () {
+      if (document.hidden && _settleTimer) { clearTimeout(_settleTimer); _settleTimer = 0; }
+    });
+  }
   function mapPanZoomHover(cv) {
+    wireVisibilityPause();
     var dragging = false, last = null;
     cv.onwheel = function (ev) {
       ev.preventDefault();
@@ -801,7 +884,7 @@
       mapView.ox = mx - w[0] * mapView.scale;
       mapView.oy = my - w[1] * mapView.scale;
       scheduleRenderMap();
-      scheduleZoomSettle(); // flip the LOD ring once the zoom settles
+      scheduleSettle(); // flip the LOD ring + re-bake once the zoom settles
     };
     cv.onmousedown = function (ev) {
       if (S.fence.drawing) { addFencePoint(cv, ev); return; }

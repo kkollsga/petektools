@@ -26,6 +26,16 @@ All notable changes to petekTools are recorded here. Format follows
   below ~4 px on screen — fills, mesh grid lines and contours switch together
   (points keep their baked path), with a small "LOD" chip while coarse is showing.
   See `SCHEMA.md` (MapBundle → **Stride-ladder LOD**).
+- Map **fill baking + visibility-driven rendering** (viewer perf). The active
+  value-fill now rasterizes once into an offscreen bitmap that pan blits (one
+  `drawImage`) and an in-band zoom blits scaled, re-baking only on zoom-settle —
+  the same baked-blit path (shared caps/band/margin and the one settle debounce)
+  the 200k point cloud uses, so a 78k-triangle fill never re-triangulates per pan
+  frame. Rendering stays on-demand and now pauses cleanly when unseen: a hidden
+  document cancels the settle timer (`visibilitychange`), and only the active tab
+  ever repaints (no background animation loop). A stride-4 coarse LOD fill ring
+  is ~16× fewer triangles / ~16× smaller than its full ring
+  (`viewer_perf/README.md` §5).
 - `view2d` / `view2d_payload` gain `encoding="blocks"|"json"` (default
   `"blocks"`): the 2-D map's bulk arrays (`points`, each fill's
   `nodes`/`triangles`/`values`, `grid_lines`, `contours[i].lines`) now ship as

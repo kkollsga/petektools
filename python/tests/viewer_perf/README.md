@@ -117,3 +117,50 @@ payload, all three legs browserless (they run on the Node kernel):
 vs the JSON floats it replaces: the map no longer parses megabytes of float text
 on the main thread — the base64 blocks decode off-thread into typed arrays,
 transferred zero-copy, and identical arrays decode once per session.
+
+## 5. Stride-ladder LOD + fill baking (P2b/P3)
+
+**LOD rings (`view2d(lod=…)`).** A payload may carry ONE coarse display ring
+beside each full-resolution field — `fills[i].lod`, `map.grid_lines_lod`,
+`contours[i].lines_lod` — decimated by the producer (`value_layer(stride=)`,
+`wireframe_edges(stride=)`, `iso_lines(simplify=)`). Geometry truth is never
+decimated; the ring is display-only and keeps the full-resolution colour range.
+Browserless measure (`test_map_lod_coarse_ring_shrinks_wire`), a 198×198-node
+(~78k-triangle) fill, stride 4:
+
+| metric | full ring | coarse (stride 4) ring |
+|---|---:|---:|
+| triangles | 77,618 | 4,802 (**16.2× fewer**) |
+| block bytes (base64) | 1.87 MB | 117 KB (**16× smaller**) |
+
+**Expected switch behaviour** (asserted browser-side under Playwright in P4;
+`window.__PETEK_LOD_ACTIVE` is exposed for the harness):
+
+- The renderer picks the ring on **zoom-settle** — a ~150 ms debounce after the
+  last wheel event, never per frame — so a mid-gesture zoom never flickers
+  between rings.
+- It switches to the coarse ring when a full-resolution data cell falls below
+  **~4 px** on screen (`fullCellPx() < LOD_CELL_PX`), computed from the active
+  fill's node density (√(bbox area / node count)) or the frame lattice spacing.
+- Fills, mesh grid lines and contours switch together; the point cloud keeps its
+  own baked path. A small "LOD" chip shows while the coarse ring is active.
+- `lod=False` (and any LOD-unsupported payload) is byte-identical to the pre-LOD
+  shape — the full rings render exactly as before.
+
+**Fill baking (P3).** The active value-fill rasterizes once into an offscreen
+bitmap (viewport + margin, clamped to the fill bbox and the shared bake caps);
+pan blits it (one `drawImage`), an in-band zoom blits it scaled, and a zoom out
+of band / an LOD ring switch / over-the-caps re-bakes on the shared settle — the
+same baked-blit pattern (and the same `PT_*` caps, band and margin) the 200k
+point cloud uses, so a 78k-triangle fill never re-triangulates per pan frame. The
+bake key is `(colormap, range)` + the ring object identity, so switching rings
+invalidates the bitmap.
+
+**Visibility-driven rendering (P3).** This viewer renders ON DEMAND — only the
+active tab's render fn runs (`renderActive`), scene3d/volume repaint on
+control-change, and the map coalesces interaction repaints through rAF; there is
+**no persistent animation loop** to burn a background tab (verified). A hidden
+document cancels the settle timer (`visibilitychange`); browsers already suspend
+rAF for a hidden document. There is a **single** map canvas per exported page and
+no multi-view/embedded-canvas machinery, so no `IntersectionObserver` is used —
+it would gate work that does not exist.
