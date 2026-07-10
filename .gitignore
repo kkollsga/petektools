@@ -9,10 +9,5 @@ __pycache__/
 /.venv-docs-nb/
 .ipynb_checkpoints/
 
-# Local working folders (mirrors the petekio / peteksim convention):
-/inbox/
+# Local technical reference only; actionable state is owned by petekSuite.
 /dev-docs/
-/.claude/
-
-# Local coordinator-graph MCP config (machine-specific absolute path)
-/.mcp.json

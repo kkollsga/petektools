@@ -43,23 +43,23 @@ or grows past a few hundred lines. Keep the layers (`foundation → gridding →
   `units` / `container` modules. Only the PyO3 wheel remains from the old
   roadmap — see `dev-docs/designs/roadmap.md`.
 
-## Planning graph — the cross-library source of truth
+## Suite-owned coordination
 
-The petekSuite **planning graph** (`petekSuite/research/graph/research.kgl`,
-`contract` MCP) is the single source of truth for the inter-library contracts, architecture
-decisions, and open questions. Reach for it on anything cross-cutting — read it
-before changing a shared seam; record blocking issues and choices there, not only
-in local docs. Contribute **without cluttering**: runtime types only
-(`Question` / `Decision` / `Artifact` / `Task` — never managed research nodes;
-raise a `Question` if one is wrong); **MERGE on id, never CREATE**; one node per
-concept; `write_scope` to those types; stamp `git_sha` + `modified_by='petektools'`.
-No direct access → route via the **inbox** to petekSuite (the coordinator). Full
-protocol: petek house style §8.
+petekSuite is the sole control plane for this managed library. It owns agent
+lifecycle, the planning graph, actionable todos, GitHub Actions operations,
+publishing, and releases. Work here is executed by a directly spawned
+petekTools agent through the suite's `run-library-task` skill; do not recreate
+a local skill tree, inbox, MCP configuration, or todo index.
 
-## Working folders
+Before changing a shared seam, the coordinator reads the petekSuite planning
+graph and passes the relevant contract and graph ids into the task. The owning
+agent reports findings, evidence, and graph-worthy changes back to the
+coordinator; only petekSuite writes coordination state.
 
-- `inbox/` — cross-project coordination channel (see `inbox/README.md`).
-- `dev-docs/` — plans, designs, todos (see `dev-docs/README.md`).
+`dev-docs/` may retain stable petekTools-only technical plans, designs, and
+benchmark records when code or historical reasoning depends on those paths.
+Actionable state lives centrally under
+`petekSuite/dev-docs/libraries/petekTools/`.
 
 ## Commits
 
