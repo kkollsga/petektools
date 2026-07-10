@@ -9,9 +9,11 @@ All notable changes to petekTools are recorded here. Format follows
 ### Changed
 - Map point clouds render at frame rate at 200k+ points (previously ~145 ms per
   repaint, re-run synchronously per wheel/drag event). Points batch into <=256
-  colormap-bin `Path2D`s (squares at small radii) baked to a memory-capped
-  offscreen canvas re-blitted while panning/zooming (re-baked per zoom band /
-  data / colormap / theme change; batched immediate mode past the caps);
+  colormap-bin `Path2D`s (squares at small radii) baked to a viewport-windowed,
+  memory-capped offscreen canvas re-blitted while panning/zooming; a gesture
+  frame that leaves the baked window / zoom band draws the batched immediate
+  path and re-bakes only when the gesture pauses (trailing timer), so no
+  pan/zoom frame pays the bake or its GPU upload;
   wheel/drag repaints coalesce to at most one per animation frame; the hover
   hit-test queries a coarse world-space grid bucket instead of scanning every
   point. Render-path only - no payload schema change.

@@ -19,7 +19,10 @@
     function ext(x, y) { if (x < xlo) xlo = x; if (x > xhi) xhi = x; if (y < ylo) ylo = y; if (y > yhi) yhi = y; }
     (App.payload.map.outline || []).forEach(function (ring) { ring.forEach(function (pt) { ext(pt[0], pt[1]); }); });
     (App.payload.map.grid_lines || []).forEach(function (line) { line.forEach(function (pt) { ext(pt[0], pt[1]); }); });
-    (App.payload.map.points || []).forEach(function (pt) { ext(pt[0], pt[1]); });
+    if (App.payload.map.points && App.payload.map.points.length) {
+      var bb = pointBBox(App.payload.map.points); // cached — never rescan the cloud
+      ext(bb.x0, bb.y0); ext(bb.x1, bb.y1);
+    }
     (App.payload.map.fills || []).forEach(function (f) { (f.nodes || []).forEach(function (pt) { ext(pt[0], pt[1]); }); });
     (App.payload.map.contours || []).forEach(function (c) { (c.lines || []).forEach(function (line) { line.forEach(function (pt) { ext(pt[0], pt[1]); }); }); });
     (App.payload.wells || []).forEach(function (w) { ext(w.x, w.y); });
@@ -315,11 +318,15 @@
   //   1. BATCH: points bin into ≤256 colormap bins (+1 accent bin for non-finite
   //      z), one Path2D + one fill() per bin — the drawTriFill idiom. Small radii
   //      draw as squares (rect), which Path2D batches far faster than arcs.
-  //   2. BAKE: the whole cloud is rendered once into an offscreen canvas at the
-  //      current scale and re-blitted (a single drawImage) while panning/zooming
-  //      inside a zoom band; a band change / data / colormap / theme change
-  //      re-bakes. Memory-guarded: past the size caps (deep zoom) it falls back
-  //      to the batched immediate path, viewport-culled.
+  //   2. BAKE: the cloud is rendered once into a VIEWPORT-WINDOWED offscreen
+  //      canvas (viewport + margin, clamped to the cloud bbox and hard pixel
+  //      caps — the _raster windowing idiom) and re-blitted (one drawImage)
+  //      while the view stays inside the baked window and zoom band. A HOT
+  //      frame (wheel/drag) that can't blit draws the batched immediate path
+  //      instead — still one redraw per frame — and re-bakes only when the
+  //      gesture pauses (a trailing timer), so no pan/zoom frame ever pays the
+  //      bake + GPU re-upload cost. Non-hot renders (tab switch, toggles, the
+  //      deferred timer) re-bake synchronously. Past the caps: immediate path.
   //   3. rAF: wheel/drag route through scheduleRenderMap() — state updates per
   //      event, at most ONE repaint per animation frame.
   function pointRadius() { return Math.max(1.5, Math.min(3.5, mapView.scale < 0.05 ? 1.5 : 2.5)); }
@@ -376,37 +383,66 @@
     _ptBBox = { ref: pts, x0: x0, y0: y0, x1: x1, y1: y1 };
     return _ptBBox;
   }
-  // Offscreen bake caps: per-axis + total-pixel (a 4096² RGBA canvas is ~64 MB —
-  // the area cap keeps the worst case at ~48 MB). Past the caps (deep zoom, the
-  // cloud's screen footprint outgrows the canvas) → batched immediate mode.
+  // Offscreen bake caps: per-axis + total-pixel (bounds the canvas alloc and the
+  // blit's GPU upload; a 4096² RGBA canvas is ~64 MB — the area cap keeps the
+  // worst case at ~48 MB). The window (≤ (1+2·margin)× the viewport, clamped to
+  // the cloud bbox) stays far below the caps at normal viewport sizes.
   var PT_CACHE_MAX_DIM = 4096;
   var PT_CACHE_MAX_PX = 12 * 1024 * 1024;
+  var PT_MARGIN = 0.5; // bake-window margin per side, in viewport fractions
   // Zoom band around the baked scale: inside it the bake is blitted scaled (mark
-  // size drifts ≤ ~25% momentarily); outside it re-bakes at the current scale.
+  // size drifts ≤ ~25% momentarily); outside it re-renders/re-bakes.
   var PT_BAND_LO = 0.8, PT_BAND_HI = 1.25;
-  var _ptCache = { canvas: null, ref: null, key: "", scale: 0, cox: 0, coy: 0 };
+  var _ptCache = { canvas: null, ref: null, key: "", scale: 0, cox: 0, coy: 0,
+                   wx0: 0, wy0: 0, wx1: 0, wy1: 0 }; // w* = baked window, world coords
+  // Trailing re-bake: a hot frame that couldn't blit schedules one non-hot map
+  // render shortly after the gesture pauses — that render bakes synchronously.
+  var _ptBakeTimer = 0;
+  function scheduleDeferredPointBake() {
+    if (_ptBakeTimer) clearTimeout(_ptBakeTimer);
+    _ptBakeTimer = setTimeout(function () {
+      _ptBakeTimer = 0;
+      if (App.tab !== "map" || _mapRafPending) return;
+      requestAnimationFrame(function () { if (!_mapRafPending) renderMap(); });
+    }, 90);
+  }
   function drawMapPoints(ctx, cv) {
     var pts = App.payload.map.points;
     var r = pointRadius();
     var alpha = pts.length > 20000 ? 0.45 : 0.7;
     var pc = App.payload.map.point_color;
-    // everything the baked pixels depend on, except geometry/scale
+    // everything the baked pixels depend on, except geometry/scale/window
     var key = S.colormap + "|" + token("--accent") + "|" + r + "|" + alpha + "|" +
       (pc && pc.range ? pc.range[0] + "," + pc.range[1] : "-");
+    var bb = pointBBox(pts), pad = r + 2, padW = pad / mapView.scale;
+    // the viewport in world coords, clamped to the (padded) cloud bbox — the
+    // part the baked window must cover for a blit to be valid
+    var nx0 = Math.max(-mapView.ox / mapView.scale, bb.x0 - padW);
+    var ny0 = Math.max(-mapView.oy / mapView.scale, bb.y0 - padW);
+    var nx1 = Math.min((cv.width - mapView.ox) / mapView.scale, bb.x1 + padW);
+    var ny1 = Math.min((cv.height - mapView.oy) / mapView.scale, bb.y1 + padW);
     var C = _ptCache;
     var k = C.canvas && C.scale > 0 ? mapView.scale / C.scale : 0;
-    var usable = C.canvas && C.ref === pts && C.key === key && k >= PT_BAND_LO && k <= PT_BAND_HI;
-    if (!usable) {
-      var bb = pointBBox(pts), pad = r + 2;
-      var w = Math.ceil((bb.x1 - bb.x0) * mapView.scale) + 2 * pad;
-      var h = Math.ceil((bb.y1 - bb.y0) * mapView.scale) + 2 * pad;
-      if (w <= PT_CACHE_MAX_DIM && h <= PT_CACHE_MAX_DIM && w * h <= PT_CACHE_MAX_PX) {
+    var usable = !!C.canvas && C.ref === pts && C.key === key &&
+      k >= PT_BAND_LO && k <= PT_BAND_HI &&
+      (nx0 >= nx1 || ny0 >= ny1 || // cloud fully off-screen: any valid bake will do
+        (nx0 >= C.wx0 && ny0 >= C.wy0 && nx1 <= C.wx1 && ny1 <= C.wy1));
+    if (!usable && !_mapHotFrame) {
+      // (re)bake: viewport + margin, clamped to the cloud bbox and the caps
+      var mx = cv.width * PT_MARGIN, my = cv.height * PT_MARGIN;
+      var wx0 = Math.max((-mx - mapView.ox) / mapView.scale, bb.x0 - padW);
+      var wy0 = Math.max((-my - mapView.oy) / mapView.scale, bb.y0 - padW);
+      var wx1 = Math.min((cv.width + mx - mapView.ox) / mapView.scale, bb.x1 + padW);
+      var wy1 = Math.min((cv.height + my - mapView.oy) / mapView.scale, bb.y1 + padW);
+      var w = Math.ceil((wx1 - wx0) * mapView.scale), h = Math.ceil((wy1 - wy0) * mapView.scale);
+      if (w > 0 && h > 0 && w <= PT_CACHE_MAX_DIM && h <= PT_CACHE_MAX_DIM && w * h <= PT_CACHE_MAX_PX) {
         if (!C.canvas) C.canvas = document.createElement("canvas");
         C.canvas.width = w; C.canvas.height = h; // also clears prior content
-        var cox = pad - bb.x0 * mapView.scale, coy = pad - bb.y0 * mapView.scale;
+        var cox = -wx0 * mapView.scale, coy = -wy0 * mapView.scale;
         var cctx = C.canvas.getContext("2d");
-        fillPointPaths(cctx, buildPointPaths(pts, mapView.scale, cox, coy, r, pc, false, 0, 0), alpha);
+        fillPointPaths(cctx, buildPointPaths(pts, mapView.scale, cox, coy, r, pc, true, w, h), alpha);
         C.ref = pts; C.key = key; C.scale = mapView.scale; C.cox = cox; C.coy = coy;
+        C.wx0 = wx0; C.wy0 = wy0; C.wx1 = wx1; C.wy1 = wy1;
         usable = true; k = 1;
       }
     }
@@ -417,8 +453,9 @@
         C.canvas.width * k, C.canvas.height * k);
       ctx.restore();
     } else {
-      // over the cache caps (deep zoom): batched immediate, viewport-culled
+      // mid-gesture (or over the caps): batched immediate, viewport-culled
       fillPointPaths(ctx, buildPointPaths(pts, mapView.scale, mapView.ox, mapView.oy, r, pc, true, cv.width, cv.height), alpha);
+      if (_mapHotFrame) scheduleDeferredPointBake();
     }
   }
 
@@ -426,13 +463,15 @@
   // state per DOM event and schedule; the map draws AT MOST once per animation
   // frame. The per-frame cost + frame count are exposed for the perf harness.
   var _mapRafPending = false;
+  var _mapHotFrame = false; // true while a wheel/drag-scheduled frame renders
   function scheduleRenderMap() {
     if (_mapRafPending) return;
     _mapRafPending = true;
     requestAnimationFrame(function () {
       _mapRafPending = false;
       var t0 = performance.now();
-      renderMap();
+      _mapHotFrame = true;
+      try { renderMap(); } finally { _mapHotFrame = false; }
       window.__PETEK_MAP_FRAME_MS = performance.now() - t0;
       window.__PETEK_MAP_FRAME_COUNT = (window.__PETEK_MAP_FRAME_COUNT || 0) + 1;
     });
