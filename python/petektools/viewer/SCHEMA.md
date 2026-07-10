@@ -284,7 +284,10 @@ colour (never colour-guessed). The Python builder decimates each cloud past
 …], triangles: [[a, b, c], …], values: float[len(nodes)] | null, range:
 [min, max] | null}`. `values`+`range` present → per-vertex colormap colouring
 (the user's `fill=` clamp range when specified; a `null` value renders the
-neutral colour); absent → the neutral material with a panel wireframe toggle.
+neutral colour); absent → the neutral material with a panel wireframe toggle —
+also the shape a value-bearing item passed BARE (no `fill=`) emits: its
+primary value layer supplies the node elevations while `values`/`range` stay
+null (structure, never a bare-colour side effect).
 A triangle touching a `null`-z node is **skipped** (a hole, never guessed).
 `name` is the attribute identity (e.g. `"z"`); `display_name` the duck-typed
 source-object name (e.g. `"Top Agat"`).

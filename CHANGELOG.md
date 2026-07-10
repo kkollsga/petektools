@@ -60,6 +60,18 @@ All notable changes to petekTools are recorded here. Format follows
   hit-test queries a coarse world-space grid bucket instead of scanning every
   point. Render-path only - no payload schema change.
 
+### Fixed
+- A value-bearing item passed **bare** (the petekio regular-`Surface` duck:
+  `value_layer()`/`iso_lines()` + a 2-D `.geometry`, no top-level
+  geometry/trimesh/points conventions) no longer raises `TypeError` in
+  `view2d_payload` / `view3d_payload`. It now renders its STRUCTURE — in 2-D
+  the `.geometry` lattice lines (or, geometry-less, the primary value layer's
+  triangle edges); in 3-D a neutral elevation mesh from the primary value
+  layer (`values`/`range` null → neutral shading + wireframe toggle). Values
+  still colour nothing without an explicit `fill=` (owner semantics
+  preserved), and the `TypeError` for genuinely unrenderable items now points
+  at `fill=`.
+
 ## [0.2.10] - 2026-07-10
 
 ### Added

@@ -586,6 +586,87 @@ def test_view2d_malformed_value_layer_raises():
         viewer.view2d_payload([BadMesh()], fill=True)
 
 
+# --- bare value-bearing items (the petekio regular-Surface duck) ---------------
+class _SurfaceGeom:
+    xori = 0.0
+    yori = 0.0
+    xinc = 10.0
+    yinc = 10.0
+    ncol = 3
+    nrow = 3
+
+    def node_xy(self, i, j):
+        return (i * 10.0, j * 10.0)
+
+
+class _SurfaceDuck:
+    """The petekio regular-Surface shape: ``value_layer()``/``iso_lines()`` +
+    a 2-D ``.geometry`` (GridGeometry duck), ``name``/``kind`` — and NO
+    top-level ``node_xy``/``triangles``/``xyz``."""
+
+    name = "Top Agat"
+    kind = "surface"
+    geometry = _SurfaceGeom()
+
+    def __init__(self):
+        self.seen: dict = {}
+
+    def value_layer(self, attr=None):
+        self.seen["value_attr"] = attr
+        return {
+            "name": attr or "z",
+            "nodes": [[0.0, 0.0], [10.0, 0.0], [0.0, 10.0], [10.0, 10.0]],
+            "triangles": [[0, 1, 2], [1, 3, 2]],
+            "values": [-2600.0, -2610.0, -2620.0, -2630.0],
+            "range": [-2630.0, -2600.0],
+        }
+
+    def iso_lines(self, interval=None, levels=None, attr=None):
+        return [(-2610.0, [[[0.0, 0.0], [10.0, 10.0]]])]
+
+
+def test_view2d_bare_surface_renders_structure_lines():
+    # the natural flow view2d([pts, surf]) must not die: a bare Surface shows
+    # its STRUCTURE (the .geometry lattice), never a bare-color fill
+    surf = _SurfaceDuck()
+    p = viewer.view2d_payload([surf])  # color defaults ON; no fill=
+    assert p["map"]["fills"] == []                # values stay fill= opt-in
+    assert "value_attr" not in surf.seen          # value_layer never consulted
+    assert p["map"]["grid_lines"]                 # .geometry lattice drawn
+    assert p["summary"]["grid"] == "3 x 3"
+    assert {"kind": "lines", "name": "Top Agat"} in p["map"]["layers"]
+
+
+def test_view2d_bare_value_layer_only_item_draws_mesh_edges():
+    # geometry-less value-bearing item: the primary layer's triangle edges
+    # become the drawn structure (still no fill without fill=)
+    class LayerOnly:
+        name = "Top Agat"
+
+        def value_layer(self, attr=None):
+            return _SurfaceDuck().value_layer(attr)
+
+    p = viewer.view2d_payload([LayerOnly()])
+    assert p["map"]["fills"] == []
+    assert sum(len(line) - 1 for line in p["map"]["grid_lines"]) == 5  # unique edges
+    assert p["summary"]["triangles"] == 2
+    assert {"kind": "lines", "name": "Top Agat"} in p["map"]["layers"]
+
+
+def test_view2d_surface_with_fill_unchanged():
+    surf = _SurfaceDuck()
+    p = viewer.view2d_payload([surf], fill=True, contours=[-2610.0])
+    assert len(p["map"]["fills"]) == 1
+    assert p["map"]["fills"][0]["display_name"] == "Top Agat"
+    assert surf.seen["value_attr"] is None
+    assert p["summary"]["contour_levels"] == 1
+
+
+def test_view2d_unrenderable_item_error_mentions_fill():
+    with pytest.raises(TypeError, match=r"cannot add.*fill="):
+        viewer.view2d_payload([object()])
+
+
 # --- view3d: the scene3d bundle (full view2d parity in one 3-D scene) ---------
 SCENE3D_KEYS = {
     "schema_version", "points", "meshes", "lattices", "contours", "wells",
@@ -775,8 +856,45 @@ def test_view3d_z_exaggeration_and_ref_z():
     assert viewer.view3d_payload([_Geom3D()])["scene3d"]["ref_z"] == 0.0
 
 
+def test_view3d_bare_surface_renders_neutral_elevation_mesh():
+    # the natural flow view3d([pts, surf]) must not die: a bare Surface shows
+    # its STRUCTURE as a NEUTRAL elevation mesh (never value-coloured)
+    surf = _SurfaceDuck()
+    p = viewer.view3d_payload([surf])  # no fill=
+    sc = p["scene3d"]
+    assert len(sc["meshes"]) == 1
+    m = sc["meshes"][0]
+    assert set(m) == MESH3D_KEYS, set(m)
+    assert m["values"] is None and m["range"] is None  # NEUTRAL — wireframe path
+    assert m["name"] == "mesh" and m["display_name"] == "Top Agat"
+    # value-as-elevation: the primary layer's values became the node z
+    assert [n[2] for n in m["nodes"]] == [-2600.0, -2610.0, -2620.0, -2630.0]
+    assert p["summary"]["meshes"] == 1 and p["summary"]["triangles"] == 2
+    assert sc["ref_z"] == -2615.0  # mesh nodes still feed the reference plane
+
+
+def test_view3d_surface_with_fill_unchanged():
+    p = viewer.view3d_payload([_SurfaceDuck()], fill=True)
+    m = p["scene3d"]["meshes"][0]
+    assert m["values"] == [-2600.0, -2610.0, -2620.0, -2630.0]
+    assert m["range"] == [-2630.0, -2600.0]
+    assert m["name"] == "z" and m["display_name"] == "Top Agat"
+    assert len(p["scene3d"]["meshes"]) == 1  # never a neutral duplicate
+
+
+def test_view3d_geometry_only_item_falls_back_to_lattice():
+    class GeomHolder:
+        name = "holder"
+        geometry = _SurfaceGeom()
+
+    p = viewer.view3d_payload([GeomHolder()])
+    sc = p["scene3d"]
+    assert sc["meshes"] == [] and len(sc["lattices"]) == 1 and sc["lattices"][0]["lines"]
+    assert {"kind": "lines", "name": "holder"} in sc["layers"]
+
+
 def test_view3d_rejects_unknown_items():
-    with pytest.raises(TypeError, match="cannot add"):
+    with pytest.raises(TypeError, match=r"cannot add.*fill="):
         viewer.view3d_payload([object()])
 
 

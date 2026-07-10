@@ -57,6 +57,12 @@ def view2d_payload(
       value-coloured trimesh rendered UNDER the grid lines
     - contour lines (opt-in via ``contours=``): ``iso_lines(interval=...,
       levels=..., attr=None)`` returning ``[(level, [polyline, ...]), ...]``
+    - structured surface (value-bearing, e.g. petekio's regular ``Surface``):
+      an item offering ``value_layer()`` (typically with a 2-D ``.geometry``)
+      that matches no convention above renders its STRUCTURE when passed
+      bare — the ``.geometry`` lattice lines (clipped to ``edge``), or,
+      geometry-less, its primary value layer's unique triangle edges. Values
+      never colour anything without an explicit ``fill=``
 
     ``color=`` colours POINTS (and selects the colormap for whatever is
     value-coloured); it never triggers fills. It defaults ON — pass
@@ -186,7 +192,42 @@ def view2d_payload(
         if contributed:
             continue  # a fill/contour-only item carries no further geometry
 
-        raise TypeError(f"cannot add {type(item).__name__} to a 2D view")
+        # STRUCTURE fallback for value-bearing items passed bare (e.g. a
+        # petekio regular Surface: ``value_layer()``/``iso_lines()`` + a 2-D
+        # ``.geometry``, no top-level node_xy/triangles/xyz). Bare means
+        # "show me the grid": the structure renders as lines exactly like a
+        # bare geometry/trimesh; values stay an explicit ``fill=`` opt-in.
+        geom = getattr(item, "geometry", None)
+        if geom is not None and _is_geometry(geom):
+            edge = getattr(item, "edge", None)
+            if edge is None:
+                edge = getattr(geom, "edge", None)
+            edge_rings = _rings(edge) if edge is not None else []
+            grid_lines.extend(
+                _grid_lines(geom, max_grid_lines, max_line_points, clip_rings=edge_rings)
+            )
+            outlines.extend(edge_rings)
+            summary["grid"] = f"{int(getattr(geom, 'ncol'))} x {int(getattr(geom, 'nrow'))}"
+            if not edge_rings:
+                frame = _frame_from_geometry(geom)
+            layers.append({"kind": "lines", "name": name})
+            continue
+        layer = _primary_value_layer(item)
+        if layer is not None:
+            mesh_lines, n_triangles, edge_stride = _mesh_lines(
+                _LayerMesh(layer), max_mesh_edges, max_line_points
+            )
+            grid_lines.extend(mesh_lines)
+            summary["triangles"] = n_triangles
+            if edge_stride > 1:
+                summary["mesh_edge_stride"] = edge_stride
+            layers.append({"kind": "lines", "name": name})
+            continue
+
+        raise TypeError(
+            f"cannot add {type(item).__name__} to a 2D view (a value-bearing "
+            "item can be value-coloured with fill=)"
+        )
 
     if frame is None:
         frame = _frame_from_extent(_extent(points, grid_lines, outlines))
@@ -476,6 +517,34 @@ def _major_step(interval: float) -> float:
 
 def _is_trimesh(obj: Any) -> bool:
     return hasattr(obj, "triangles") and (hasattr(obj, "xyz") or hasattr(obj, "points"))
+
+
+def _primary_value_layer(item: Any) -> dict[str, Any] | None:
+    """The item's primary ``value_layer()`` dict, or ``None`` (not offered, or
+    the layer carries no drawable nodes/triangles). The STRUCTURE-fallback
+    probe for bare value-bearing items — never emits values (fills stay a
+    ``fill=`` opt-in)."""
+    fn = getattr(item, "value_layer", None)
+    if not callable(fn):
+        return None
+    layer = fn()
+    if not isinstance(layer, dict) or not layer.get("nodes") or not layer.get("triangles"):
+        return None
+    return layer
+
+
+class _LayerMesh:
+    """Adapter: a ``value_layer()`` dict as the trimesh duck ``_mesh_lines``
+    reads (its unique triangle edges become the drawn structure lines)."""
+
+    def __init__(self, layer: dict[str, Any]):
+        self._layer = layer
+
+    def points(self) -> Any:
+        return self._layer["nodes"]
+
+    def triangles(self) -> Any:
+        return self._layer["triangles"]
 
 
 def _mesh_lines(

@@ -81,6 +81,13 @@ def view3d_payload(
       z ELEVATION (negative down) — a 3-D bore path with a wellhead marker,
       identity-coloured; optional ``id``/``name`` labels it
     - outline: ``rings()`` of ``[x, y]`` rows — flat rings at ``ref_z``
+    - structured surface passed BARE (value-bearing, e.g. petekio's regular
+      ``Surface`` — ``value_layer()`` + a 2-D ``.geometry``, no top-level
+      trimesh/geometry ducks): renders its STRUCTURE as a NEUTRAL elevation
+      mesh from the primary value layer (value-as-elevation; ``values`` stay
+      null → neutral shading + the wireframe toggle — never value-coloured
+      without ``fill=``); an item with only a 2-D ``.geometry`` falls back
+      to lattice lines at ``ref_z``
 
     ``color=`` / ``fill=`` / ``contours=`` keep their exact view2d semantics
     and grammar: ``color=`` colours POINTS by z (default ON; ``color=False``
@@ -187,7 +194,33 @@ def view3d_payload(
         if contributed:
             continue  # a fill/contour-only item carries no further geometry
 
-        raise TypeError(f"cannot add {type(item).__name__} to a 3D view")
+        # STRUCTURE fallback for value-bearing items passed bare (the petekio
+        # regular-Surface duck: value_layer()/iso_lines() + a 2-D .geometry,
+        # no top-level node_xy/triangles/xyz): the primary value layer's
+        # nodes ARE the surface — render it as a NEUTRAL elevation mesh
+        # (``values``/``range`` null → the neutral material + wireframe
+        # toggle; colouring stays a ``fill=`` opt-in). An item carrying only
+        # a 2-D ``.geometry`` falls back to lattice lines at ``ref_z``.
+        entry = _value_mesh(item, None)
+        if entry is not None:
+            entry["values"] = None
+            entry["range"] = None
+            entry["name"] = "mesh"
+            entry["display_name"] = name
+            meshes.append(entry)
+            n_triangles += len(entry["triangles"])
+            continue
+        geom = getattr(item, "geometry", None)
+        if geom is not None and _is_geometry(geom):
+            lines = _grid_lines(geom, max_grid_lines, max_line_points, clip_rings=[])
+            lattices.append({"name": name, "lines": lines})
+            layers.append({"kind": "lines", "name": name})
+            continue
+
+        raise TypeError(
+            f"cannot add {type(item).__name__} to a 3D view (a value-bearing "
+            "item can be value-coloured with fill=)"
+        )
 
     point_color = None
     if color_spec["enabled"] and point_zs:

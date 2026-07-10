@@ -93,7 +93,12 @@ no colormap token stays an attribute name (`value_layer(attr=...)` /
 all three. Values outside an explicit range **clamp to the ramp ends**, the
 parsed colormap initializes the panel selector (`map.colormap`), and a
 malformed spec raises `ValueError`. So `view2d([pts, geom], color=True)` shows
-exactly coloured points + geometry lines — no surprise trimesh fill.
+exactly coloured points + geometry lines — no surprise trimesh fill. A
+value-bearing item passed bare (e.g. a petekio regular `Surface`:
+`value_layer()` + a 2-D `.geometry`, no top-level geometry/trimesh ducks)
+renders its STRUCTURE — the geometry lattice lines (or, geometry-less, its
+primary value layer's triangle edges); values still colour nothing without
+`fill=`.
 
 The map **legend renders one entry per visible layer** — a small type icon
 (dot cluster = points, lattice = grid lines, filled ramp swatch = fill/raster,
@@ -177,7 +182,9 @@ family convention) and renders them in **one Three.js scene** (payload
 points render as a **single-draw-call colour-coded cloud** (compact base64 f32
 blocks on the wire, decoded on the volume tab's kernel; smooth at the 200k
 cap), surfaces/trimeshes render **value-coloured only under `fill=`** (neutral
-shading + a wireframe toggle otherwise; triangles touching a z-less node are
+shading + a wireframe toggle otherwise — a value-bearing item passed bare, the
+petekio regular-`Surface` duck, renders as a neutral elevation mesh from its
+primary value layer; triangles touching a z-less node are
 holes, never guessed), geometry lattices and outline rings draw flat at the
 scene's reference elevation, contour polylines draw at their level, and wells
 draw identity-coloured with a screen-sized wellhead marker. The panel carries
