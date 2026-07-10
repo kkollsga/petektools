@@ -6,6 +6,8 @@ All notable changes to petekTools are recorded here. Format follows
 
 ## [Unreleased]
 
+## [0.2.9] - 2026-07-10
+
 ### Added
 - `petektools.view2d(...)` / `view2d_payload(...)` accept triangulated meshes:
   an object offering `triangles()` index triples over `xyz()`/`points()`
