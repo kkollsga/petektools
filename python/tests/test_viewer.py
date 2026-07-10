@@ -308,11 +308,11 @@ def test_view2d_payload_color_codes_points_by_z():
         def xyz(self):
             return [[0.0, 0.0, -10.0], [10.0, 0.0, -30.0], [5.0, 5.0, float("nan")]]
 
-    colored = viewer.view2d_payload([Points()], color=True)
+    colored = viewer.view2d_payload([Points()])  # color defaults ON
     assert colored["map"]["point_color"] == {"by": "z", "range": [-30.0, -10.0]}
     assert colored["summary"]["point_color"] == "z"
 
-    plain = viewer.view2d_payload([Points()])
+    plain = viewer.view2d_payload([Points()], color=False)  # explicit opt-out
     assert plain["map"]["point_color"] is None
     assert "point_color" not in plain["summary"]
 

@@ -32,7 +32,7 @@ def view2d_payload(
     items: Any,
     *,
     title: str = "2D view",
-    color: bool | str = False,
+    color: bool | str = True,
     fill: bool | str = False,
     contours: float | list[float] | None = None,
     max_grid_lines: int = 800,
@@ -59,7 +59,8 @@ def view2d_payload(
       levels=..., attr=None)`` returning ``[(level, [polyline, ...]), ...]``
 
     ``color=`` colours POINTS (and selects the colormap for whatever is
-    value-coloured); it never triggers fills. ``fill=`` opts items into value
+    value-coloured); it never triggers fills. It defaults ON — pass
+    ``color=False`` for monochrome points. ``fill=`` opts items into value
     fills (``value_layer()``); contours keep their own ``contours=`` parameter.
     Both accept ``bool`` or a string spec parsed by REGISTRY MATCH: the string
     splits on ``"_"``; if a token matches a known colormap name (``viridis`` /
@@ -68,7 +69,8 @@ def view2d_payload(
     (negative numbers included) are the explicit ``[min, max]`` range. A string
     with no colormap token stays an ATTRIBUTE name (back-compat). Examples::
 
-        color=True                        # colour points by z, data range
+        color=True                        # the default: points by z, data range
+        color=False                       # monochrome points
         color="inferno"                   # + the inferno colormap
         color="inferno_-2700_-2500"       # + an explicit clamp range
         color="porosity"                  # attribute (forwards to iso_lines)
@@ -243,7 +245,7 @@ def view2d(
     items: Any,
     *,
     title: str = "2D view",
-    color: bool | str = False,
+    color: bool | str = True,
     fill: bool | str = False,
     contours: float | list[float] | None = None,
     save: str | Path | None = None,

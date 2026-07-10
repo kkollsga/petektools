@@ -6,6 +6,11 @@ All notable changes to petekTools are recorded here. Format follows
 
 ## [Unreleased]
 
+### Changed
+- `color=` now defaults **on** in `view2d` / `view2d_payload`: points with a
+  finite z are depth-coded out of the box; pass `color=False` for monochrome
+  points. Fills (`fill=`) and contours (`contours=`) remain explicit opt-ins.
+
 ### Added
 - `view2d` / `view2d_payload` gain `fill=` (bool | spec string): value-coloured
   trimesh fills are now an explicit opt-in, no longer a `color=` side effect.
@@ -30,6 +35,9 @@ All notable changes to petekTools are recorded here. Format follows
   the colormap only. Pass `fill=` for value fills;
   `view2d([pts, geom], color=True)` now shows coloured points + geometry lines
   with no trimesh fill.
+- `color=` now **defaults ON** in `view2d` / `view2d_payload` (points with a
+  finite z colour-code by it out of the box); pass `color=False` for
+  monochrome points.
 - Map point clouds render at frame rate at 200k+ points (previously ~145 ms per
   repaint, re-run synchronously per wheel/drag event). Points batch into <=256
   colormap-bin `Path2D`s (squares at small radii) baked to a viewport-windowed,
