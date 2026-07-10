@@ -6,6 +6,22 @@ All notable changes to petekTools are recorded here. Format follows
 
 ## [Unreleased]
 
+## [0.2.8] - 2026-07-10
+
+### Changed
+- CI now builds the shared ABI3 wheel once and tests those same wheel bits
+  across every supported CPython version, while superseded branch runs are
+  cancelled. This removes duplicate compilation without reducing interpreter
+  coverage or Rust/Python gates.
+- Release artifacts now build alongside the unchanged release gates. PyPI
+  publishing retries bounded transient failures safely, and the workflow
+  reports trigger-to-installable-registry time.
+- Library operations, actionable todos, GitHub Actions control, and publishing
+  are now coordinated centrally by petekSuite. This is an operational change;
+  the petekTools runtime and public API are unchanged.
+
+## [0.2.7] - 2026-07-08
+
 ### Changed
 - `petektools.view2d(...)` / `view2d_payload(...)` now render point-like inputs
   as points only. Topology-bearing point sets no longer implicitly draw grid
