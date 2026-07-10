@@ -1,5 +1,5 @@
   // ---- legends -------------------------------------------------------------
-  function drawFieldLegend(layer) {
+  function drawFieldLegend(layer, fill) {
     var lg = document.getElementById("legend"); lg.innerHTML = "";
     if (layer) {
       lg.appendChild(el("h3", null, (layer.display || layer.name) + (layer.units ? "  (" + layer.units + ")" : "")));
@@ -9,6 +9,18 @@
       sc.appendChild(el("span", null, fmt(layer.range.min)));
       sc.appendChild(el("span", null, fmt(layer.range.max)));
       lg.appendChild(sc);
+    }
+    // active value-coloured fill: name + colour ramp + min/max. Its `range` is
+    // the seam's two-float [min, max] (not the {min, max} object).
+    if (fill) {
+      lg.appendChild(el("h3", null, disp(fill, fill.name)));
+      var framp = el("div", "ramp"); framp.style.background = rampGradient(S.colormap);
+      lg.appendChild(framp);
+      var fr = fill.range || [];
+      var fsc = el("div", "scale");
+      fsc.appendChild(el("span", null, fmt(fr[0])));
+      fsc.appendChild(el("span", null, fmt(fr[1])));
+      lg.appendChild(fsc);
     }
     // identity keys present in this view
     var keys = el("div", "keys");

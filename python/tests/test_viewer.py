@@ -287,6 +287,58 @@ def test_view2d_payload_renders_trimesh_edges_and_edge_outline():
     assert "mesh_edge_stride" not in p["summary"]
 
 
+def test_view2d_payload_flags_major_contour_levels():
+    class Contoured:
+        def iso_lines(self, interval=None, levels=None, attr=None):
+            if interval is not None:  # pretend levels aligned to the interval
+                return [(v, [[[0.0, 0.0], [1.0, 1.0]]]) for v in (-150.0, -125.0, -100.0, -75.0)]
+            return [(v, [[[0.0, 0.0], [1.0, 1.0]]]) for v in levels]
+
+    p = viewer.view2d_payload([Contoured()], contours=25.0)
+    majors = {c["level"]: c["major"] for c in p["map"]["contours"]}
+    # 25 m interval -> 100 m index step (4x lands on a round number)
+    assert majors == {-150.0: False, -125.0: False, -100.0: True, -75.0: False}
+
+    explicit = viewer.view2d_payload([Contoured()], contours=[-110.0, -100.0])
+    assert all(c["major"] is False for c in explicit["map"]["contours"])
+
+
+def test_view2d_payload_color_codes_points_by_z():
+    class Points:
+        def xyz(self):
+            return [[0.0, 0.0, -10.0], [10.0, 0.0, -30.0], [5.0, 5.0, float("nan")]]
+
+    colored = viewer.view2d_payload([Points()], color=True)
+    assert colored["map"]["point_color"] == {"by": "z", "range": [-30.0, -10.0]}
+    assert colored["summary"]["point_color"] == "z"
+
+    plain = viewer.view2d_payload([Points()])
+    assert plain["map"]["point_color"] is None
+    assert "point_color" not in plain["summary"]
+
+    class FlatPoints:  # nothing finite in z → no colour coding
+        def xy(self):
+            return [[0.0, 0.0], [10.0, 0.0]]
+
+    assert viewer.view2d_payload([FlatPoints()], color=True)["map"]["point_color"] is None
+
+
+def test_view2d_payload_prefers_wireframe_edges_over_derived():
+    class QuadMesh(_Mesh):
+        def wireframe_edges(self):
+            return [(0, 1), (1, 3), (3, 2), (2, 0)]  # the cell, minus its diagonal
+
+    p = viewer.view2d_payload([QuadMesh()])
+
+    drawn = set()
+    for line in p["map"]["grid_lines"]:
+        for a, b in zip(line, line[1:]):
+            drawn.add(frozenset((tuple(a), tuple(b))))
+    assert frozenset(((10.0, 0.0), (0.0, 10.0))) not in drawn  # diagonal hidden
+    assert sum(len(line) - 1 for line in p["map"]["grid_lines"]) == 4
+    assert p["summary"]["triangles"] == 2  # triangle count still reported
+
+
 def test_view2d_payload_strides_trimesh_edges_over_budget():
     p = viewer.view2d_payload([_Mesh()], max_mesh_edges=2)
 
@@ -307,6 +359,101 @@ def test_view2d_payload_trimesh_without_edge_falls_back_to_frame_rect():
     assert p["summary"]["triangles"] == 1
     assert sum(len(line) - 1 for line in p["map"]["grid_lines"]) == 3
     assert p["map"]["outline"]  # frame-rect fallback still supplies an outline
+
+
+# --- value-coloured fills + contour lines (view2d color= / contours=) --------
+class _ValueMesh(_Mesh):
+    """Duck-typed trimesh that also offers the value seam:
+    ``value_layer(attr=None)`` + ``iso_lines(interval|levels, attr=None)``."""
+
+    def __init__(self):
+        self.seen: dict = {}
+
+    def value_layer(self, attr=None):
+        self.seen["value_attr"] = attr
+        return {
+            "kind": "trimesh",
+            "name": attr or "z",
+            "nodes": [[0.0, 0.0], [10.0, 0.0], [0.0, 10.0], [10.0, 10.0]],
+            "triangles": [[0, 1, 2], [1, 3, 2]],
+            "values": [1.0, 2.0, 3.0, float("nan")],
+            "range": [1.0, 4.0],
+        }
+
+    def iso_lines(self, interval=None, levels=None, attr=None):
+        self.seen["iso"] = {"interval": interval, "levels": levels, "attr": attr}
+        return [
+            (1.5, [[[0.0, 1.0], [5.0, 6.0]]]),
+            (2.5, [[[0.0, 3.0], [5.0, 8.0]], [[6.0, 3.0], [9.0, 8.0]]]),
+        ]
+
+
+def test_view2d_color_true_adds_fill_and_keeps_mesh_lines():
+    mesh = _ValueMesh()
+    p = viewer.view2d_payload([mesh], color=True)
+
+    assert mesh.seen["value_attr"] is None  # primary layer requested
+    assert len(p["map"]["fills"]) == 1
+    fill = p["map"]["fills"][0]
+    assert set(fill) == {"name", "nodes", "triangles", "values", "range"}
+    assert fill["name"] == "z"
+    assert fill["nodes"] == [[0.0, 0.0], [10.0, 0.0], [0.0, 10.0], [10.0, 10.0]]
+    assert fill["triangles"] == [[0, 1, 2], [1, 3, 2]]
+    assert fill["values"][:3] == [1.0, 2.0, 3.0]
+    assert fill["values"][3] is None  # NaN travels as JSON null (renderer skips)
+    assert fill["range"] == [1.0, 4.0]
+    # the mesh still contributes its grid lines exactly as before (fills render UNDER)
+    assert p["summary"]["triangles"] == 2
+    assert sum(len(line) - 1 for line in p["map"]["grid_lines"]) == 5
+    assert p["summary"]["fills"] == 1
+    assert p["map"]["contours"] == []  # contours not requested
+
+
+def test_view2d_color_false_ignores_value_layer():
+    p = viewer.view2d_payload([_ValueMesh()])  # color defaults to False
+    assert p["map"]["fills"] == []
+    assert "fills" not in p["summary"]
+
+
+def test_view2d_color_attr_string_passes_through():
+    mesh = _ValueMesh()
+    p = viewer.view2d_payload([mesh], color="phi", contours=[1.5, 2.5])
+    assert mesh.seen["value_attr"] == "phi"
+    assert p["map"]["fills"][0]["name"] == "phi"
+    # the same attr forwards to iso_lines
+    assert mesh.seen["iso"] == {"interval": None, "levels": [1.5, 2.5], "attr": "phi"}
+
+
+def test_view2d_contours_interval_and_levels_forms():
+    mesh = _ValueMesh()
+    p = viewer.view2d_payload([mesh], contours=25.0)
+    assert mesh.seen["iso"] == {"interval": 25.0, "levels": None, "attr": None}
+    assert [c["level"] for c in p["map"]["contours"]] == [1.5, 2.5]
+    assert p["map"]["contours"][0]["lines"] == [[[0.0, 1.0], [5.0, 6.0]]]
+    assert len(p["map"]["contours"][1]["lines"]) == 2
+    assert p["summary"]["contour_levels"] == 2
+    assert p["map"]["fills"] == []  # color not requested
+
+    mesh2 = _ValueMesh()
+    viewer.view2d_payload([mesh2], contours=[1.5, 2.5])
+    assert mesh2.seen["iso"] == {"interval": None, "levels": [1.5, 2.5], "attr": None}
+
+
+def test_view2d_color_without_methods_is_silent():
+    # a plain mesh (no value_layer / iso_lines) + color=True → no fill, no error
+    p = viewer.view2d_payload([_Mesh()], color=True, contours=10.0)
+    assert p["map"]["fills"] == []
+    assert p["map"]["contours"] == []
+    assert p["summary"]["triangles"] == 2
+
+
+def test_view2d_malformed_value_layer_raises():
+    class BadMesh(_Mesh):
+        def value_layer(self, attr=None):
+            return {"name": "z", "nodes": [[0.0, 0.0]], "triangles": []}  # no values/range
+
+    with pytest.raises(TypeError, match="missing key"):
+        viewer.view2d_payload([BadMesh()], color=True)
 
 
 # --- the generic chart-mark schema (Charts tab) ------------------------------
