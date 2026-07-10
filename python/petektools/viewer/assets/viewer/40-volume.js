@@ -186,6 +186,7 @@
       _worker.onmessage = function (e) {
         if (e.data.cmd === "decoded") onV3Decoded(e.data);
         else if (e.data.cmd === "recolored") applyRecolor(e.data.col);
+        else if (e.data.cmd === "decoded2d") onMap2dDecoded(e.data); // 2-D map blocks
       };
       _worker.onerror = function () {
         _worker = null; // future decodes fall back to the sync path

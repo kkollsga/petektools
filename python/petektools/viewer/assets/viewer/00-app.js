@@ -21,6 +21,10 @@
   // ---- boot ----------------------------------------------------------------
   function boot(payload) {
     App.payload = payload;
+    // Resolve the 2-D map's binary blocks (SCHEMA.md) into typed arrays — off the
+    // main thread when a Worker is available, else synchronously. A JSON-shaped
+    // (blockless) map is a no-op; the renderer reads either shape.
+    decodeMap2d(payload);
     registerIdentities();
     initState();
     wireChrome();

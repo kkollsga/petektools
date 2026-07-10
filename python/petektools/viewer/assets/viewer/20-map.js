@@ -17,14 +17,15 @@
     var xlo = Math.min(e.x0, e.x1), xhi = Math.max(e.x0, e.x1);
     var ylo = Math.min(e.y0, e.y1), yhi = Math.max(e.y0, e.y1);
     function ext(x, y) { if (x < xlo) xlo = x; if (x > xhi) xhi = x; if (y < ylo) ylo = y; if (y > yhi) yhi = y; }
+    function extLineSet(L) { for (var k = 0; k < lsN(L); k++) { var n = lineLen(L, k); for (var i = 0; i < n; i++) ext(lineX(L, k, i), lineY(L, k, i)); } }
     (App.payload.map.outline || []).forEach(function (ring) { ring.forEach(function (pt) { ext(pt[0], pt[1]); }); });
-    (App.payload.map.grid_lines || []).forEach(function (line) { line.forEach(function (pt) { ext(pt[0], pt[1]); }); });
+    extLineSet(App.payload.map.grid_lines);
     if (App.payload.map.points && App.payload.map.points.length) {
       var bb = pointBBox(App.payload.map.points); // cached — never rescan the cloud
       ext(bb.x0, bb.y0); ext(bb.x1, bb.y1);
     }
-    (App.payload.map.fills || []).forEach(function (f) { (f.nodes || []).forEach(function (pt) { ext(pt[0], pt[1]); }); });
-    (App.payload.map.contours || []).forEach(function (c) { (c.lines || []).forEach(function (line) { line.forEach(function (pt) { ext(pt[0], pt[1]); }); }); });
+    (App.payload.map.fills || []).forEach(function (f) { var N = f.nodes; for (var q = 0; q < (N ? N.length : 0); q++) ext(ndX(N, q), ndY(N, q)); });
+    (App.payload.map.contours || []).forEach(function (c) { extLineSet(c.lines); });
     (App.payload.wells || []).forEach(function (w) { ext(w.x, w.y); });
     return { x0: xlo, y0: ylo, x1: xhi, y1: yhi };
   }
@@ -39,6 +40,107 @@
   }
   function w2s(x, y) { return [x * mapView.scale + mapView.ox, y * mapView.scale + mapView.oy]; }
   function s2w(px, py) { return [(px - mapView.ox) / mapView.scale, (py - mapView.oy) / mapView.scale]; }
+
+  // ---- 2-D map binary blocks (typed arrays) + plain-array fallback -----------
+  // A blocks-encoded payload (SCHEMA.md) ships the bulk arrays as content-
+  // addressed typed blocks in `map.blocks` (a digest table), with the fields
+  // holding `{__block__}` / `{__csr__}` markers. decodeMap2d() resolves them —
+  // OFF the main thread when a Worker is available (the same kernel the volume
+  // uses), else synchronously — into typed-array-backed objects the accessors
+  // below read; a JSON payload keeps plain nested arrays and reads the same way.
+  // The digest cache (window.__PETEK_BLOCK_CACHE) dedups decodes across views.
+  function isBlockMarker(x) { return x != null && typeof x === "object" && typeof x.__block__ === "string"; }
+  function isCsrMarker(x) { return x != null && typeof x === "object" && x.__csr__ != null; }
+  function prepBlock(marker, table) { var d = marker.__block__; return { length: table[d].shape[0], __d: d, a: null }; }
+  function prepCsr(marker, table) { var cs = marker.__csr__; return { length: table[cs.offsets].shape[0] - 1, __dc: cs.coords, __do: cs.offsets, coords: null, offsets: null }; }
+  // Replace every marker with a normalized object carrying the correct `.length`
+  // (from the table metadata) up front, so the panel/legend length checks are
+  // right before the typed data even arrives.
+  function prepMap2d(m) {
+    var t = m.blocks;
+    if (isBlockMarker(m.points)) m.points = prepBlock(m.points, t);
+    (m.fills || []).forEach(function (f) {
+      if (isBlockMarker(f.nodes)) f.nodes = prepBlock(f.nodes, t);
+      if (isBlockMarker(f.triangles)) f.triangles = prepBlock(f.triangles, t);
+      if (isBlockMarker(f.values)) f.values = prepBlock(f.values, t);
+    });
+    if (isCsrMarker(m.grid_lines)) m.grid_lines = prepCsr(m.grid_lines, t);
+    (m.contours || []).forEach(function (c) { if (isCsrMarker(c.lines)) c.lines = prepCsr(c.lines, t); });
+  }
+  function fillOne(o, cache) {
+    if (o && o.__d != null) o.a = cache[o.__d];
+    else if (o && o.__dc != null) { o.coords = cache[o.__dc]; o.offsets = cache[o.__do]; }
+  }
+  function fillMap2d(m, cache) {
+    fillOne(m.points, cache);
+    (m.fills || []).forEach(function (f) { fillOne(f.nodes, cache); fillOne(f.triangles, cache); fillOne(f.values, cache); });
+    fillOne(m.grid_lines, cache);
+    (m.contours || []).forEach(function (c) { fillOne(c.lines, cache); });
+  }
+  function typedFromBuffer(buf, dtype) {
+    return new (dtype === "f32" ? Float32Array : dtype === "u32" ? Uint32Array : Uint16Array)(buf);
+  }
+  function blockCache() { return window.__PETEK_BLOCK_CACHE || (window.__PETEK_BLOCK_CACHE = {}); }
+  var _map2dPending = null; // { m } while a worker decode is in flight
+  // Boot hook (called from boot() before initState): resolve the map's blocks.
+  function decodeMap2d(payload) {
+    var m = payload && payload.map;
+    if (!m || !m.blocks || m.__blocksReady) return;
+    prepMap2d(m);
+    var cache = blockCache(), table = m.blocks, needed = {}, anyNeeded = false;
+    for (var d in table) {
+      if (!Object.prototype.hasOwnProperty.call(table, d)) continue;
+      if (cache[d] == null) { needed[d] = table[d]; anyNeeded = true; }
+    }
+    var finish = function () { fillMap2d(m, cache); m.__blocksReady = true; m.__blocksPending = false; };
+    if (!anyNeeded) { finish(); return; } // every block already decoded this session
+    var w = typeof ensureWorker === "function" ? ensureWorker() : null;
+    if (w) { m.__blocksPending = true; _map2dPending = { m: m }; w.postMessage({ cmd: "decode2d", table: needed }); }
+    else { // synchronous fallback: same kernel, on this thread
+      if (window.PETEK_DECODE) window.PETEK_DECODE.decodeBlockTable(needed, cache);
+      finish();
+    }
+  }
+  // Worker `decoded2d` reply → cache the transferred buffers by digest, fill the
+  // normalized objects, and repaint. Routed from the shared worker's onmessage.
+  function onMap2dDecoded(data) {
+    var cache = blockCache();
+    for (var dg in data.blocks) {
+      if (!Object.prototype.hasOwnProperty.call(data.blocks, dg)) continue;
+      cache[dg] = typedFromBuffer(data.blocks[dg], data.dtypes[dg]);
+    }
+    if (_map2dPending) {
+      var m = _map2dPending.m; _map2dPending = null;
+      fillMap2d(m, cache); m.__blocksReady = true; m.__blocksPending = false;
+      if (App.tab === "map") { renderMap(); }
+      if (typeof buildPanel === "function") buildPanel();
+    }
+  }
+
+  // Bulk-array accessors: `.a` (typed) present → index the typed array; else the
+  // plain nested array. points: f32[n,3]; fill nodes: f32[n,2]; triangles:
+  // u32[n,3]; values: f32[n]; line sets (grid_lines / contour lines): CSR coords
+  // f32[total,2] + offsets u32[n+1], or a plain [[ [x,y] ... ]] array.
+  function ptN(P) { return P ? P.length : 0; }
+  function ptX(P, i) { return P.a ? P.a[i * 3] : P[i][0]; }
+  function ptY(P, i) { return P.a ? P.a[i * 3 + 1] : P[i][1]; }
+  function ptZ(P, i) { if (P.a) return P.a[i * 3 + 2]; var p = P[i]; return p.length > 2 ? p[2] : NaN; }
+  function ndX(N, i) { return N.a ? N.a[i * 2] : N[i][0]; }
+  function ndY(N, i) { return N.a ? N.a[i * 2 + 1] : N[i][1]; }
+  function trN(T) { return T ? T.length : 0; }
+  function trAt(T, t, c) { return T.a ? T.a[t * 3 + c] : T[t][c]; }
+  function vlAt(V, i) { return V ? (V.a ? V.a[i] : V[i]) : null; }
+  function lsN(L) { return L ? L.length : 0; }
+  function lineLen(L, k) { return L.offsets ? (L.offsets[k + 1] - L.offsets[k]) : L[k].length; }
+  function lineX(L, k, i) { return L.offsets ? L.coords[(L.offsets[k] + i) * 2] : L[k][i][0]; }
+  function lineY(L, k, i) { return L.offsets ? L.coords[(L.offsets[k] + i) * 2 + 1] : L[k][i][1]; }
+  // Stroke one line set (typed or plain) into the current path.
+  function strokeLineSet(ctx, L) {
+    for (var k = 0; k < lsN(L); k++) {
+      var n = lineLen(L, k);
+      for (var i = 0; i < n; i++) { var s = w2s(lineX(L, k, i), lineY(L, k, i)); if (i === 0) ctx.moveTo(s[0], s[1]); else ctx.lineTo(s[0], s[1]); }
+    }
+  }
 
   // The map raster is WINDOWED + resolution-capped: only the grid cells inside the
   // current viewport are sampled, and never more than MAX_RASTER_DIM samples per
@@ -136,6 +238,7 @@
   function renderMap() {
     var cv = document.getElementById("map-canvas");
     if (!App.payload.map) { showEmpty("No map bundle in this payload."); return; }
+    if (App.payload.map.__blocksPending) { showEmpty("Decoding map…"); return; }
     hideEmpty();
     sizeCanvas(cv);
     if (!mapView.fitted) fitMap(cv);
@@ -159,9 +262,7 @@
       ctx.globalAlpha = 0.32;
       ctx.lineWidth = 1;
       ctx.beginPath();
-      App.payload.map.grid_lines.forEach(function (line) {
-        line.forEach(function (pt, i) { var s = w2s(pt[0], pt[1]); if (i === 0) ctx.moveTo(s[0], s[1]); else ctx.lineTo(s[0], s[1]); });
-      });
+      strokeLineSet(ctx, App.payload.map.grid_lines);
       ctx.stroke();
       ctx.globalAlpha = 1;
     }
@@ -175,11 +276,7 @@
         ctx.globalAlpha = alpha;
         ctx.lineWidth = width;
         ctx.beginPath();
-        sets.forEach(function (c) {
-          (c.lines || []).forEach(function (line) {
-            line.forEach(function (pt, i) { var s = w2s(pt[0], pt[1]); if (i === 0) ctx.moveTo(s[0], s[1]); else ctx.lineTo(s[0], s[1]); });
-          });
-        });
+        sets.forEach(function (c) { strokeLineSet(ctx, c.lines); });
         ctx.stroke();
         ctx.globalAlpha = 1;
       };
@@ -339,13 +436,12 @@
     var colored = !!(pc && pc.range), plo = 0, pf = 0;
     if (colored) { plo = pc.range[0]; pf = 255 / ((pc.range[1] - pc.range[0]) || 1); }
     var d = 2 * r;
-    for (var q = 0; q < pts.length; q++) {
-      var pt = pts[q];
-      var sx = pt[0] * sc + oxx, sy = pt[1] * sc + oyy;
+    for (var q = 0; q < ptN(pts); q++) {
+      var sx = ptX(pts, q) * sc + oxx, sy = ptY(pts, q) * sc + oyy;
       if (cull && (sx < -r || sy < -r || sx > cw + r || sy > ch + r)) continue;
       var bin = PT_ACCENT_BIN;
       if (colored) {
-        var z = pt[2];
+        var z = ptZ(pts, q);
         if (z != null && isFinite(z)) {
           bin = ((z - plo) * pf + 0.5) | 0;
           if (bin < 0) bin = 0; else if (bin > 255) bin = 255;
@@ -375,8 +471,8 @@
   function pointBBox(pts) {
     if (_ptBBox.ref === pts) return _ptBBox;
     var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    for (var q = 0; q < pts.length; q++) {
-      var x = pts[q][0], y = pts[q][1];
+    for (var q = 0; q < ptN(pts); q++) {
+      var x = ptX(pts, q), y = ptY(pts, q);
       if (x < x0) x0 = x; if (x > x1) x1 = x;
       if (y < y0) y0 = y; if (y > y1) y1 = y;
     }
@@ -485,12 +581,12 @@
   function pointGrid(pts) {
     if (_ptGrid.ref === pts) return _ptGrid;
     var bb = pointBBox(pts);
-    var nb = Math.max(1, Math.min(256, Math.ceil(Math.sqrt(pts.length / 4))));
+    var nb = Math.max(1, Math.min(256, Math.ceil(Math.sqrt(ptN(pts) / 4))));
     var fx = nb / ((bb.x1 - bb.x0) || 1), fy = nb / ((bb.y1 - bb.y0) || 1);
     var buckets = new Array(nb * nb);
-    for (var q = 0; q < pts.length; q++) {
-      var ci = ((pts[q][0] - bb.x0) * fx) | 0; if (ci < 0) ci = 0; else if (ci >= nb) ci = nb - 1;
-      var cj = ((pts[q][1] - bb.y0) * fy) | 0; if (cj < 0) cj = 0; else if (cj >= nb) cj = nb - 1;
+    for (var q = 0; q < ptN(pts); q++) {
+      var ci = ((ptX(pts, q) - bb.x0) * fx) | 0; if (ci < 0) ci = 0; else if (ci >= nb) ci = nb - 1;
+      var cj = ((ptY(pts, q) - bb.y0) * fy) | 0; if (cj < 0) cj = 0; else if (cj >= nb) cj = nb - 1;
       var b = cj * nb + ci;
       (buckets[b] || (buckets[b] = [])).push(q);
     }
@@ -511,9 +607,9 @@
         var bucket = g.buckets[cj * g.nb + ci];
         if (!bucket) continue;
         for (var q = 0; q < bucket.length; q++) {
-          var pt = pts[bucket[q]];
-          var d = Math.hypot(pt[0] * mapView.scale + mapView.ox - px, pt[1] * mapView.scale + mapView.oy - py);
-          if (d <= 8 && d < bestD) { bestD = d; best = { point: pt, index: bucket[q] }; }
+          var pi = bucket[q];
+          var d = Math.hypot(ptX(pts, pi) * mapView.scale + mapView.ox - px, ptY(pts, pi) * mapView.scale + mapView.oy - py);
+          if (d <= 8 && d < bestD) { bestD = d; best = { index: pi, x: ptX(pts, pi), y: ptY(pts, pi), z: ptZ(pts, pi) }; }
         }
       }
     }
@@ -528,23 +624,24 @@
   // raster's colormap LUT (the same ramp the ScalarLayer rasters use).
   var FILL_BINS = 64;
   function drawTriFill(ctx, fill) {
-    var nodes = fill.nodes || [], tris = fill.triangles || [], vals = fill.values || [];
-    if (!nodes.length || !tris.length) return;
+    var nodes = fill.nodes, tris = fill.triangles, vals = fill.values;
+    var nN = nodes ? nodes.length : 0, nT = trN(tris);
+    if (!nN || !nT) return;
     var r = fill.range, lo, span;
     if (r && r.length === 2 && isFinite(r[0]) && isFinite(r[1])) { lo = r[0]; span = (r[1] - r[0]) || 1; }
     else { // defensive: derive the domain from the finite values
       lo = Infinity; var hi = -Infinity;
-      for (var q = 0; q < vals.length; q++) { var v = vals[q]; if (v == null || !isFinite(v)) continue; if (v < lo) lo = v; if (v > hi) hi = v; }
+      for (var q = 0; q < (vals ? vals.length : 0); q++) { var v = vlAt(vals, q); if (v == null || !isFinite(v)) continue; if (v < lo) lo = v; if (v > hi) hi = v; }
       if (!isFinite(lo)) return; // nothing finite to colour
       span = (hi - lo) || 1;
     }
     // project every node once (not 3× per triangle)
-    var n = nodes.length, sx = new Float64Array(n), sy = new Float64Array(n);
-    for (var k = 0; k < n; k++) { var s = w2s(nodes[k][0], nodes[k][1]); sx[k] = s[0]; sy[k] = s[1]; }
+    var sx = new Float64Array(nN), sy = new Float64Array(nN);
+    for (var k = 0; k < nN; k++) { var s = w2s(ndX(nodes, k), ndY(nodes, k)); sx[k] = s[0]; sy[k] = s[1]; }
     var paths = new Array(FILL_BINS);
-    for (var t = 0; t < tris.length; t++) {
-      var tri = tris[t], a = tri[0], b = tri[1], c = tri[2];
-      var va = vals[a], vb = vals[b], vc = vals[c];
+    for (var t = 0; t < nT; t++) {
+      var a = trAt(tris, t, 0), b = trAt(tris, t, 1), c = trAt(tris, t, 2);
+      var va = vlAt(vals, a), vb = vlAt(vals, b), vc = vlAt(vals, c);
       if (va == null || vb == null || vc == null || !isFinite(va) || !isFinite(vb) || !isFinite(vc)) continue;
       var ti = ((va + vb + vc) / 3 - lo) / span;
       if (ti < 0) ti = 0; else if (ti > 1) ti = 1;
@@ -654,9 +751,8 @@
     if (S.showPoints && App.payload.map.points && App.payload.map.points.length) {
       var hitP = hitTestPoint(App.payload.map.points, px[0], px[1]);
       if (hitP) {
-        var hp = hitP.point;
-        var rows = [["", "point " + hitP.index], ["x", fmt(hp[0], "m")], ["y", fmt(hp[1], "m")]];
-        if (hp.length > 2 && isFinite(hp[2])) rows.push(["z", fmt(hp[2], "m")]);
+        var rows = [["", "point " + hitP.index], ["x", fmt(hitP.x, "m")], ["y", fmt(hitP.y, "m")]];
+        if (hitP.z != null && isFinite(hitP.z)) rows.push(["z", fmt(hitP.z, "m")]);
         showReadout(ev, rows);
         return;
       }
