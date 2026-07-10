@@ -54,6 +54,30 @@
     return binU8.subarray(block.offset, block.offset + block.length);
   }
 
+  // ---- 2-D map blocks (content-addressed) ------------------------------------
+  // The 2-D map bundle ships its bulk arrays as the SAME typed blocks the v3
+  // volume uses, in a digest-keyed table (`map.blocks`), with fields referencing
+  // them by digest (`{__block__}` / `{__csr__}`). Decode is the identical base64
+  // -> ArrayBuffer -> typed-array read, done off the main thread and cached by
+  // digest so an identical array (deduped in the table) decodes once per session.
+
+  // Decode one `{dtype, shape, data}` descriptor to its typed array.
+  function decodeBlockDesc(desc) {
+    return blockToTyped(b64ToBytes(desc.data), desc.dtype);
+  }
+
+  // Decode every entry of a digest-keyed block table to typed arrays, skipping
+  // digests already present in `cache` (the session-wide content-addressed
+  // cache). Returns the cache (mutated), so identical blocks decode once.
+  function decodeBlockTable(table, cache) {
+    cache = cache || {};
+    for (var d in table) {
+      if (!Object.prototype.hasOwnProperty.call(table, d)) continue;
+      if (cache[d] == null) cache[d] = decodeBlockDesc(table[d]);
+    }
+    return cache;
+  }
+
   // Envelope + optional sidecar bytes -> the five decoded typed arrays + counts.
   function decodeBlocks(env, binU8) {
     var B = env.blocks;
@@ -178,6 +202,18 @@
     } else if (m.cmd === "recolor") {
       var c2 = bakeColors(_keep.triCell, _keep.cellValues, m.vmin, m.vmax, m.stops);
       postMessage({ cmd: "recolored", col: c2.buffer }, [c2.buffer]);
+    } else if (m.cmd === "decode2d") {
+      // Decode a 2-D map's block table off the main thread; post the decoded
+      // buffers back as transferables (zero-copy) keyed by digest, plus the
+      // per-digest dtype so the main thread can re-view each ArrayBuffer.
+      var t2 = Date.now();
+      var dec = decodeBlockTable(m.table, {});
+      var bufs = {}, dtypes = {}, transfer = [];
+      for (var dg in dec) {
+        if (!Object.prototype.hasOwnProperty.call(dec, dg)) continue;
+        bufs[dg] = dec[dg].buffer; dtypes[dg] = m.table[dg].dtype; transfer.push(dec[dg].buffer);
+      }
+      postMessage({ cmd: "decoded2d", blocks: bufs, dtypes: dtypes, decodeMs: Date.now() - t2 }, transfer);
     }
   }
 
@@ -190,6 +226,8 @@
       "var b64ToBytes=" + b64ToBytes.toString() + ";",
       "var blockToTyped=" + blockToTyped.toString() + ";",
       "var getBlockBytes=" + getBlockBytes.toString() + ";",
+      "var decodeBlockDesc=" + decodeBlockDesc.toString() + ";",
+      "var decodeBlockTable=" + decodeBlockTable.toString() + ";",
       "var decodeBlocks=" + decodeBlocks.toString() + ";",
       "var computeCenter=" + computeCenter.toString() + ";",
       "var depthRange=" + depthRange.toString() + ";",
@@ -222,6 +260,7 @@
 
   return {
     b64ToBytes: b64ToBytes, blockToTyped: blockToTyped, getBlockBytes: getBlockBytes,
+    decodeBlockDesc: decodeBlockDesc, decodeBlockTable: decodeBlockTable,
     decodeBlocks: decodeBlocks, computeCenter: computeCenter, depthRange: depthRange,
     expandRenderPositions: expandRenderPositions, decimateTriCell: decimateTriCell,
     ramp: ramp, bakeColors: bakeColors,
