@@ -189,7 +189,9 @@ only. Geometry-like objects render grid lines, and when they expose an `edge`
 polygon the grid-line overlay is clipped to that edge so inferred grids,
 structured surfaces, and point clouds line up in the same view. Mesh-like
 objects (`triangles()` over `xyz()`/`points()` vertices) render their unique
-triangle edges as grid lines with the mesh `edge` rings as the outline.
+triangle edges as grid lines with the mesh `edge` rings as the outline; a mesh
+that also offers `wireframe_edges()` index pairs draws exactly those instead —
+quad-dominant, with interior cell diagonals removed.
 
 ## Where to go next
 

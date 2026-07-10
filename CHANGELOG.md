@@ -6,6 +6,12 @@ All notable changes to petekTools are recorded here. Format follows
 
 ## [Unreleased]
 
+### Added
+- Trimesh inputs to `view2d(...)` / `view2d_payload(...)` may expose
+  `wireframe_edges()` (vertex-index pairs); when present those edges are drawn
+  instead of the derived unique triangle edges, so a producer that classifies
+  cell diagonals (petekio `TriSurface`) renders Petrel-style quad cells.
+
 ## [0.2.9] - 2026-07-10
 
 ### Added

@@ -34,7 +34,9 @@ def view2d_payload(
     - points: ``xyz()``/``xy()`` or a sequence of ``[x, y]``/``[x, y, z]`` rows
     - geometry: ``node_xy(i, j)``, ``ncol``, ``nrow`` and optional ``edge``
     - trimesh: ``triangles()`` index triples over ``xyz()``/``points()`` vertices,
-      with optional ``edge`` — the unique triangle edges render as grid lines
+      with optional ``edge`` — the unique triangle edges render as grid lines; an
+      optional ``wireframe_edges()`` (index pairs) overrides the drawn edge set,
+      e.g. a quad-dominant wireframe with cell diagonals removed
     - outline: ``rings()`` returning rings of ``[x, y]`` or ``[x, y, z]`` rows
 
     Point objects are rendered as points only. Topology-bearing point sets do
@@ -197,16 +199,26 @@ def _mesh_lines(
     max_edges: int | None,
     max_line_points: int,
 ) -> tuple[list[list[list[float]]], int, int]:
-    """Unique triangle edges as polylines, plus (triangle count, edge stride)."""
+    """Mesh edges as polylines, plus (triangle count, edge stride).
+
+    A mesh offering ``wireframe_edges()`` (index pairs) draws exactly those —
+    typically the quad-dominant wireframe with cell diagonals removed;
+    otherwise the unique triangle edges are derived from ``triangles()``.
+    """
     verts = mesh.xyz() if hasattr(mesh, "xyz") else mesh.points()
-    tris = mesh.triangles()
+    tris = list(mesh.triangles())
+    n_triangles = len(tris)
     edges: set[tuple[int, int]] = set()
-    n_triangles = 0
-    for tri in tris:
-        a, b, c = int(tri[0]), int(tri[1]), int(tri[2])
-        n_triangles += 1
-        for u, v in ((a, b), (b, c), (c, a)):
+    wireframe = getattr(mesh, "wireframe_edges", None)
+    if callable(wireframe):
+        for pair in wireframe():
+            u, v = int(pair[0]), int(pair[1])
             edges.add((u, v) if u < v else (v, u))
+    if not edges:
+        for tri in tris:
+            a, b, c = int(tri[0]), int(tri[1]), int(tri[2])
+            for u, v in ((a, b), (b, c), (c, a)):
+                edges.add((u, v) if u < v else (v, u))
     edge_list = sorted(edges)
     stride = 1
     if max_edges is not None and len(edge_list) > max_edges:

@@ -287,6 +287,22 @@ def test_view2d_payload_renders_trimesh_edges_and_edge_outline():
     assert "mesh_edge_stride" not in p["summary"]
 
 
+def test_view2d_payload_prefers_wireframe_edges_over_derived():
+    class QuadMesh(_Mesh):
+        def wireframe_edges(self):
+            return [(0, 1), (1, 3), (3, 2), (2, 0)]  # the cell, minus its diagonal
+
+    p = viewer.view2d_payload([QuadMesh()])
+
+    drawn = set()
+    for line in p["map"]["grid_lines"]:
+        for a, b in zip(line, line[1:]):
+            drawn.add(frozenset((tuple(a), tuple(b))))
+    assert frozenset(((10.0, 0.0), (0.0, 10.0))) not in drawn  # diagonal hidden
+    assert sum(len(line) - 1 for line in p["map"]["grid_lines"]) == 4
+    assert p["summary"]["triangles"] == 2  # triangle count still reported
+
+
 def test_view2d_payload_strides_trimesh_edges_over_budget():
     p = viewer.view2d_payload([_Mesh()], max_mesh_edges=2)
 
