@@ -193,6 +193,23 @@ triangle edges as grid lines with the mesh `edge` rings as the outline; a mesh
 that also offers `wireframe_edges()` index pairs draws exactly those instead —
 quad-dominant, with interior cell diagonals removed.
 
+Two opt-in kwargs add value rendering. `color=True` asks each item offering
+`value_layer()` for its primary per-node value layer and paints it as a
+value-coloured fill *under* the grid lines (each triangle flat-filled with the
+colormap colour of its mean node value; a triangle touching a NaN node is left
+unfilled); `color="phi"` asks for that attribute (`value_layer(attr="phi")`).
+`contours=25.0` asks each item offering `iso_lines()` for contour polylines at
+a 25-unit interval (`iso_lines(interval=25.0)`), while `contours=[1500, 1550]`
+requests exact levels (`iso_lines(levels=...)`); a string `color` forwards as
+`attr=` to `iso_lines` too. The viewer panel gets a fill selector (when several
+items contribute fills), "Fill"/"Contours" toggles, and a min/max colour-ramp
+legend for the active fill. Items without these methods are silently
+unaffected:
+
+```python
+petektools.view2d([surface, well_points], color=True, contours=25.0)
+```
+
 ## Where to go next
 
 - **`API.md`** — the locked public contract (the *what*).

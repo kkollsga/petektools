@@ -17,8 +17,28 @@
       body.appendChild(g);
     }
 
+    // value-coloured trimesh fills: a selector (multiple fills → one active)
+    // + the shared colormap row when no ScalarLayer group already carries it.
+    var fills = App.payload.map.fills || [];
+    if (fills.length) {
+      var fg = group("Fill");
+      if (fills.length > 1) {
+        fg.appendChild(selectRow("Layer", fills.map(function (f) { return disp(f, f.name); }), S.mapFillIdx, function (i) { S.mapFillIdx = i; renderMap(); }));
+      } else {
+        fg.appendChild(el("div", "hint", disp(fills[0], fills[0].name)));
+      }
+      if (!S.mapLayers.length) fg.appendChild(colormapRow());
+      body.appendChild(fg);
+    }
+
     var t = group("Layers");
     t.appendChild(toggleRow("Outline", S.showOutline, token("--text-secondary"), true, function (v) { S.showOutline = v; renderMap(); }));
+    if (fills.length) {
+      t.appendChild(toggleRow("Fill", S.showFills, null, false, function (v) { S.showFills = v; renderMap(); }));
+    }
+    if (App.payload.map.contours && App.payload.map.contours.length) {
+      t.appendChild(toggleRow("Contours", S.showContours, token("--text-secondary"), true, function (v) { S.showContours = v; renderMap(); }));
+    }
     if (App.payload.map.grid_lines && App.payload.map.grid_lines.length) {
       t.appendChild(toggleRow("Grid lines", S.showGridLines, token("--muted"), true, function (v) { S.showGridLines = v; renderMap(); }));
     }

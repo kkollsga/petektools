@@ -52,6 +52,8 @@ state. `sections` may be empty (live mode adds them via `/section`).
 | `outline` | list[Ring] | boundary rings; `Ring` = list of `[x, y]` |
 | `grid_lines` | list[Line] | optional 2-D QA overlay; `Line` = list of `[x, y]` |
 | `points` | list[Point] | optional 2-D QA overlay; `Point` = `[x, y, z?]` |
+| `fills` | list[TriFill] | **additive:** selectable value-coloured trimesh fills, drawn UNDER `grid_lines`/`outline`/`points` |
+| `contours` | list[ContourSet] | **additive:** iso-lines; all levels stroke as one batched path, stronger than grid lines |
 | `horizons` | list[ScalarLayer] | selectable depth/field layers |
 | `zone_averages` | list[ScalarLayer] | selectable property layers |
 | `k_slices` | list[ScalarLayer] | optional per-k property slices |
@@ -64,6 +66,27 @@ sits at `(origin_x + i·spacing_x, origin_y + j·spacing_y)`.
 display_name?: str}`. `values` are **row-major** (`values[j·ncol + i]`);
 `null`/non-finite cells render transparent. Continuous fields use a
 perceptually-uniform colormap.
+
+**TriFill (additive; the `view2d` `color=` output):** `{name: str, nodes:
+[[x, y], …], triangles: [[a, b, c], …], values: float[len(nodes)], range:
+[min, max]}`. Per-**node** values on a world-coordinate triangulation; each
+triangle flat-fills with the continuous-colormap colour of the **mean of its
+three node values** against `range`. A triangle with any `null`/non-finite node
+value is **skipped** (renders as a hole — never colour-guessed). The renderer
+quantizes to ~64 colormap bins and fills one batched path per bin, so triangle
+count is unbounded in practice. `range` here is the **two-float `[min, max]`
+list** the producer seam emits (an exception to the `{min, max}` object
+convention above). One fill is active at a time (a panel selector when several
+are present); a "Fill" toggle controls visibility, and the active fill drives a
+legend entry (name + ramp + min/max). Both `fills` and `contours` are `[]` when
+absent; a payload without them renders exactly as before (no `schema_version`
+bump — additive fields are non-breaking).
+
+**ContourSet (additive; the `view2d` `contours=` output):** `{level: float,
+lines: [[[x, y], …], …]}` — the world-coordinate polylines of one iso level.
+All levels of all sets stroke together as **one batched path** in a neutral
+text token, slightly darker/stronger than the grid lines. No labels (yet); a
+"Contours" toggle controls visibility.
 
 **Contact:** `{kind: str, depth_m: float, crossing: bool[ncol·nrow],
 display_name?: str}` — `crossing` marks the columns the contact plane cuts

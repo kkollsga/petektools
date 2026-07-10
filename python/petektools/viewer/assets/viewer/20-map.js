@@ -20,6 +20,8 @@
     (App.payload.map.outline || []).forEach(function (ring) { ring.forEach(function (pt) { ext(pt[0], pt[1]); }); });
     (App.payload.map.grid_lines || []).forEach(function (line) { line.forEach(function (pt) { ext(pt[0], pt[1]); }); });
     (App.payload.map.points || []).forEach(function (pt) { ext(pt[0], pt[1]); });
+    (App.payload.map.fills || []).forEach(function (f) { (f.nodes || []).forEach(function (pt) { ext(pt[0], pt[1]); }); });
+    (App.payload.map.contours || []).forEach(function (c) { (c.lines || []).forEach(function (line) { line.forEach(function (pt) { ext(pt[0], pt[1]); }); }); });
     (App.payload.wells || []).forEach(function (w) { ext(w.x, w.y); });
     return { x0: xlo, y0: ylo, x1: xhi, y1: yhi };
   }
@@ -142,6 +144,11 @@
     var layer = S.mapLayers[S.mapLayerIdx];
     if (layer) drawWindowedRaster(ctx, cv, f, layer);
 
+    // value-coloured trimesh fill (2-D QA payloads) — UNDER grid lines /
+    // outline / points. One active fill at a time (the panel select).
+    var activeFill = (App.payload.map.fills || [])[S.mapFillIdx] || null;
+    if (S.showFills && activeFill) drawTriFill(ctx, activeFill);
+
     // regular-geometry / trimesh gridlines (2-D QA payloads); one batched
     // stroke — per-line strokes crawl on dense meshes
     if (S.showGridLines && App.payload.map.grid_lines) {
@@ -151,6 +158,22 @@
       ctx.beginPath();
       App.payload.map.grid_lines.forEach(function (line) {
         line.forEach(function (pt, i) { var s = w2s(pt[0], pt[1]); if (i === 0) ctx.moveTo(s[0], s[1]); else ctx.lineTo(s[0], s[1]); });
+      });
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+
+    // contour iso-lines: ALL levels of all sets stroke as one batched path
+    // (the grid-lines trick), a bit darker/stronger than the grid lines.
+    if (S.showContours && App.payload.map.contours && App.payload.map.contours.length) {
+      ctx.strokeStyle = token("--text-secondary");
+      ctx.globalAlpha = 0.6;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      App.payload.map.contours.forEach(function (c) {
+        (c.lines || []).forEach(function (line) {
+          line.forEach(function (pt, i) { var s = w2s(pt[0], pt[1]); if (i === 0) ctx.moveTo(s[0], s[1]); else ctx.lineTo(s[0], s[1]); });
+        });
       });
       ctx.stroke();
       ctx.globalAlpha = 1;
@@ -281,7 +304,51 @@
       S.fence.pts.forEach(function (pt) { var s = w2s(pt[0], pt[1]); ctx.beginPath(); ctx.arc(s[0], s[1], 3, 0, 6.28); ctx.fillStyle = token("--accent"); ctx.fill(); });
     }
 
-    drawFieldLegend(layer);
+    drawFieldLegend(layer, S.showFills ? activeFill : null);
+  }
+
+  // Value-coloured trimesh fill: each triangle flat-fills with the colormap
+  // colour of the MEAN of its three node values; a triangle with any missing
+  // (null) / non-finite node value is skipped (a hole). Triangles are BATCHED
+  // into FILL_BINS quantized colour bins — one Path2D + one fill() per bin —
+  // so a ~78k-triangle mesh costs ~64 fill calls, never 78k. Bins reuse the
+  // raster's colormap LUT (the same ramp the ScalarLayer rasters use).
+  var FILL_BINS = 64;
+  function drawTriFill(ctx, fill) {
+    var nodes = fill.nodes || [], tris = fill.triangles || [], vals = fill.values || [];
+    if (!nodes.length || !tris.length) return;
+    var r = fill.range, lo, span;
+    if (r && r.length === 2 && isFinite(r[0]) && isFinite(r[1])) { lo = r[0]; span = (r[1] - r[0]) || 1; }
+    else { // defensive: derive the domain from the finite values
+      lo = Infinity; var hi = -Infinity;
+      for (var q = 0; q < vals.length; q++) { var v = vals[q]; if (v == null || !isFinite(v)) continue; if (v < lo) lo = v; if (v > hi) hi = v; }
+      if (!isFinite(lo)) return; // nothing finite to colour
+      span = (hi - lo) || 1;
+    }
+    // project every node once (not 3× per triangle)
+    var n = nodes.length, sx = new Float64Array(n), sy = new Float64Array(n);
+    for (var k = 0; k < n; k++) { var s = w2s(nodes[k][0], nodes[k][1]); sx[k] = s[0]; sy[k] = s[1]; }
+    var paths = new Array(FILL_BINS);
+    for (var t = 0; t < tris.length; t++) {
+      var tri = tris[t], a = tri[0], b = tri[1], c = tri[2];
+      var va = vals[a], vb = vals[b], vc = vals[c];
+      if (va == null || vb == null || vc == null || !isFinite(va) || !isFinite(vb) || !isFinite(vc)) continue;
+      var ti = ((va + vb + vc) / 3 - lo) / span;
+      if (ti < 0) ti = 0; else if (ti > 1) ti = 1;
+      var bin = (ti * FILL_BINS) | 0; if (bin >= FILL_BINS) bin = FILL_BINS - 1;
+      var p = paths[bin] || (paths[bin] = new Path2D());
+      p.moveTo(sx[a], sy[a]); p.lineTo(sx[b], sy[b]); p.lineTo(sx[c], sy[c]); p.closePath();
+    }
+    var lut = colormapLUT(S.colormap);
+    for (var i = 0; i < FILL_BINS; i++) {
+      if (!paths[i]) continue;
+      var l3 = Math.round(((i + 0.5) / FILL_BINS) * 255) * 3;
+      var css = "rgb(" + lut[l3] + "," + lut[l3 + 1] + "," + lut[l3 + 2] + ")";
+      ctx.fillStyle = css; ctx.fill(paths[i]);
+      // hairline same-colour stroke closes the antialiasing seams between
+      // adjacent flat-filled triangles (per bin, not per triangle).
+      ctx.strokeStyle = css; ctx.lineWidth = 1; ctx.stroke(paths[i]);
+    }
   }
 
   // Mean |tie residual| (m) over a well's per-horizon ties (falls back to a

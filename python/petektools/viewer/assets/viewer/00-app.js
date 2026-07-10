@@ -202,6 +202,12 @@
     S.clipRaster = true; // clip the areal raster to the outline polygon (QC toggle)
     S.showGridLines = true;
     S.showPoints = true;
+    // value-coloured trimesh fills + contour iso-lines (2-D QA payloads):
+    // one active fill at a time (selectable), each toggleable like the other
+    // map layers. Both default visible — asking for them means wanting them.
+    S.mapFillIdx = 0;
+    S.showFills = true;
+    S.showContours = true;
     S.contactVis = (m.contacts || []).map(function () { return true; });
     S.wellVis = (p.wells || []).map(function () { return true; });
 

@@ -7,6 +7,19 @@ All notable changes to petekTools are recorded here. Format follows
 ## [Unreleased]
 
 ### Added
+- `view2d(...)` / `view2d_payload(...)` gain `color=` and `contours=` kwargs:
+  `color=True` (or `color="<attr>"`) collects each item's duck-typed
+  `value_layer()` into a value-coloured trimesh fill drawn under the grid
+  lines, and `contours=<interval>` / `contours=[levels]` collects
+  `iso_lines()` polylines as contour overlays. The map bundle carries the new
+  additive `fills` + `contours` fields (documented in `SCHEMA.md`; both `[]`
+  when absent, no schema bump), and the summary reports `fills` /
+  `contour_levels` counts.
+- The map viewer renders the fills batched into ~64 colormap bins (one canvas
+  fill per bin; a triangle touching a NaN node stays unfilled), strokes all
+  contour levels as one batched path slightly stronger than the grid lines,
+  and grows a fill selector, "Fill"/"Contours" layer toggles, and a
+  name + min/max colour-ramp legend for the active fill.
 - Trimesh inputs to `view2d(...)` / `view2d_payload(...)` may expose
   `wireframe_edges()` (vertex-index pairs); when present those edges are drawn
   instead of the derived unique triangle edges, so a producer that classifies
