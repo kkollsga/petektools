@@ -361,7 +361,103 @@ def test_view2d_payload_trimesh_without_edge_falls_back_to_frame_rect():
     assert p["map"]["outline"]  # frame-rect fallback still supplies an outline
 
 
-# --- value-coloured fills + contour lines (view2d color= / contours=) --------
+# --- the color=/fill= spec grammar (registry match) ---------------------------
+def test_spec_grammar_registry_match():
+    from petektools.viewer._view2d import _parse_spec
+
+    # bools
+    assert _parse_spec(True, "color") == {"enabled": True, "attr": None, "cmap": None, "range": None}
+    assert _parse_spec(False, "color") == {"enabled": False, "attr": None, "cmap": None, "range": None}
+    # a bare colormap name
+    assert _parse_spec("inferno", "color") == {"enabled": True, "attr": None, "cmap": "inferno", "range": None}
+    # colormap + a NEGATIVE range
+    assert _parse_spec("inferno_-2700_-2500", "color") == {
+        "enabled": True, "attr": None, "cmap": "inferno", "range": [-2700.0, -2500.0],
+    }
+    # a non-colormap leading string stays an ATTRIBUTE name (back-compat)
+    assert _parse_spec("porosity", "color") == {"enabled": True, "attr": "porosity", "cmap": None, "range": None}
+    # combined attr + colormap + range
+    assert _parse_spec("porosity_inferno_0_0.3", "color") == {
+        "enabled": True, "attr": "porosity", "cmap": "inferno", "range": [0.0, 0.3],
+    }
+    # the attr may itself contain underscores — cmap matched by registry scan
+    assert _parse_spec("net_pay_viridis_-1_1", "fill") == {
+        "enabled": True, "attr": "net_pay", "cmap": "viridis", "range": [-1.0, 1.0],
+    }
+    # every registry name resolves
+    for cmap in ("viridis", "magma", "grays", "inferno"):
+        assert _parse_spec(cmap, "color")["cmap"] == cmap
+    # an attr-only string that HAPPENS to contain no registry token keeps its
+    # underscores whole
+    assert _parse_spec("net_to_gross", "color")["attr"] == "net_to_gross"
+
+
+def test_spec_grammar_malformed_raises():
+    from petektools.viewer._view2d import _parse_spec
+
+    with pytest.raises(ValueError, match="malformed"):
+        _parse_spec("inferno_-2700", "color")  # one trailing float
+    with pytest.raises(ValueError, match="malformed"):
+        _parse_spec("inferno_a_b", "color")  # non-float range tokens
+    with pytest.raises(ValueError, match="malformed"):
+        _parse_spec("inferno_1_2_3", "fill")  # too many trailing tokens
+    with pytest.raises(ValueError, match="empty"):
+        _parse_spec("", "color")
+    with pytest.raises(TypeError, match="bool or str"):
+        _parse_spec(3, "color")
+
+
+def test_view2d_color_spec_drives_point_color_and_colormap():
+    class Points:
+        name = "Top Agat"
+
+        def xyz(self):
+            return [[0.0, 0.0, -2600.0], [10.0, 0.0, -2900.0], [5.0, 5.0, -2400.0]]
+
+    # colormap only: data range
+    p = viewer.view2d_payload([Points()], color="inferno")
+    assert p["map"]["colormap"] == "inferno"
+    assert p["map"]["point_color"] == {"by": "z", "range": [-2900.0, -2400.0]}
+    # explicit range (negative floats) CLAMPS the normalization — carried as-is
+    p = viewer.view2d_payload([Points()], color="inferno_-2700_-2500")
+    assert p["map"]["point_color"] == {"by": "z", "range": [-2700.0, -2500.0]}
+    assert p["map"]["colormap"] == "inferno"
+    # color=True: no colormap pinned, data range
+    p = viewer.view2d_payload([Points()], color=True)
+    assert p["map"]["colormap"] is None
+    assert p["map"]["point_color"]["range"] == [-2900.0, -2400.0]
+    # malformed spec surfaces at the payload builder
+    with pytest.raises(ValueError, match="malformed"):
+        viewer.view2d_payload([Points()], color="inferno_-2700")
+
+
+def test_view2d_layers_record_duck_typed_names():
+    class NamedPoints:
+        name = "Top Agat"
+
+        def xyz(self):
+            return [[0.0, 0.0, -10.0], [10.0, 10.0, -20.0]]
+
+    class Geom:
+        # no `name` → the legend falls back to the layer kind
+        xori = 0.0
+        yori = 0.0
+        xinc = 10.0
+        yinc = 10.0
+        ncol = 2
+        nrow = 2
+
+        def node_xy(self, i, j):
+            return (i * 10.0, j * 10.0)
+
+    p = viewer.view2d_payload([NamedPoints(), Geom()], color=True)
+    assert p["map"]["layers"] == [
+        {"kind": "points", "name": "Top Agat"},
+        {"kind": "lines", "name": None},
+    ]
+
+
+# --- value-coloured fills + contour lines (view2d fill= / contours=) ----------
 class _ValueMesh(_Mesh):
     """Duck-typed trimesh that also offers the value seam:
     ``value_layer(attr=None)`` + ``iso_lines(interval|levels, attr=None)``."""
@@ -388,15 +484,16 @@ class _ValueMesh(_Mesh):
         ]
 
 
-def test_view2d_color_true_adds_fill_and_keeps_mesh_lines():
+def test_view2d_fill_true_adds_fill_and_keeps_mesh_lines():
     mesh = _ValueMesh()
-    p = viewer.view2d_payload([mesh], color=True)
+    p = viewer.view2d_payload([mesh], fill=True)
 
     assert mesh.seen["value_attr"] is None  # primary layer requested
     assert len(p["map"]["fills"]) == 1
     fill = p["map"]["fills"][0]
-    assert set(fill) == {"name", "nodes", "triangles", "values", "range"}
+    assert set(fill) == {"name", "nodes", "triangles", "values", "range", "display_name"}
     assert fill["name"] == "z"
+    assert fill["display_name"] is None  # _ValueMesh carries no `name`
     assert fill["nodes"] == [[0.0, 0.0], [10.0, 0.0], [0.0, 10.0], [10.0, 10.0]]
     assert fill["triangles"] == [[0, 1, 2], [1, 3, 2]]
     assert fill["values"][:3] == [1.0, 2.0, 3.0]
@@ -409,19 +506,51 @@ def test_view2d_color_true_adds_fill_and_keeps_mesh_lines():
     assert p["map"]["contours"] == []  # contours not requested
 
 
-def test_view2d_color_false_ignores_value_layer():
-    p = viewer.view2d_payload([_ValueMesh()])  # color defaults to False
+def test_view2d_color_true_no_longer_fills_a_value_layer_item():
+    # THE decision-2 gate: fills come ONLY from fill= — color=True over an item
+    # offering value_layer() colours points/lines, never a filled trimesh.
+    mesh = _ValueMesh()
+    p = viewer.view2d_payload([mesh], color=True)
+    assert p["map"]["fills"] == []
+    assert "fills" not in p["summary"]
+    assert "value_attr" not in mesh.seen  # value_layer() never even called
+    # the mesh still contributes its lines
+    assert sum(len(line) - 1 for line in p["map"]["grid_lines"]) == 5
+
+
+def test_view2d_fill_false_ignores_value_layer():
+    p = viewer.view2d_payload([_ValueMesh()])  # fill defaults to False
     assert p["map"]["fills"] == []
     assert "fills" not in p["summary"]
 
 
-def test_view2d_color_attr_string_passes_through():
+def test_view2d_fill_attr_string_passes_through():
     mesh = _ValueMesh()
-    p = viewer.view2d_payload([mesh], color="phi", contours=[1.5, 2.5])
+    p = viewer.view2d_payload([mesh], fill="phi", color="phi", contours=[1.5, 2.5])
     assert mesh.seen["value_attr"] == "phi"
     assert p["map"]["fills"][0]["name"] == "phi"
-    # the same attr forwards to iso_lines
+    # the COLOR spec's attr forwards to iso_lines (back-compat)
     assert mesh.seen["iso"] == {"interval": None, "levels": [1.5, 2.5], "attr": "phi"}
+
+
+def test_view2d_fill_spec_overrides_range_and_sets_colormap():
+    mesh = _ValueMesh()
+    p = viewer.view2d_payload([mesh], fill="magma_0_2")
+    assert p["map"]["fills"][0]["range"] == [0.0, 2.0]  # user range wins
+    assert p["map"]["colormap"] == "magma"
+    # color's colormap wins over fill's when both are given
+    mesh2 = _ValueMesh()
+    p2 = viewer.view2d_payload([mesh2], color="inferno", fill="magma")
+    assert p2["map"]["colormap"] == "inferno"
+    assert p2["map"]["fills"][0]["range"] == [1.0, 4.0]  # producer range kept
+
+
+def test_view2d_fill_records_item_display_name():
+    class NamedMesh(_ValueMesh):
+        name = "Top Agat"
+
+    p = viewer.view2d_payload([NamedMesh()], fill=True)
+    assert p["map"]["fills"][0]["display_name"] == "Top Agat"
 
 
 def test_view2d_contours_interval_and_levels_forms():
@@ -440,8 +569,9 @@ def test_view2d_contours_interval_and_levels_forms():
 
 
 def test_view2d_color_without_methods_is_silent():
-    # a plain mesh (no value_layer / iso_lines) + color=True → no fill, no error
-    p = viewer.view2d_payload([_Mesh()], color=True, contours=10.0)
+    # a plain mesh (no value_layer / iso_lines) + color/fill/contours → no
+    # fill, no contours, no error
+    p = viewer.view2d_payload([_Mesh()], color=True, fill=True, contours=10.0)
     assert p["map"]["fills"] == []
     assert p["map"]["contours"] == []
     assert p["summary"]["triangles"] == 2
@@ -453,7 +583,7 @@ def test_view2d_malformed_value_layer_raises():
             return {"name": "z", "nodes": [[0.0, 0.0]], "triangles": []}  # no values/range
 
     with pytest.raises(TypeError, match="missing key"):
-        viewer.view2d_payload([BadMesh()], color=True)
+        viewer.view2d_payload([BadMesh()], fill=True)
 
 
 # --- the generic chart-mark schema (Charts tab) ------------------------------

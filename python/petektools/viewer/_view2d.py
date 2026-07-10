@@ -7,9 +7,15 @@ offer ``xyz()``/``xy()``, a geometry may offer ``node_xy(i, j)`` with ``ncol`` a
 and an outline may offer ``rings()``. Two optional value conventions extend
 these: ``value_layer(attr=None)`` returns a per-node value-coloured trimesh
 (``{"name", "nodes", "triangles", "values", "range"}``; opted in via
-``color=``), and ``iso_lines(interval=..., levels=..., attr=None)`` returns
+``fill=``), and ``iso_lines(interval=..., levels=..., attr=None)`` returns
 ``[(level, [polyline, ...]), ...]`` contour polylines (opted in via
-``contours=``).
+``contours=``). An optional ``name`` attribute on any item becomes the
+layer's legend display name.
+
+``color=`` and ``fill=`` share one string grammar, parsed by registry match:
+``"[<attr>_]<cmap>[_<min>_<max>]"`` where ``<cmap>`` is a known colormap
+(``viridis`` / ``magma`` / ``grays`` / ``inferno``). A string with no colormap
+token is an attribute name (back-compat). See :func:`view2d_payload`.
 """
 
 from __future__ import annotations
@@ -27,6 +33,7 @@ def view2d_payload(
     *,
     title: str = "2D view",
     color: bool | str = False,
+    fill: bool | str = False,
     contours: float | list[float] | None = None,
     max_grid_lines: int = 800,
     max_line_points: int = 1000,
@@ -45,45 +52,82 @@ def view2d_payload(
       optional ``wireframe_edges()`` (index pairs) overrides the drawn edge set,
       e.g. a quad-dominant wireframe with cell diagonals removed
     - outline: ``rings()`` returning rings of ``[x, y]`` or ``[x, y, z]`` rows
-    - value fill (opt-in via ``color=``): ``value_layer(attr=None)`` returning
+    - value fill (opt-in via ``fill=``): ``value_layer(attr=None)`` returning
       ``{"name", "nodes", "triangles", "values", "range"}`` — a per-node
       value-coloured trimesh rendered UNDER the grid lines
     - contour lines (opt-in via ``contours=``): ``iso_lines(interval=...,
       levels=..., attr=None)`` returning ``[(level, [polyline, ...]), ...]``
 
-    ``color=True`` asks every item offering ``value_layer()`` for its primary
-    layer; a string asks for that attribute (``value_layer(attr=color)``).
+    ``color=`` colours POINTS (and selects the colormap for whatever is
+    value-coloured); it never triggers fills. ``fill=`` opts items into value
+    fills (``value_layer()``); contours keep their own ``contours=`` parameter.
+    Both accept ``bool`` or a string spec parsed by REGISTRY MATCH: the string
+    splits on ``"_"``; if a token matches a known colormap name (``viridis`` /
+    ``magma`` / ``grays`` / ``inferno``), everything before it is the attribute
+    (may itself contain underscores), and up to two trailing float tokens
+    (negative numbers included) are the explicit ``[min, max]`` range. A string
+    with no colormap token stays an ATTRIBUTE name (back-compat). Examples::
+
+        color=True                        # colour points by z, data range
+        color="inferno"                   # + the inferno colormap
+        color="inferno_-2700_-2500"       # + an explicit clamp range
+        color="porosity"                  # attribute (forwards to iso_lines)
+        color="porosity_inferno_0_0.3"    # attribute + colormap + range
+        fill="phi"                        # value_layer(attr="phi") fills
+
+    A malformed spec (e.g. a colormap with a single trailing float, or
+    non-float range tokens) raises ``ValueError``.
+
     With ``color`` on, plain points carrying a finite third component are
-    colour-coded by it (``map.point_color`` records the z range).
-    ``contours=<float>`` requests ``iso_lines(interval=...)``; a list requests
-    ``iso_lines(levels=...)``; a string ``color`` is forwarded as ``attr=``.
-    Items without these methods are unaffected, and an item that yields a fill
-    still contributes its geometry/trimesh lines exactly as before.
+    colour-coded by it; ``map.point_color`` records the range — the explicit
+    spec range when given (out-of-range values clamp to the ends), else the
+    data z range. The parsed colormap travels as ``map.colormap`` (``color``'s
+    wins over ``fill``'s), and an explicit ``fill`` range overrides each fill
+    entry's producer range. ``fill=True`` asks every item offering
+    ``value_layer()`` for its primary layer; a string spec's attribute asks for
+    that attribute. ``contours=<float>`` requests ``iso_lines(interval=...)``;
+    a list requests ``iso_lines(levels=...)``; the ``color`` spec's attribute
+    (if any) is forwarded as ``attr=``. Items without these methods are
+    unaffected, and an item that yields a fill still contributes its
+    geometry/trimesh lines exactly as before.
+
+    Every emitted layer records a legend display name, duck-typed from the
+    source object's optional ``name`` attribute (``map.layers`` carries
+    ``{"kind": "points"|"lines"|"contours", "name": str | None}`` entries;
+    fills carry ``display_name``); the viewer falls back to the layer kind.
 
     Point objects are rendered as points only. Topology-bearing point sets do
     not imply grid-line rendering; pass a geometry, structured surface, or
     trimesh when the grid itself should be visible.
     """
+    color_spec = _parse_spec(color, "color")
+    fill_spec = _parse_spec(fill, "fill")
     scene_items = _scene_items(items)
     points: list[list[float]] = []
     grid_lines: list[list[list[float]]] = []
     outlines: list[list[list[float]]] = []
     fills: list[dict[str, Any]] = []
     contour_sets: list[dict[str, Any]] = []
+    layers: list[dict[str, Any]] = []
     frame = None
     summary: dict[str, Any] = {}
 
     for item in scene_items:
         contributed = False
-        if color:
-            fill = _value_fill(item, color)
-            if fill is not None:
-                fills.append(fill)
+        name = _item_name(item)
+        if fill_spec["enabled"]:
+            fill_entry = _value_fill(item, fill_spec["attr"])
+            if fill_entry is not None:
+                fill_entry["display_name"] = name
+                if fill_spec["range"] is not None:
+                    fill_entry["range"] = list(fill_spec["range"])
+                fills.append(fill_entry)
                 contributed = True
         if contours is not None:
-            iso = _iso_contours(item, contours, color)
+            iso = _iso_contours(item, contours, color_spec["attr"])
             if iso is not None:
                 contour_sets.extend(iso)
+                layers.append({"kind": "contours", "name": name})
                 contributed = True
 
         if _is_geometry(item):
@@ -105,6 +149,7 @@ def view2d_payload(
                 summary["rotation_deg"] = float(rot)
             if not edge_rings:
                 frame = _frame_from_geometry(item)
+            layers.append({"kind": "lines", "name": name})
             continue
 
         if _is_trimesh(item):
@@ -118,6 +163,7 @@ def view2d_payload(
             summary["triangles"] = n_triangles
             if edge_stride > 1:
                 summary["mesh_edge_stride"] = edge_stride
+            layers.append({"kind": "lines", "name": name})
             continue
 
         rings = _rings(item)
@@ -132,6 +178,7 @@ def view2d_payload(
                 pts = pts[::step]
                 summary["point_stride"] = step
             points.extend(pts)
+            layers.append({"kind": "points", "name": name})
             continue
 
         if contributed:
@@ -145,10 +192,11 @@ def view2d_payload(
         outlines = _rect_outline_from_frame(frame)
 
     point_color = None
-    if color:
+    if color_spec["enabled"]:
         zs = [p[2] for p in points if len(p) > 2 and math.isfinite(p[2])]
         if zs:
-            point_color = {"by": "z", "range": [min(zs), max(zs)]}
+            rng = color_spec["range"] or [min(zs), max(zs)]
+            point_color = {"by": "z", "range": [float(rng[0]), float(rng[1])]}
 
     summary["points"] = len(points)
     summary["grid_lines"] = len(grid_lines)
@@ -174,6 +222,8 @@ def view2d_payload(
             "grid_lines": grid_lines,
             "points": points,
             "point_color": point_color,
+            "colormap": color_spec["cmap"] or fill_spec["cmap"],
+            "layers": layers,
             "fills": fills,
             "contours": contour_sets,
             "horizons": [],
@@ -194,6 +244,7 @@ def view2d(
     *,
     title: str = "2D view",
     color: bool | str = False,
+    fill: bool | str = False,
     contours: float | list[float] | None = None,
     save: str | Path | None = None,
     port: int = 0,
@@ -206,16 +257,20 @@ def view2d(
 ) -> str | dict[str, Any]:
     """Open or save a generic 2-D map view.
 
-    ``color=`` / ``contours=`` opt items into value-coloured fills and contour
-    lines (see :func:`view2d_payload`). Returns the local server URL in live
-    mode, the written path when ``save=`` is supplied, or the payload when
-    ``open_browser=False`` and ``block=False`` is still served by the caller
-    through ``view2d_payload`` directly.
+    ``color=`` colours points (and picks the colormap + clamp range through
+    the ``"[<attr>_]<cmap>[_<min>_<max>]"`` spec grammar); ``fill=`` opts
+    items into value-coloured fills; ``contours=`` opts them into contour
+    lines (see :func:`view2d_payload` for the full grammar and duck-typed
+    conventions). Returns the local server URL in live mode, the written path
+    when ``save=`` is supplied, or the payload when ``open_browser=False`` and
+    ``block=False`` is still served by the caller through ``view2d_payload``
+    directly.
     """
     payload = view2d_payload(
         items,
         title=title,
         color=color,
+        fill=fill,
         contours=contours,
         max_grid_lines=max_grid_lines,
         max_line_points=max_line_points,
@@ -226,6 +281,68 @@ def view2d(
         save_view(payload, save)
         return str(save)
     return serve(payload, port=port, block=block, open_browser=open_browser)
+
+
+# The known colormap registry — the token-match anchor of the color=/fill=
+# spec grammar. Must stay in sync with the JS renderer's COLORMAPS
+# (assets/viewer/00-app.js).
+_COLORMAPS = ("viridis", "magma", "grays", "inferno")
+
+
+def _parse_spec(spec: bool | str, param: str) -> dict[str, Any]:
+    """Parse a ``color=`` / ``fill=`` value into its parts.
+
+    Returns ``{"enabled": bool, "attr": str | None, "cmap": str | None,
+    "range": [float, float] | None}``. The string grammar is REGISTRY MATCH:
+    split on ``"_"``; the first token matching a known colormap name splits the
+    spec into ``<attr>`` (everything before it, underscores preserved) and up
+    to two trailing float tokens ``<min>_<max>`` (negative numbers fine, e.g.
+    ``"inferno_-2700_-2500"``). No colormap token → the whole string is an
+    attribute name (back-compat). Malformed trailing tokens (one float, or
+    non-floats) raise ``ValueError``.
+    """
+    if spec is False or spec is None:
+        return {"enabled": False, "attr": None, "cmap": None, "range": None}
+    if spec is True:
+        return {"enabled": True, "attr": None, "cmap": None, "range": None}
+    if not isinstance(spec, str):
+        raise TypeError(f"{param}= must be a bool or str, got {type(spec).__name__}")
+    if not spec:
+        raise ValueError(f"{param}= spec must not be an empty string")
+    tokens = spec.split("_")
+    cmap_idx = next((i for i, tok in enumerate(tokens) if tok in _COLORMAPS), None)
+    if cmap_idx is None:
+        return {"enabled": True, "attr": spec, "cmap": None, "range": None}
+    attr = "_".join(tokens[:cmap_idx]) or None
+    cmap = tokens[cmap_idx]
+    trailing = tokens[cmap_idx + 1 :]
+    if not trailing:
+        rng = None
+    elif len(trailing) == 2:
+        try:
+            rng = [float(trailing[0]), float(trailing[1])]
+        except ValueError:
+            raise ValueError(
+                f"malformed {param}= spec {spec!r}: the tokens after {cmap!r} "
+                f"must be two floats (<min>_<max>), got {trailing!r}"
+            ) from None
+    else:
+        raise ValueError(
+            f"malformed {param}= spec {spec!r}: expected "
+            f"'[<attr>_]{cmap}[_<min>_<max>]', got {len(trailing)} trailing "
+            f"token(s) {trailing!r}"
+        )
+    return {"enabled": True, "attr": attr, "cmap": cmap, "range": rng}
+
+
+def _item_name(item: Any) -> str | None:
+    """A layer's legend display name, duck-typed from the item's optional
+    ``name`` attribute (e.g. a petekIO dataset name like ``"Top Agat"``).
+    ``None`` when absent, empty, or not a plain value."""
+    nm = getattr(item, "name", None)
+    if nm is None or callable(nm):
+        return None
+    return str(nm) or None
 
 
 def _scene_items(items: Any) -> list[Any]:
@@ -249,17 +366,17 @@ def _is_geometry(obj: Any) -> bool:
     return hasattr(obj, "node_xy") and hasattr(obj, "ncol") and hasattr(obj, "nrow")
 
 
-def _value_fill(item: Any, color: bool | str) -> dict[str, Any] | None:
+def _value_fill(item: Any, attr: str | None) -> dict[str, Any] | None:
     """One value-coloured trimesh fill from an item's ``value_layer()`` duck.
 
-    ``color=True`` asks for the primary layer; a string asks for that attribute.
+    ``attr=None`` asks for the primary layer; a string asks for that attribute.
     Returns ``None`` when the item does not offer the method (silently — the
     fill is opt-in per item); raises ``TypeError`` on a malformed layer.
     """
     fn = getattr(item, "value_layer", None)
     if not callable(fn):
         return None
-    layer = fn(attr=color) if isinstance(color, str) else fn()
+    layer = fn(attr=attr) if attr is not None else fn()
     if layer is None:
         return None
     name = type(item).__name__
@@ -293,12 +410,13 @@ def _value_fill(item: Any, color: bool | str) -> dict[str, Any] | None:
 
 
 def _iso_contours(
-    item: Any, contours: float | list[float], color: bool | str
+    item: Any, contours: float | list[float], attr: str | None
 ) -> list[dict[str, Any]] | None:
     """Contour sets from an item's ``iso_lines()`` duck.
 
     A float ``contours`` requests ``iso_lines(interval=...)``, a list requests
-    ``iso_lines(levels=...)``; a string ``color`` forwards as ``attr=``. In
+    ``iso_lines(levels=...)``; the ``color`` spec's attribute forwards as
+    ``attr=``. In
     interval mode, index levels — multiples of the round step nearest 4-5x the
     interval — are flagged ``major`` and render bolder (explicit level lists
     carry no majors). Returns ``None`` when the item does not offer the method;
@@ -315,8 +433,8 @@ def _iso_contours(
         major_step = _major_step(float(contours))
     else:
         kwargs["levels"] = [float(v) for v in contours]
-    if isinstance(color, str):
-        kwargs["attr"] = color
+    if attr is not None:
+        kwargs["attr"] = attr
     name = type(item).__name__
     out: list[dict[str, Any]] = []
     for entry in fn(**kwargs):
