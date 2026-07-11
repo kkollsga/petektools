@@ -6,6 +6,22 @@ All notable changes to petekTools are recorded here. Format follows
 
 ## [Unreleased]
 
+### Changed
+- **Click-to-inspect replaces hover tooltips** on the viewer's Map and 3D tabs
+  (owner ruling). Hover shows nothing; a still click on/near an object (2-D:
+  the grid-bucket point hit-test, then a raster cell; 3-D: `THREE.Raycaster`
+  picking over points/meshes/lines with the pick radius sized to the on-screen
+  marker) anchors a readout at the clicked location — dataset/layer name, x,
+  y, z/value — that persists until the next click. Clicking empty space, or
+  the same target again, dismisses it; a press that moved more than a few px
+  between down/up is a pan/orbit drag, never an inspect. Pan/zoom and the
+  well-marker click (section along the bore; ties stay in the layer panel) are
+  unchanged. In the 3-D scene the click **also re-targets the orbit rotation
+  pivot** (`controls.target`) to the picked point without moving the camera —
+  orbiting then rotates around the clicked location; an empty-space dismiss
+  keeps the last pivot. Exposed for tests as `window.__PETEK_SCENE3D_PICK`.
+  The Intersection / Wells / Charts tabs keep their hover readouts.
+
 ## [0.2.12] - 2026-07-10
 
 ### Changed

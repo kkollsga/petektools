@@ -276,10 +276,12 @@ def test_render_200k_points_pan_hover_budget(tmp_path):
     # pan/zoom: at most one repaint per animation frame (~3 events dispatched/frame)
     assert r["dragFrames"] <= (r["dragEvents"] // 2), r
     assert r["dragFrameMsMedian"] < POINTS_DRAG_CAP_MS, r
-    # hover: grid-bucketed hit-test, never an all-points scan — and it still HITS
-    # (the readout showed a point under the sweep's final position)
+    # hover: shows NOTHING (click-to-inspect ruling) and stays cheap; a still
+    # CLICK at the canvas centre hits a point (the grid-bucket hit-test) and
+    # reveals the readout anchored there
     assert r["hoverAvgMs"] < POINTS_HOVER_CAP_MS, r
-    assert r["hoverReadout"] is True, r
+    assert r["hoverReadout"] is False, r
+    assert r["clickReadout"] is True, r
 
 
 # --- the Wells correlation tab + v4 obligations (Playwright) ------------------
@@ -891,6 +893,46 @@ def test_map_inferno_points_clamped_legend_names_both_themes(tmp_path):
           f"headers = {r['light']['headers']} | keys = {r['light']['keys']}")
 
 
+# --- 2-D click-to-inspect: hover shows nothing, click reveals/dismisses --------
+# Drives the owner-ruled interaction semantics on the Map tab end to end: HOVER
+# shows nothing; a still CLICK on a point blob reveals the readout ANCHORED at
+# the clicked location and it persists through plain mouse movement; clicking
+# empty space (or the same target again) dismisses it; a moved press is a pan,
+# never an inspect.
+_INSPECT_JS = Path(__file__).parent / "viewer_perf" / "inspect_bench.mjs"
+
+
+@pytest.mark.skipif(not _HAVE_PW, reason="playwright + chromium not available (browser leg)")
+def test_map_click_inspect_hover_shows_nothing(tmp_path):
+    view, payload = _build_inferno_points_view(tmp_path)
+    out = subprocess.run(
+        [_NODE, str(_INSPECT_JS), str(view),
+         f"--blob={_BLOB_MAX[0]},{_BLOB_MAX[1]}", "--empty=700,700"],
+        capture_output=True, text=True, timeout=120,
+    )
+    line = (out.stdout.strip().splitlines() or ["{}"])[-1]
+    r = json.loads(line) if line.startswith("{") else {}
+    assert out.returncode == 0, out.stderr
+    assert not r.get("consoleErrors"), r["consoleErrors"]
+    # hover shows NOTHING
+    assert r["afterHover"]["hidden"] is True, r["afterHover"]
+    # a still click reveals the readout, anchored at the clicked location, with
+    # the dataset name + coordinates
+    ac = r["afterClick"]
+    assert ac["hidden"] is False, ac
+    assert "Top Dome" in ac["text"] and "x" in ac["text"] and "z" in ac["text"], ac
+    assert abs(ac["left"] - r["anchor"]["left"]) < 2 and abs(ac["top"] - r["anchor"]["top"]) < 2, (ac, r["anchor"])
+    # it persists through plain mouse movement (no hover dismiss)
+    assert r["afterMoveAway"]["hidden"] is False, r["afterMoveAway"]
+    # empty-space click dismisses; same-target re-click toggles on then off
+    assert r["afterEmptyClick"]["hidden"] is True, r["afterEmptyClick"]
+    assert r["afterReClick"]["hidden"] is False, r["afterReClick"]
+    assert r["afterSameSpot"]["hidden"] is True, r["afterSameSpot"]
+    # a moved press pans — it never inspects
+    assert r["afterDrag"]["hidden"] is True, r["afterDrag"]
+    print(f"\n[inspect] click text = {ac['text']!r} @ ({ac['left']:.0f},{ac['top']:.0f})")
+
+
 # --- the Scene3D (view3d) tab: smoke + the 200k-point build budget -------------
 # Drives the P4 view3d path end to end in a real browser: a scene3d payload
 # (points + geometry + a value-coloured surface + a well + contours) must build
@@ -1021,7 +1063,20 @@ def test_scene3d_smoke_renders_all_layer_kinds(tmp_path):
     assert "z ×12" in (r["badgeAfterExag"] or ""), r["badgeAfterExag"]
     # dark theme keeps the legend populated (tokens re-read, identities keep slots)
     assert r["darkLegend"]["headers"], r["darkLegend"]
-    assert r["hoverReadout"] is True
+    # click-to-inspect: hover (and an orbit drag) shows NOTHING; a clean click
+    # picks an object, shows the readout, and re-targets the orbit pivot to the
+    # picked point WITHOUT moving the camera; an empty-space click dismisses the
+    # readout but keeps the pivot.
+    assert r["hoverReadout"] is False
+    ck = r["click"]
+    assert ck["readout"] is True, ck
+    pick = ck["pick"]
+    assert pick and not pick.get("miss"), ck
+    assert all(abs(t - p) < 1e-6 for t, p in zip(pick["target"], pick["point"])), pick
+    assert all(abs(a - b) < 1e-9 for a, b in zip(pick["camera"], pick["cameraBefore"])), pick
+    assert ck["dismissReadout"] is False, ck
+    assert ck["dismissPick"] and ck["dismissPick"].get("miss") is True, ck
+    assert ck["dismissPick"]["target"] == pick["target"], ck  # pivot kept
 
 
 @pytest.mark.skipif(not _HAVE_PW, reason="playwright + chromium not available (browser leg)")

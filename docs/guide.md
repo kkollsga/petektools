@@ -244,7 +244,12 @@ surfaces/trimeshes value-colour under `fill=` (neutral + wireframe toggle
 otherwise), geometry lattices/outlines draw flat at the scene's reference
 elevation, and contours draw at their level. A `z_exaggeration=` kwarg seeds
 the tab's z-exaggeration slider (display-only, default 5x — the volume tab's
-control):
+control). Inspection on both the Map and 3D tabs is **click-driven**: hover
+shows nothing; a still click on/near an object anchors a readout (dataset
+name, x, y, z/value) at the clicked location until the next click — and in
+the 3-D scene the click also re-targets the orbit rotation pivot to the
+picked point (camera position unchanged), so orbiting rotates around what
+you clicked:
 
 ```python
 petektools.view3d([pts, geom], color="inferno_-2700_-2500")

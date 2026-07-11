@@ -187,6 +187,14 @@ unclipped raster for QC). Co-located wells that share a wellhead (sidetracks)
 render as **one shared marker with a bore-count badge** and radially-offset,
 leader-lined bore labels.
 
+**Click-to-inspect (owner ruling 2026-07-11).** Hover shows nothing on the
+map. A still **click** on/near a point (the grid-bucket hit-test) or a raster
+cell anchors a readout at the clicked location (dataset/layer name, x, y,
+z/value) that persists until the next click; clicking empty space — or the
+same target again — dismisses it. A press that moved more than a few px
+between down and up is a pan, never an inspect; pan/zoom are unchanged. A
+well-marker click keeps its section semantics (never a tooltip).
+
 ## SectionBundle — a vertical cross-section (Intersection tab)
 
 | field | type | notes |
@@ -376,6 +384,18 @@ triangles, meshes, wells, buildMs}`). z-exaggeration is a display-only group
 scale; the theme flip re-reads the line/background tokens while identities
 keep their slots.
 
+**Click-to-inspect + orbit pivot (owner rulings 2026-07-11).** Hover shows
+nothing in the 3-D scene. A still **click** on/near an object
+(`THREE.Raycaster` picking over points/meshes/lines; the points/line pick
+threshold is sized to the on-screen marker at the pick distance) anchors a
+readout at the clicked location (dataset/layer name + true x, y, z/value)
+**and re-targets the orbit controls' rotation pivot** (`controls.target`) to
+the picked point without moving the camera — subsequent orbiting rotates
+around the clicked location. Clicking empty space (or the same target again)
+dismisses the readout; the pivot keeps its last picked point. A press that
+moved more than a few px between down/up is an orbit drag, never a pick. The
+pick outcome is exposed for tests as `window.__PETEK_SCENE3D_PICK`.
+
 ## WellTrack
 
 `{id: str, x: float, y: float, trajectory: [[x, y, tvd], …], display_name?: str,
@@ -383,15 +403,15 @@ ties?: [{horizon: str, residual_m: float}, …]}`. `id` is a categorical identit
 (fixed colour slot across all tabs). The surface marker sits at `(x, y)`; a click
 sections along the bore (live) or resolves to a pre-computed bore section by
 matching `id` against `section_labels` (file mode). `ties` (optional) are the
-per-horizon surface-tie residuals (`pick − surface`, m) the map shows on well
-hover and in the layer panel's per-bore entries.
+per-horizon surface-tie residuals (`pick − surface`, m) shown in the layer
+panel's per-bore entries.
 
 **Tie-quality glyph (v4).** A well carrying `ties` gets a small 3-pip glyph beside
 its marker: the pips fill by tie-quality tier binned on the **mean absolute
 residual** — `≤ 2 m` good (3 pips), `≤ 5 m` fair (2), else poor (1). The glyph
 wears **text tokens** (it reads a residual; it is not a categorical entity), never
-a series identity hue. Hover adds a `mean |tie|` + tier row above the per-horizon
-residuals.
+a series identity hue. The panel's per-bore entry lists the per-horizon
+residuals (the map is click-to-inspect; a marker click sections the bore).
 
 ## WellLogBundle — multi-well log correlation (Wells tab, v4)
 

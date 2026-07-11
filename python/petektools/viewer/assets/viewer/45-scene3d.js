@@ -71,8 +71,7 @@
     var group = new THREE.Group(); scene.add(group);
     s3d = { THREE: THREE, renderer: renderer, scene: scene, camera: camera, controls: controls, group: group, badge: badge, framed: false };
     s3d.render = function () { renderer.render(scene, camera); };
-    renderer.domElement.addEventListener("mousemove", scene3dHover);
-    renderer.domElement.addEventListener("mouseleave", hideReadout);
+    wireScene3dClickInspect(renderer.domElement);
   }
   function resizeScene3d(host) {
     var w = host.clientWidth || 1, h = host.clientHeight || 1;
@@ -159,6 +158,7 @@
       pointCount: 0, triangleCount: 0,
       extent: { dx: Math.max(xmax - xmin, ymax - ymin) || 1, dz: (zmax - zmin) || 1 },
       depthRange: { min: zmin, max: zmax },
+      _center: { cx: cx, cy: cy, cz: cz, refZ: refZ }, // world<->render transform (picking)
       _degraded: null,
     };
 
@@ -183,7 +183,9 @@
       var mat = new THREE.PointsMaterial({ size: 2.5, sizeAttenuation: false, vertexColors: true });
       var obj = new THREE.Points(geo, mat);
       s3d.group.add(obj);
-      built.pointObjs.push({ obj: obj, geo: geo, f: c.f, n: c.n, stride: ptStride, kept: kept });
+      var entry = { obj: obj, geo: geo, f: c.f, n: c.n, stride: ptStride, kept: kept };
+      obj.userData.petek = { kind: "points", name: c.name, o: entry };
+      built.pointObjs.push(entry);
       built.pointCount += kept;
     });
 
@@ -221,6 +223,7 @@
         color: hasValues ? 0xffffff : S3D_MESH_NEUTRAL,
       });
       var mesh = new THREE.Mesh(geo, mat);
+      mesh.userData.petek = { kind: "mesh", m: m };
       s3d.group.add(mesh);
       built.meshObjs.push({ mesh: mesh, geo: geo, m: m, hasValues: hasValues });
       built.triangleCount += idx.length / 3;
@@ -229,7 +232,10 @@
     // ---- geometry lattice lines: one LineSegments per geometry at ref_z -----
     (sc.lattices || []).forEach(function (L) {
       var obj = polylinesToSegments(L.lines, function (p) { return [p[0] - cx, refZ - cz, p[1] - cy]; }, token("--muted"));
-      if (obj) { s3d.group.add(obj); built.latticeObjs.push(obj); }
+      if (obj) {
+        obj.userData.petek = { kind: "lines", name: L.name, label: L.name ? pretty(L.name) : "grid lines" };
+        s3d.group.add(obj); built.latticeObjs.push(obj);
+      }
     });
 
     // ---- contour polylines at their level elevation (minor + major batches) -
@@ -245,17 +251,22 @@
     });
     if (minor.length) {
       var mn = segmentsFromPairs(minor, token("--text-secondary"), 0.55);
+      mn.userData.petek = { kind: "contours", label: "contour" };
       s3d.group.add(mn); built.contourObjs.push(mn);
     }
     if (major.length) {
       var mj = segmentsFromPairs(major, token("--text-secondary"), 0.9);
+      mj.userData.petek = { kind: "contours", label: "contour" };
       s3d.group.add(mj); built.contourObjs.push(mj);
     }
 
     // ---- outline rings (flat at ref_z) ---------------------------------------
     (sc.outlines || []).forEach(function (ring) {
       var obj = polylinesToSegments([ring], function (p) { return [p[0] - cx, refZ - cz, p[1] - cy]; }, token("--text-secondary"));
-      if (obj) { s3d.group.add(obj); built.outlineObjs.push(obj); }
+      if (obj) {
+        obj.userData.petek = { kind: "outline", label: "outline" };
+        s3d.group.add(obj); built.outlineObjs.push(obj);
+      }
     });
 
     // ---- well trajectories (identity-coloured) + a wellhead marker ----------
@@ -275,6 +286,8 @@
       var mgeo = new THREE.BufferGeometry();
       mgeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array([pts[0].x, pts[0].y, pts[0].z]), 3));
       var marker = new THREE.Points(mgeo, new THREE.PointsMaterial({ size: 8, sizeAttenuation: false, color: new THREE.Color(color) }));
+      line.userData.petek = { kind: "well", name: w.id, label: disp(w, w.id) };
+      marker.userData.petek = { kind: "well", name: w.id, label: disp(w, w.id) };
       s3d.group.add(line); s3d.group.add(marker);
       built.wellObjs.push(line); built.wellObjs.push(marker);
     });
@@ -413,16 +426,131 @@
       + (s3dBuilt && s3dBuilt._degraded ? "  ·  1:" + s3dBuilt._degraded.stride : "");
   }
 
-  function scene3dHover(ev) {
-    // lightweight (the volume tab's readout idiom): counts + the TRUE
-    // (un-exaggerated) elevation extent — the exaggeration is display-only.
-    if (!s3dBuilt) return;
-    var rows = [["", App.payload.property || "3D scene"]];
-    if (s3dBuilt.pointCount) rows.push(["points", s3dBuilt.pointCount.toLocaleString()]);
-    if (s3dBuilt.triangleCount) rows.push(["triangles", s3dBuilt.triangleCount.toLocaleString()]);
-    rows.push(["z", fmt(s3dBuilt.depthRange.min) + " – " + fmt(s3dBuilt.depthRange.max) + " m (z ×" + S.s3dExag + ")"]);
-    var pc = App.payload.scene3d.point_color;
-    if (pc && pc.range) rows.push(["colour range", fmt(pc.range[0]) + " – " + fmt(pc.range[1])]);
+  // Click-to-inspect + orbit re-target (owner rulings): hover shows NOTHING in
+  // the 3-D scene. A CLICK on/near an object — THREE.Raycaster picking over the
+  // built points/meshes/lines, the points/line threshold sized to the on-screen
+  // marker at the pick distance — anchors a readout at the clicked location
+  // (dataset/layer name + TRUE x, y, z / value) AND re-targets the orbit
+  // controls' rotation pivot to the picked point WITHOUT moving the camera
+  // (position kept; the controls re-orient only — no jump). Clicking empty
+  // space (or the same target again) dismisses the readout; the pivot keeps its
+  // last picked point. A press that moved more than a few px between down/up is
+  // an orbit drag, never a pick. The pick outcome is exposed for tests as
+  // window.__PETEK_SCENE3D_PICK ({x, y, z, point, target, cameraBefore,
+  // camera} on a hit; {miss: true, target, camera} on an empty click).
+  var S3D_CLICK_SLOP_PX = 4;
+  var S3D_PICK_PX = 6; // pick radius in screen px (the markers are 2.5-8 px)
+  var _s3dDownPx = null;
+  var _s3dPickKey = null;
+  function wireScene3dClickInspect(dom) {
+    dom.addEventListener("pointerdown", function (ev) { _s3dDownPx = [ev.clientX, ev.clientY]; });
+    dom.addEventListener("pointerup", function (ev) {
+      if (!_s3dDownPx) return;
+      var moved = Math.hypot(ev.clientX - _s3dDownPx[0], ev.clientY - _s3dDownPx[1]);
+      _s3dDownPx = null;
+      if (moved <= S3D_CLICK_SLOP_PX) scene3dClickInspect(ev);
+    });
+  }
+  function s3dWorldToData(p) {
+    // render/world -> data coords: undo the centring shift + the y-up mapping
+    // + the display-only z-exaggeration group scale.
+    var c = s3dBuilt._center;
+    var exag = (s3d.group.scale && s3d.group.scale.y) || 1;
+    return { x: p.x + c.cx, y: p.z + c.cy, z: p.y / exag + c.cz };
+  }
+  function describeScene3dHit(hit) {
+    var u = hit.object.userData.petek;
+    if (u.kind === "points") {
+      var o = u.o; // the built cloud entry (original floats + decimation stride)
+      var vi = (hit.index != null ? hit.index : 0) * o.stride;
+      if (vi >= o.n) vi = o.n - 1;
+      var z = o.f[vi * 3 + 2];
+      return {
+        key: "pt:" + (u.name || "") + ":" + vi,
+        label: (u.name ? pretty(u.name) : "points") + " · " + vi,
+        x: o.f[vi * 3], y: o.f[vi * 3 + 1], z: isFinite(z) ? z : null,
+      };
+    }
+    if (u.kind === "mesh" && hit.face) {
+      // nearest face vertex to the hit, in the mesh's local frame — its node
+      // row carries the TRUE data coords (and value, when value-coloured)
+      var m = u.m;
+      var local = hit.object.worldToLocal(hit.point.clone());
+      var pos = hit.object.geometry.attributes.position;
+      var best = hit.face.a, bestD = Infinity;
+      [hit.face.a, hit.face.b, hit.face.c].forEach(function (vi2) {
+        var dx = pos.getX(vi2) - local.x, dy = pos.getY(vi2) - local.y, dz = pos.getZ(vi2) - local.z;
+        var dd = dx * dx + dy * dy + dz * dz;
+        if (dd < bestD) { bestD = dd; best = vi2; }
+      });
+      var nd = m.nodes[best];
+      var out = {
+        key: "mesh:" + (m.display_name || m.name || "") + ":" + best,
+        label: disp(m, m.name) || "mesh",
+        x: nd[0], y: nd[1], z: nd[2] == null ? null : nd[2],
+      };
+      if (m.values && m.values[best] != null && m.name !== "z") {
+        out.value = m.values[best]; out.valueLabel = m.name;
+      }
+      return out;
+    }
+    // lines (well bore/marker, lattice, contour, outline): data coords at the hit
+    var w = s3dWorldToData(hit.point);
+    return {
+      key: u.kind + ":" + (u.name || ""),
+      label: u.label || (u.name ? pretty(u.name) : u.kind),
+      x: w.x, y: w.y, z: w.z,
+    };
+  }
+  function scene3dClickInspect(ev) {
+    if (!s3d || !s3dBuilt) return;
+    var THREE = s3d.THREE;
+    var rect = s3d.renderer.domElement.getBoundingClientRect();
+    var ndc = new THREE.Vector2(
+      ((ev.clientX - rect.left) / (rect.width || 1)) * 2 - 1,
+      -((ev.clientY - rect.top) / (rect.height || 1)) * 2 + 1
+    );
+    var ray = new THREE.Raycaster();
+    ray.setFromCamera(ndc, s3d.camera);
+    // world units per screen px at the orbit-target distance -> the pick radius
+    var dist = s3d.camera.position.distanceTo(s3d.controls.target);
+    var wpp = (2 * dist * Math.tan((s3d.camera.fov * Math.PI) / 360)) / (rect.height || 1);
+    ray.params.Points = { threshold: wpp * S3D_PICK_PX };
+    ray.params.Line = { threshold: wpp * S3D_PICK_PX };
+    var hits = ray.intersectObjects(s3d.group.children, false);
+    var hit = null;
+    for (var q = 0; q < hits.length; q++) {
+      var ob = hits[q].object;
+      if (ob.visible && ob.userData && ob.userData.petek) { hit = hits[q]; break; }
+    }
+    if (!hit) { // empty space: dismiss the readout, KEEP the last pivot
+      hideReadout(); _s3dPickKey = null;
+      window.__PETEK_SCENE3D_PICK = {
+        miss: true,
+        target: s3d.controls.target.toArray(),
+        camera: s3d.camera.position.toArray(),
+      };
+      return;
+    }
+    var d = describeScene3dHit(hit);
+    // orbit pivot: re-target to the picked point WITHOUT moving the camera
+    var camBefore = s3d.camera.position.toArray();
+    s3d.controls.target.copy(hit.point);
+    s3d.controls.update();
+    s3d.render();
+    window.__PETEK_SCENE3D_PICK = {
+      x: d.x, y: d.y, z: d.z,
+      point: hit.point.toArray(),
+      target: s3d.controls.target.toArray(),
+      cameraBefore: camBefore,
+      camera: s3d.camera.position.toArray(),
+    };
+    var readout = document.getElementById("readout");
+    if (!readout.hidden && d.key === _s3dPickKey) { hideReadout(); _s3dPickKey = null; return; } // same target again
+    _s3dPickKey = d.key;
+    var rows = [["", d.label], ["x", fmt(d.x, "m")], ["y", fmt(d.y, "m")]];
+    if (d.value != null && isFinite(d.value)) rows.push([d.valueLabel || "value", fmt(d.value)]);
+    if (d.z != null && isFinite(d.z)) rows.push(["z", fmt(d.z, "m")]);
     showReadout(ev, rows);
   }
 

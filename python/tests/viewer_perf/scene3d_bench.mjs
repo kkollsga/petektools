@@ -96,12 +96,36 @@ const result = await page.evaluate(async () => {
     for (let i = 1; i <= 12; i++) {
       cv.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, pointerId: 1, clientX: cx + i * 8, clientY: cy + i * 4, isPrimary: true }));
     }
-    cv.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, pointerId: 1, isPrimary: true }));
+    cv.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, pointerId: 1, clientX: cx + 96, clientY: cy + 48, isPrimary: true }));
     cv.dispatchEvent(new WheelEvent("wheel", { bubbles: true, clientX: cx, clientY: cy, deltaY: -240 }));
     cv.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: cx, clientY: cy }));
     await sleep(40);
   }
+  // click-to-inspect ruling: hover (and an orbit DRAG) must show NOTHING
   const hoverReadout = !document.getElementById("readout").hidden;
+
+  // 3b) click-to-inspect + orbit re-target: a clean click (no movement between
+  // pointerdown/up) at the canvas centre picks an object — the readout appears,
+  // and the orbit pivot re-targets to the picked point with the camera position
+  // unchanged. An empty-space click (canvas corner) dismisses the readout but
+  // KEEPS the last pivot.
+  const clickPoint = (x, y) => {
+    cv.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 1, clientX: x, clientY: y, button: 0, isPrimary: true }));
+    cv.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, pointerId: 1, clientX: x, clientY: y, isPrimary: true }));
+  };
+  let click = null;
+  if (cv) {
+    clickPoint(rect.left + rect.width * 0.5, rect.top + rect.height * 0.55);
+    await sleep(40);
+    click = {
+      pick: window.__PETEK_SCENE3D_PICK || null,
+      readout: !document.getElementById("readout").hidden,
+    };
+    clickPoint(rect.left + 3, rect.top + 3); // empty sky
+    await sleep(40);
+    click.dismissPick = window.__PETEK_SCENE3D_PICK || null;
+    click.dismissReadout = !document.getElementById("readout").hidden;
+  }
 
   // 4) z-exaggeration slider applies live (badge shows the new z ×N).
   const slider = document.querySelector("#panel-body input[type=range]");
@@ -123,7 +147,7 @@ const result = await page.evaluate(async () => {
   return {
     tabVisible, totalMs, status, statusAfter, renderMs,
     badge: badge0, badgeAfterExag, degradedBanner,
-    colormapInitial, hoverReadout,
+    colormapInitial, hoverReadout, click,
     lightLegend, darkLegend,
   };
 });

@@ -147,16 +147,24 @@ const result = await page.evaluate(async (opts) => {
       }));
     }
     const hoverAvgMs = (performance.now() - th0) / nHover;
-    // deterministic hit probe: the canvas centre sits over the fitted content
-    cv.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: rect.left + rect.width * 0.5, clientY: rect.top + rect.height * 0.5 }));
     await sleep(20);
+    // click-to-inspect (owner ruling): hover must show NOTHING — the readout
+    // only appears on a still click (mousedown+mouseup within the slop).
+    const hoverReadout = !document.getElementById("readout").hidden;
+    const cxy = { bubbles: true, clientX: rect.left + rect.width * 0.5, clientY: rect.top + rect.height * 0.5 };
+    cv.dispatchEvent(new MouseEvent("mousedown", cxy));
+    cv.dispatchEvent(new MouseEvent("mouseup", cxy));
+    cv.dispatchEvent(new MouseEvent("click", cxy));
+    await sleep(20);
+    const clickReadout = !document.getElementById("readout").hidden; // a point was hit + read out
     drag = {
       dragEvents: opts.dragEvents,
       dragFrames: window.__PETEK_MAP_FRAME_COUNT,
       dragFrameMsMedian: samples.length ? +samples[(samples.length / 2) | 0].toFixed(2) : null,
       dragFrameMsMax: samples.length ? +samples[samples.length - 1].toFixed(2) : null,
       hoverAvgMs: +hoverAvgMs.toFixed(3),
-      hoverReadout: !document.getElementById("readout").hidden, // a point was hit + read out
+      hoverReadout,
+      clickReadout,
     };
   }
 

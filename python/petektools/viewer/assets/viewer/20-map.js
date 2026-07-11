@@ -889,75 +889,91 @@
     cv.onmousedown = function (ev) {
       if (S.fence.drawing) { addFencePoint(cv, ev); return; }
       dragging = true; last = [ev.clientX, ev.clientY];
+      _mapDownPx = [ev.clientX, ev.clientY];
     };
     window.addEventListener("mouseup", function () { dragging = false; });
     cv.onmousemove = function (ev) {
-      if (dragging) {
-        mapView.ox += (ev.clientX - last[0]) * (cv.width / cv.getBoundingClientRect().width);
-        mapView.oy += (ev.clientY - last[1]) * (cv.height / cv.getBoundingClientRect().height);
-        last = [ev.clientX, ev.clientY]; scheduleRenderMap(); return;
-      }
-      mapHover(cv, ev);
+      // Hover shows NOTHING (click-to-inspect ruling) — mousemove only pans.
+      if (!dragging) return;
+      mapView.ox += (ev.clientX - last[0]) * (cv.width / cv.getBoundingClientRect().width);
+      mapView.oy += (ev.clientY - last[1]) * (cv.height / cv.getBoundingClientRect().height);
+      last = [ev.clientX, ev.clientY]; scheduleRenderMap();
     };
-    cv.onmouseleave = hideReadout;
     cv.ondblclick = function () { if (S.fence.drawing) finishFence(); };
-    cv.onclick = function (ev) { if (!S.fence.drawing) maybeClickWell(cv, ev); };
+    cv.onclick = function (ev) {
+      if (S.fence.drawing) return;
+      // click-vs-drag: only a press that stayed within the slop is an inspect
+      if (_mapDownPx && Math.hypot(ev.clientX - _mapDownPx[0], ev.clientY - _mapDownPx[1]) > CLICK_SLOP_PX) return;
+      mapClickInspect(cv, ev);
+    };
   }
   function canvasPx(cv, ev) {
     var rect = cv.getBoundingClientRect();
     return [(ev.clientX - rect.left) * (cv.width / rect.width), (ev.clientY - rect.top) * (cv.height / rect.height)];
   }
-  function mapHover(cv, ev) {
-    var f = mapFrame(), layer = S.mapLayers[S.mapLayerIdx];
-    var px = canvasPx(cv, ev), w = s2w(px[0], px[1]);
-    // A well marker under the pointer takes precedence: show its id + per-horizon
-    // surface-tie residuals (where the payload carries them).
+  // Click-to-inspect (owner ruling): hover shows NOTHING on the map; a CLICK on
+  // or near an object reveals the readout anchored at the clicked location and
+  // it stays until dismissed. Precedence: a well marker keeps its existing click
+  // semantics (section along the bore); then a point (the grid-bucket hit-test);
+  // then a raster-layer cell. Clicking empty space — or the same target again —
+  // dismisses the readout. Pan/zoom are untouched (a press that moved more than
+  // CLICK_SLOP_PX between down and up is a pan, never an inspect).
+  var CLICK_SLOP_PX = 4;
+  var _mapDownPx = null;   // mousedown client coords (click-vs-drag gate)
+  var _inspectKey = null;  // the shown readout's target (same-target dismiss)
+  function pointsLayerNameAt(index) {
+    // the emitting layer's duck-typed dataset name for a point index (layers
+    // may carry per-layer start/n slices; fall back to the first points layer)
+    var layers = App.payload.map.layers || [];
+    var first = null;
+    for (var q = 0; q < layers.length; q++) {
+      var ly = layers[q];
+      if (ly.kind !== "points") continue;
+      if (first == null) first = ly;
+      if (ly.start != null && ly.n != null && index >= ly.start && index < ly.start + ly.n) return ly.name;
+    }
+    return first ? first.name : null;
+  }
+  function mapClickInspect(cv, ev) {
+    var px = canvasPx(cv, ev);
+    // a well marker keeps its click semantics: section along the bore
     var hitW = null;
     (App.payload.wells || []).forEach(function (well, wi) {
       if (!S.wellVis[wi]) return;
       var s = w2s(well.x, well.y);
       if (Math.hypot(s[0] - px[0], s[1] - px[1]) <= 12) hitW = well;
     });
-    if (hitW) {
-      var wrows = [["", disp(hitW, hitW.id)]];
-      var mean = meanTieResidual(hitW);
-      if (mean != null) {
-        var tier = ["", "poor", "fair", "good"][tieQuality(mean)];
-        wrows.push(["mean |tie|", fmt(mean, "m") + " · " + tier]);
-      }
-      if (hitW.ties && hitW.ties.length) hitW.ties.forEach(function (t) { wrows.push([pretty(t.horizon) + " tie", fmt(t.residual_m, "m")]); });
-      else if (mean == null) wrows.push(["", "(no tie residuals)"]);
-      showReadout(ev, wrows);
-      return;
-    }
+    if (hitW) { hideReadout(); _inspectKey = null; sectionForWell(hitW); return; }
+    var rows = null, key = null;
     if (S.showPoints && App.payload.map.points && App.payload.map.points.length) {
       var hitP = hitTestPoint(App.payload.map.points, px[0], px[1]);
       if (hitP) {
-        var rows = [["", "point " + hitP.index], ["x", fmt(hitP.x, "m")], ["y", fmt(hitP.y, "m")]];
+        key = "pt:" + hitP.index;
+        var nm = pointsLayerNameAt(hitP.index);
+        rows = [["", (nm ? pretty(nm) : "point") + " · " + hitP.index],
+                ["x", fmt(hitP.x, "m")], ["y", fmt(hitP.y, "m")]];
         if (hitP.z != null && isFinite(hitP.z)) rows.push(["z", fmt(hitP.z, "m")]);
-        showReadout(ev, rows);
-        return;
       }
     }
-    var i = Math.round((w[0] - f.origin_x) / f.spacing_x);
-    var j = Math.round((w[1] - f.origin_y) / f.spacing_y);
-    if (i < 0 || j < 0 || i >= f.ncol || j >= f.nrow || !layer) { hideReadout(); return; }
-    var val = layer.values[j * f.ncol + i];
-    showReadout(ev, [
-      ["", layer.display],
-      ["value", fmt(val, layer.units)],
-      ["cell", "i " + i + " · j " + j],
-    ]);
-  }
-  function maybeClickWell(cv, ev) {
-    var px = canvasPx(cv, ev);
-    var hit = null;
-    (App.payload.wells || []).forEach(function (well, wi) {
-      if (!S.wellVis[wi]) return;
-      var s = w2s(well.x, well.y);
-      if (Math.hypot(s[0] - px[0], s[1] - px[1]) <= 12) hit = well;
-    });
-    if (hit) sectionForWell(hit);
+    if (!rows) {
+      var f = mapFrame(), layer = S.mapLayers[S.mapLayerIdx];
+      var w = s2w(px[0], px[1]);
+      var i = Math.round((w[0] - f.origin_x) / f.spacing_x);
+      var j = Math.round((w[1] - f.origin_y) / f.spacing_y);
+      if (layer && i >= 0 && j >= 0 && i < f.ncol && j < f.nrow) {
+        key = "cell:" + i + "," + j;
+        rows = [
+          ["", layer.display],
+          ["value", fmt(layer.values[j * f.ncol + i], layer.units)],
+          ["cell", "i " + i + " · j " + j],
+        ];
+      }
+    }
+    if (!rows) { hideReadout(); _inspectKey = null; return; } // empty space dismisses
+    var readout = document.getElementById("readout");
+    if (!readout.hidden && key === _inspectKey) { hideReadout(); _inspectKey = null; return; } // same spot again
+    _inspectKey = key;
+    showReadout(ev, rows);
   }
 
   // fence drawing

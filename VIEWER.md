@@ -45,7 +45,7 @@ section_provider=lambda **kw: model._section_json(**kw))`.
 |  | `serve()` (server / **live**) | `save_view()` (single file / **static**) |
 |---|---|---|
 | Map / Intersection / Volume tabs | ✅ | ✅ |
-| Pan · zoom · hover readout · toggles · colormaps · dark mode | ✅ | ✅ |
+| Pan · zoom · click-to-inspect readout · toggles · colormaps · dark mode | ✅ | ✅ |
 | Pre-computed sections (payload `sections`) | ✅ | ✅ |
 | **Draw-a-fence** on the map → new section | ✅ (calls `section_provider`) | ⛔ disabled, with a tooltip |
 | **Click a well** → new along-bore section | ✅ (live) | ↩ switches to the well's *pre-computed* section if present |
@@ -69,14 +69,15 @@ radially fanned, leader-lined labels. The canvas fits and centres the full drawn
 content. The raster is **windowed + resolution-capped** — only the grid cells in
 the current viewport are sampled, and never more than one sample per screen pixel
 (subsampled beyond that) — so a repaint costs a screenful regardless of ncol×nrow
-(a 2000×2000 field repaints in ~2 ms), while hover still reads the full-resolution
-value array. The **point-cloud overlay is batched + baked** the same way: points
+(a 2000×2000 field repaints in ~2 ms), while the click-to-inspect readout still
+reads the full-resolution value array. The **point-cloud overlay is batched + baked** the same way: points
 draw in ≤256 colormap-bin `Path2D`s (one fill per bin) into a viewport-windowed,
 memory-capped offscreen canvas that pan/zoom re-blit in one `drawImage`;
 wheel/drag repaints coalesce to at most one per animation frame, a gesture frame
 outside the baked window/zoom band draws the batched immediate path (re-baking
-only when the gesture pauses), and hover hit-tests a coarse world-space grid
-bucket — so a **200k-point coloured cloud pans/zooms/hovers at frame rate**
+only when the gesture pauses), and click-to-inspect hit-tests a coarse
+world-space grid bucket — so a **200k-point coloured cloud pans/zooms/inspects
+at frame rate**
 (≲10 ms worst gesture frame, sub-ms steady-state; previously ~145 ms per event).
 The active **value fill bakes the same way**: it rasterizes once into an
 offscreen bitmap that pan blits and an in-band zoom blits scaled, re-baking
@@ -123,13 +124,18 @@ The map **legend renders one entry per visible layer** — a small type icon
 squiggle = contours, marker = wells) + the layer's display name, duck-typed
 from the source object's `name` (e.g. a petekIO dataset name like
 `"Top Dome"`; fallback: the layer kind), with the colormap ramp + the clamped
-range wherever the layer is value-coloured. Pan (drag), zoom (wheel); the
-hover readout shows the layer value + cell
-`i,j`, or — over a well marker — the well id + its mean/per-horizon surface-tie
-residuals. A well with ties also wears a small **tie-quality glyph** (3 pips filled
-by the mean-|residual| tier: ≤2 m good, ≤5 m fair, else poor; text tokens, never a
-series hue). **Section tools**: *Draw fence line* (live) — click points, double-click
-to cut; click a well marker to section along its bore.
+range wherever the layer is value-coloured. Pan (drag), zoom (wheel);
+**inspection is click-driven** (owner ruling 2026-07-11): hover shows nothing —
+a still **click** on/near a point (or a raster cell) anchors a readout at the
+clicked location (dataset/layer name, x, y, z/value) that persists until the
+next click; clicking empty space, or the same target again, dismisses it, and
+a moved press is a pan, never an inspect. A well marker keeps its click
+semantics (section along the bore); its per-horizon surface-tie residuals live
+in the layer panel, and a well with ties wears a small **tie-quality glyph**
+(3 pips filled by the mean-|residual| tier: ≤2 m good, ≤5 m fair, else poor;
+text tokens, never a series hue). **Section tools**: *Draw fence line* (live)
+— click points, double-click to cut; click a well marker to section along its
+bore.
 
 ### Intersection (canvas 2-D)
 A vertical cross-section. A **Trace** picker selects among the sections. Each
@@ -214,7 +220,16 @@ layers). The volume tab's render discipline carries over: past the primitive
 budget the scene **auto-degrades** to a 1-in-stride decimated preview with a
 loud banner + `1:stride` badge, a malformed bundle surfaces a banner instead of
 a blank canvas, and the build outcome is exposed for tests as
-`window.__PETEK_SCENE3D_STATUS`.
+`window.__PETEK_SCENE3D_STATUS`. **Inspection is click-driven** here too
+(owner ruling 2026-07-11): hover shows nothing — a still **click** on/near an
+object (`THREE.Raycaster` picking over points/meshes/lines, the pick radius
+sized to the on-screen marker) anchors a readout at the clicked location
+(dataset/layer name + true x, y, z/value) **and re-targets the orbit rotation
+pivot to the picked point** without moving the camera (the controls re-orient
+only — no jump), so subsequent orbiting rotates around what you clicked.
+Clicking empty space (or the same target again) dismisses the readout while
+the pivot keeps its last picked point; a moved press is an orbit drag, never a
+pick. The pick outcome is exposed for tests as `window.__PETEK_SCENE3D_PICK`.
 
 ### Wells (canvas 2-D)
 Multi-well **log correlation** (the `wells_logs` bundle, schema v4). N wells
@@ -272,8 +287,10 @@ the renderer is horizontal capability.
   of the same bundle.
 - **Legends are always present** for ≥2 identities; **SI-labelled** with the value
   range read from the bundle. Thin marks, recessive hairline axes/grid.
-- **Hover readout is the default** on every tab; hit targets are larger than the
-  marks.
+- **A readout is always available**; hit targets are larger than the marks. The
+  Map and 3D tabs are **click-to-inspect** (hover shows nothing; a still click
+  anchors a persistent readout at the clicked location); the Intersection /
+  Wells / Charts tabs keep their hover readouts.
 - **Dark mode is selected, not auto-flipped** — a `☾`/`☀` toggle swaps a second,
   separately-chosen set of token steps validated for CVD + contrast.
 
