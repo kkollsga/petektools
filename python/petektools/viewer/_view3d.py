@@ -27,11 +27,13 @@ from ._save import save_view
 from ._server import serve
 from ._v3 import _le_bytes
 from ._view2d import (
+    _LayerMesh,
     _grid_lines,
     _is_geometry,
     _is_trimesh,
     _iso_contours,
     _item_name,
+    _mesh_lines,
     _parse_spec,
     _points,
     _rings,
@@ -49,6 +51,7 @@ def view3d_payload(
     max_grid_lines: int = 800,
     max_line_points: int = 1000,
     point_limit: int | None = 200_000,
+    max_mesh_edges: int | None = 150_000,
     z_exaggeration: float = 5.0,
 ) -> dict[str, Any]:
     """Build a generic 3-D scene payload from the view2d item conventions.
@@ -58,13 +61,18 @@ def view3d_payload(
 
     - points: ``xyz()``/``xy()`` or a sequence of ``[x, y, z?]`` rows — a
       colour-coded 3-D point cloud (compact base64 ``f32`` block on the wire)
-    - geometry: ``node_xy(i, j)``, ``ncol``, ``nrow``, optional ``edge`` — the
-      lattice lines render as a flat grid at the scene's reference elevation
-      (``scene3d.ref_z``, the midpoint of the scene's z extent; geometries
-      carry no z of their own), clipped to ``edge`` exactly as in 2-D
-    - trimesh: ``triangles()`` over ``xyz()``/``points()`` vertices — a 3-D
-      surface mesh; neutral-shaded (with a wireframe toggle) unless ``fill=``
-      opts it into value colouring
+    - geometry: ``node_xy(i, j)``, ``ncol``, ``nrow``, optional ``edge`` — a
+      FLAT lattice grid, clipped to ``edge`` exactly as in 2-D, placed at the
+      scene's SHALLOWEST point (a geometry carries no z of its own; z is
+      elevation, negative down → shallowest = the scene's max finite z; an
+      all-flat scene parks it at ``ref_z``), edge rings at the same level
+    - trimesh passed BARE (``triangles()`` over ``xyz()``/``points()``
+      vertices, e.g. the petekio ``infer_geometry`` TriSurface fallback): a
+      FLAT WIREFRAME GRID — its unique triangle edges (or
+      ``wireframe_edges()``) as lattice lines placed at the SHALLOWEST point
+      of its own nodes (max finite vertex z), edge rings at that same level.
+      Only ``fill=`` renders it as a value-coloured surface — SOLID layers
+      never appear from a bare non-``surface`` item (owner ruling)
     - value fill (opt-in via ``fill=``): ``value_layer(attr=None)`` — the
       returned ``{"name", "nodes", "triangles", "values", "range"}`` layer IS
       the surface: it renders once, value-coloured. A node row may carry
@@ -81,13 +89,18 @@ def view3d_payload(
       z ELEVATION (negative down) — a 3-D bore path with a wellhead marker,
       identity-coloured; optional ``id``/``name`` labels it
     - outline: ``rings()`` of ``[x, y]`` rows — flat rings at ``ref_z``
-    - structured surface passed BARE (value-bearing, e.g. petekio's regular
-      ``Surface`` — ``value_layer()`` + a 2-D ``.geometry``, no top-level
-      trimesh/geometry ducks): renders its STRUCTURE as a NEUTRAL elevation
-      mesh from the primary value layer (value-as-elevation; ``values`` stay
-      null → neutral shading + the wireframe toggle — never value-coloured
-      without ``fill=``); an item with only a 2-D ``.geometry`` falls back
-      to lattice lines at ``ref_z``
+    - a TRUE regular surface passed BARE (``kind == "surface"``, e.g.
+      petekio's regular ``Surface`` — ``value_layer()`` + a 2-D
+      ``.geometry``): the ONLY item kind that may render a SOLID surface
+      layer bare — its STRUCTURE renders as a NEUTRAL elevation mesh from the
+      primary value layer (value-as-elevation; ``values`` stay null → neutral
+      shading + the wireframe toggle — never value-coloured without
+      ``fill=``). Every OTHER ``.geometry``-bearing / value-bearing item
+      passed bare renders FLAT: its ``.geometry`` lattice lines (or,
+      geometry-less, its primary value layer's triangle edges) placed at the
+      SHALLOWEST point of its own nodes (max finite node elevation; falling
+      back to the scene's shallowest point when it carries no z), with edge
+      rings at that same level
 
     ``color=`` / ``fill=`` / ``contours=`` keep their exact view2d semantics
     and grammar: ``color=`` colours POINTS by z (default ON; ``color=False``
@@ -119,7 +132,8 @@ def view3d_payload(
     lattices: list[dict[str, Any]] = []
     contour_sets: list[dict[str, Any]] = []
     wells: list[dict[str, Any]] = []
-    outlines: list[list[list[float]]] = []
+    outlines: list[Any] = []  # plain rings (ref_z) + {"points", "z"} flat rings
+    flat_rings: list[dict[str, Any]] = []  # rings tied to a flat item's level
     layers: list[dict[str, Any]] = []
     summary: dict[str, Any] = {}
     point_zs: list[float] = []
@@ -149,24 +163,46 @@ def view3d_payload(
                 contributed = True
 
         if _is_geometry(item):
+            # a z-less geometry renders as a FLAT lattice at the SCENE's
+            # shallowest point (z=None resolves after the loop), edge rings at
+            # the same level (owner ruling: flat, never a solid layer).
             edge = getattr(item, "edge", None)
             edge_rings = _rings(edge) if edge is not None else []
             lines = _grid_lines(
                 item, max_grid_lines, max_line_points, clip_rings=edge_rings
             )
-            lattices.append({"name": name, "lines": lines})
-            outlines.extend(edge_rings)
+            lattices.append({"name": name, "lines": lines, "z": None})
+            for ring in edge_rings:
+                flat_rings.append({"points": ring, "z": None})
             summary["grid"] = f"{int(getattr(item, 'ncol'))} x {int(getattr(item, 'nrow'))}"
             layers.append({"kind": "lines", "name": name})
             continue
 
         if _is_trimesh(item):
-            if not mesh_added:
-                meshes.append(_neutral_mesh(item, name))
-                n_triangles += len(meshes[-1]["triangles"])
             edge = getattr(item, "edge", None)
-            if edge is not None:
-                outlines.extend(_rings(edge))
+            edge_rings = _rings(edge) if edge is not None else []
+            if mesh_added:
+                # fill= opted this mesh into the value-coloured surface;
+                # its edge rings keep the ref_z plane (pre-ruling behaviour)
+                outlines.extend(edge_rings)
+                continue
+            # BARE trimesh (e.g. the infer_geometry TriSurface fallback):
+            # a FLAT WIREFRAME GRID at the item's own shallowest point
+            # (max finite vertex elevation), edge rings at the same level —
+            # solid layers are for kind == "surface" only (owner ruling).
+            lines, n_tris, edge_stride = _mesh_lines(
+                item, max_mesh_edges, max_line_points
+            )
+            z_flat = _verts_shallowest(
+                item.xyz() if hasattr(item, "xyz") else item.points()
+            )
+            lattices.append({"name": name, "lines": lines, "z": z_flat})
+            for ring in edge_rings:
+                flat_rings.append({"points": ring, "z": z_flat})
+            summary["triangles"] = summary.get("triangles", 0) + n_tris
+            if edge_stride > 1:
+                summary["mesh_edge_stride"] = edge_stride
+            layers.append({"kind": "lines", "name": name})
             continue
 
         if _is_well(item):
@@ -194,15 +230,18 @@ def view3d_payload(
         if contributed:
             continue  # a fill/contour-only item carries no further geometry
 
-        # STRUCTURE fallback for value-bearing items passed bare (the petekio
-        # regular-Surface duck: value_layer()/iso_lines() + a 2-D .geometry,
-        # no top-level node_xy/triangles/xyz): the primary value layer's
-        # nodes ARE the surface — render it as a NEUTRAL elevation mesh
-        # (``values``/``range`` null → the neutral material + wireframe
-        # toggle; colouring stays a ``fill=`` opt-in). An item carrying only
-        # a 2-D ``.geometry`` falls back to lattice lines at ``ref_z``.
+        # STRUCTURE fallback for value-bearing items passed bare. SOLID
+        # surface layers are for kind == "surface" ONLY (owner ruling): a
+        # TRUE regular surface renders its primary value layer as a NEUTRAL
+        # elevation mesh (``values``/``range`` null → the neutral material +
+        # wireframe toggle; colouring stays a ``fill=`` opt-in). Every OTHER
+        # geometry-ish item renders FLAT: its ``.geometry`` lattice lines
+        # (or, geometry-less, the primary layer's triangle edges) at the
+        # SHALLOWEST point of its own nodes — max finite elevation, the
+        # scene's shallowest point when it carries no z — with edge rings at
+        # that same level.
         entry = _value_mesh(item, None)
-        if entry is not None:
+        if getattr(item, "kind", None) == "surface" and entry is not None:
             entry["values"] = None
             entry["range"] = None
             entry["name"] = "mesh"
@@ -210,10 +249,29 @@ def view3d_payload(
             meshes.append(entry)
             n_triangles += len(entry["triangles"])
             continue
+        z_flat = _verts_shallowest(entry["nodes"]) if entry is not None else None
         geom = getattr(item, "geometry", None)
         if geom is not None and _is_geometry(geom):
-            lines = _grid_lines(geom, max_grid_lines, max_line_points, clip_rings=[])
-            lattices.append({"name": name, "lines": lines})
+            edge = getattr(item, "edge", None)
+            if edge is None:
+                edge = getattr(geom, "edge", None)
+            edge_rings = _rings(edge) if edge is not None else []
+            lines = _grid_lines(
+                geom, max_grid_lines, max_line_points, clip_rings=edge_rings
+            )
+            lattices.append({"name": name, "lines": lines, "z": z_flat})
+            for ring in edge_rings:
+                flat_rings.append({"points": ring, "z": z_flat})
+            layers.append({"kind": "lines", "name": name})
+            continue
+        if entry is not None:
+            lines, n_tris, edge_stride = _mesh_lines(
+                _LayerMesh(entry), max_mesh_edges, max_line_points
+            )
+            lattices.append({"name": name, "lines": lines, "z": z_flat})
+            summary["triangles"] = summary.get("triangles", 0) + n_tris
+            if edge_stride > 1:
+                summary["mesh_edge_stride"] = edge_stride
             layers.append({"kind": "lines", "name": name})
             continue
 
@@ -227,10 +285,23 @@ def view3d_payload(
         rng = color_spec["range"] or [min(point_zs), max(point_zs)]
         point_color = {"by": "z", "range": [float(rng[0]), float(rng[1])]}
 
+    # Resolve z-less flat items (a bare GridGeometry lattice + its rings) to
+    # the SCENE's shallowest point (z is elevation, negative down → max
+    # finite z over the scene's own data); null when the scene is all-flat
+    # (the JS falls back to ref_z).
+    scene_shallowest = _scene_shallowest(point_zs, meshes, wells, lattices, flat_rings)
+    for lat in lattices:
+        if lat["z"] is None:
+            lat["z"] = scene_shallowest
+    for fr in flat_rings:
+        if fr["z"] is None:
+            fr["z"] = scene_shallowest
+    outlines.extend(flat_rings)
+
     summary["points"] = n_points
     if meshes:
         summary["meshes"] = len(meshes)
-        summary["triangles"] = n_triangles
+        summary["triangles"] = summary.get("triangles", 0) + n_triangles
     if lattices:
         summary["lattices"] = len(lattices)
     if wells:
@@ -283,6 +354,7 @@ def view3d(
     max_grid_lines: int = 800,
     max_line_points: int = 1000,
     point_limit: int | None = 200_000,
+    max_mesh_edges: int | None = 150_000,
     z_exaggeration: float = 5.0,
 ) -> str | dict[str, Any]:
     """Open or save a generic 3-D scene view (the viewer's **3D** tab).
@@ -302,6 +374,7 @@ def view3d(
         max_grid_lines=max_grid_lines,
         max_line_points=max_line_points,
         point_limit=point_limit,
+        max_mesh_edges=max_mesh_edges,
         z_exaggeration=z_exaggeration,
     )
     if save is not None:
@@ -407,23 +480,40 @@ def _value_mesh(item: Any, attr: str | None) -> dict[str, Any] | None:
     }
 
 
-def _neutral_mesh(item: Any, name: str | None) -> dict[str, Any]:
-    """A trimesh item's raw 3-D surface (no value colouring — neutral shading)."""
-    verts = item.xyz() if hasattr(item, "xyz") else item.points()
-    nodes: list[list[float | None]] = []
-    for row in verts:
+def _verts_shallowest(rows: Any) -> float | None:
+    """The SHALLOWEST elevation among vertex/node rows — z is elevation
+    (negative down), so shallowest = the max finite third component. ``None``
+    when no row carries a finite z (a z-less item defers to the scene)."""
+    best: float | None = None
+    for row in rows:
         vals = list(row)
-        z = float(vals[2]) if len(vals) > 2 else math.nan
-        nodes.append([float(vals[0]), float(vals[1]), z if math.isfinite(z) else None])
-    triangles = [[int(t[0]), int(t[1]), int(t[2])] for t in item.triangles()]
-    return {
-        "name": "mesh",
-        "display_name": name,
-        "nodes": nodes,
-        "triangles": triangles,
-        "values": None,
-        "range": None,
-    }
+        if len(vals) < 3 or vals[2] is None:
+            continue
+        z = float(vals[2])
+        if math.isfinite(z) and (best is None or z > best):
+            best = z
+    return best
+
+
+def _scene_shallowest(
+    point_zs: list[float],
+    meshes: list[dict[str, Any]],
+    wells: list[dict[str, Any]],
+    lattices: list[dict[str, Any]],
+    flat_rings: list[dict[str, Any]],
+) -> float | None:
+    """The scene's shallowest point (max finite elevation over its own data) —
+    the fallback level for z-less flat items. ``None`` for an all-flat scene."""
+    zs = [z for z in point_zs if math.isfinite(z)]
+    for mesh in meshes:
+        zs.extend(n[2] for n in mesh["nodes"] if n[2] is not None)
+    for well in wells:
+        zs.extend(p[2] for p in well["trajectory"] if p[2] is not None)
+    zs.extend(lat["z"] for lat in lattices if lat["z"] is not None)
+    zs.extend(fr["z"] for fr in flat_rings if fr["z"] is not None)
+    if not zs:
+        return None
+    return float(max(zs))
 
 
 def _ref_z(
@@ -433,8 +523,9 @@ def _ref_z(
 ) -> float:
     """The flat-element elevation: midpoint of the scene's finite z extent.
 
-    Geometries and outline rings carry no z of their own, so their lattice
-    lines / rings render at this reference plane (0.0 for an all-flat scene).
+    Plain outline rings carry no z of their own and render at this reference
+    plane (0.0 for an all-flat scene); it is also the JS fallback for a flat
+    lattice whose ``z`` is null (an all-flat scene).
     """
     zs = list(point_zs)
     for mesh in meshes:

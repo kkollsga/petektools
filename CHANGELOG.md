@@ -7,6 +7,23 @@ All notable changes to petekTools are recorded here. Format follows
 ## [Unreleased]
 
 ### Changed
+- **view3d: geometry renders flat — solid layers are for surfaces only**
+  (owner ruling). Only a TRUE regular surface (`kind == "surface"`, the
+  petekio `Surface` duck) passed bare renders a SOLID surface layer (the
+  neutral elevation mesh; value-coloured under `fill=`). Every other
+  geometry-ish item passed bare — a trimesh (e.g. the petekio
+  `infer_geometry` TriSurface fallback), a GridGeometry lattice, a
+  `.geometry`-bearing value item — now renders as a FLAT WIREFRAME GRID
+  placed at the SHALLOWEST point of its own nodes (z is elevation, negative
+  down → max finite node z; a z-less geometry falls back to the scene's
+  shallowest point), with its edge rings at that same level. `fill=` on a
+  value-bearing item still yields the value-coloured mesh (explicit opt-in
+  unchanged). Payload: `Lattice3D` gains `z: float | null` (`null` → `ref_z`)
+  and `scene3d.outlines` accepts object-form `{points, z}` rings — both
+  additive; `view3d`/`view3d_payload` gain `max_mesh_edges` (wireframe edge
+  budget, view2d parity). The rendered flat level is exposed for tests as
+  `__PETEK_SCENE3D_STATUS.latticeZ`. The 2-D map already renders these items
+  flat — no view2d change.
 - **Click-to-inspect replaces hover tooltips** on the viewer's Map and 3D tabs
   (owner ruling). Hover shows nothing; a still click on/near an object (2-D:
   the grid-bucket point hit-test, then a raster cell; 3-D: `THREE.Raycaster`

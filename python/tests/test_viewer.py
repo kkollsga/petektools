@@ -935,19 +935,33 @@ def test_view3d_fill_spec_overrides_range_and_attr_stays_flat():
     assert all(n[2] is None for n in p2["scene3d"]["meshes"][0]["nodes"])
 
 
-def test_view3d_trimesh_neutral_vs_value_colored():
-    # no fill: a trimesh renders as ONE neutral mesh (values None — the JS gives
-    # it the neutral material + the wireframe option)
+def test_view3d_bare_trimesh_renders_flat_wireframe():
+    # OWNER RULING (2026-07-11, geometry-renders-flat): a bare trimesh (e.g.
+    # the petekio infer_geometry TriSurface fallback) is NOT a solid surface —
+    # it renders as a FLAT WIREFRAME GRID at the SHALLOWEST point of its own
+    # nodes (z is elevation, negative down → max finite vertex z), with the
+    # edge rings plotted at that SAME level. (Adjusted from the pre-ruling
+    # neutral-elevation-mesh behaviour.)
     p = viewer.view3d_payload([_ValueMesh()])
-    assert len(p["scene3d"]["meshes"]) == 1
-    m = p["scene3d"]["meshes"][0]
-    assert m["values"] is None and m["range"] is None and m["name"] == "mesh"
-    assert m["nodes"][0] == [0.0, 0.0, 1.0]  # xyz vertices carry their own z
-    # fill=: the value_layer IS the surface — one value-coloured mesh, never a
-    # neutral duplicate on top
+    sc = p["scene3d"]
+    assert sc["meshes"] == []  # never a solid layer without fill=
+    assert len(sc["lattices"]) == 1
+    lat = sc["lattices"][0]
+    assert lat["z"] == 4.0  # max z over the _Mesh verts (1, 2, 3, 4)
+    assert sum(len(line) - 1 for line in lat["lines"]) == 5  # unique tri edges
+    assert p["summary"]["triangles"] == 2
+    # the edge rings ride at the SAME flat level (object-form outline entries)
+    assert sc["outlines"] == [{
+        "points": [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0], [0.0, 0.0]],
+        "z": 4.0,
+    }]
+    assert {"kind": "lines", "name": None} in sc["layers"]
+    # fill=: the value_layer IS the surface — one value-coloured mesh, no
+    # wireframe duplicate (explicit opt-in unchanged)
     p2 = viewer.view3d_payload([_ValueMesh()], fill=True)
     assert len(p2["scene3d"]["meshes"]) == 1
     assert p2["scene3d"]["meshes"][0]["values"] is not None
+    assert p2["scene3d"]["lattices"] == []
 
 
 def test_view3d_wells_duck_type():
@@ -1040,6 +1054,53 @@ def test_view3d_geometry_only_item_falls_back_to_lattice():
     sc = p["scene3d"]
     assert sc["meshes"] == [] and len(sc["lattices"]) == 1 and sc["lattices"][0]["lines"]
     assert {"kind": "lines", "name": "holder"} in sc["layers"]
+    assert sc["lattices"][0]["z"] is None  # all-flat scene → the JS ref_z plane
+
+
+def test_view3d_zless_geometry_lattice_at_scene_shallowest():
+    # OWNER RULING: a z-less GridGeometry lattice renders flat at the SCENE's
+    # shallowest point (max finite z over the scene's own data)
+    p = viewer.view3d_payload([_Points3D(), _Geom3D()])
+    assert p["scene3d"]["lattices"][0]["z"] == -2600.0  # shallowest point z
+    # alone (no z anywhere) the level stays null → the JS ref_z fallback
+    p2 = viewer.view3d_payload([_Geom3D()])
+    assert p2["scene3d"]["lattices"][0]["z"] is None
+
+
+def test_view3d_non_surface_geometry_bearing_item_renders_flat():
+    # OWNER RULING: only kind == "surface" may render a solid layer bare —
+    # any other .geometry-bearing value-bearing item (e.g. the infer_geometry
+    # TriSurface fallback exposing a .geometry) renders its lattice FLAT at
+    # the shallowest of its OWN nodes (value-as-elevation for 2-D nodes)
+    class TriSurfaceish(_SurfaceDuck):
+        kind = "tri_surface"
+
+    item = TriSurfaceish()
+    p = viewer.view3d_payload([item])
+    sc = p["scene3d"]
+    assert sc["meshes"] == []  # no solid layer for a non-surface kind
+    assert len(sc["lattices"]) == 1
+    assert sc["lattices"][0]["z"] == -2600.0  # max of its own node elevations
+    assert {"kind": "lines", "name": "Top Dome"} in sc["layers"]
+
+
+def test_view3d_bare_value_layer_only_item_draws_flat_wireframe():
+    # geometry-less value-bearing item (no kind): the primary layer's triangle
+    # edges become a FLAT wireframe at its own shallowest node elevation
+    class LayerOnly:
+        name = "Top Dome"
+
+        def value_layer(self, attr=None):
+            return _SurfaceDuck().value_layer(attr)
+
+    p = viewer.view3d_payload([LayerOnly()])
+    sc = p["scene3d"]
+    assert sc["meshes"] == []
+    assert len(sc["lattices"]) == 1
+    lat = sc["lattices"][0]
+    assert lat["z"] == -2600.0
+    assert sum(len(line) - 1 for line in lat["lines"]) == 5  # unique tri edges
+    assert {"kind": "lines", "name": "Top Dome"} in sc["layers"]
 
 
 def test_view3d_rejects_unknown_items():

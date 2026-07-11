@@ -128,10 +128,17 @@
     (sc.wells || []).forEach(function (w) {
       w.trajectory.forEach(function (p) { ext(p[0], p[1], p[2] == null ? NaN : p[2]); });
     });
+    // a lattice may carry its own flat level (L.z, the item's shallowest
+    // point); an outline entry may be object-form {points, z} — both fall
+    // back to ref_z (older payloads / all-flat scenes).
     (sc.lattices || []).forEach(function (L) {
-      L.lines.forEach(function (line) { line.forEach(function (p) { ext(p[0], p[1], refZ); }); });
+      var lz = L.z != null ? L.z : refZ;
+      L.lines.forEach(function (line) { line.forEach(function (p) { ext(p[0], p[1], lz); }); });
     });
-    (sc.outlines || []).forEach(function (ring) { ring.forEach(function (p) { ext(p[0], p[1], refZ); }); });
+    (sc.outlines || []).forEach(function (entry) {
+      var ring = entry.points || entry, oz = entry.z != null ? entry.z : refZ;
+      ring.forEach(function (p) { ext(p[0], p[1], oz); });
+    });
     (sc.contours || []).forEach(function (cs) {
       cs.lines.forEach(function (line) { line.forEach(function (p) { ext(p[0], p[1], cs.level); }); });
     });
@@ -155,6 +162,7 @@
       _for: sc, _colormap: S.colormap,
       pointObjs: [], meshObjs: [], wellObjs: [],
       latticeObjs: [], contourObjs: [], outlineObjs: [],
+      latticeZ: [], // per-lattice rendered flat level (data-space; tests)
       pointCount: 0, triangleCount: 0,
       extent: { dx: Math.max(xmax - xmin, ymax - ymin) || 1, dz: (zmax - zmin) || 1 },
       depthRange: { min: zmin, max: zmax },
@@ -229,12 +237,17 @@
       built.triangleCount += idx.length / 3;
     });
 
-    // ---- geometry lattice lines: one LineSegments per geometry at ref_z -----
+    // ---- flat lattice lines (geometry grids + bare-item wireframes): one
+    // LineSegments per lattice at its own flat level (L.z; ref_z fallback) --
     (sc.lattices || []).forEach(function (L) {
-      var obj = polylinesToSegments(L.lines, function (p) { return [p[0] - cx, refZ - cz, p[1] - cy]; }, token("--muted"));
+      var lz = L.z != null ? L.z : refZ;
+      var obj = polylinesToSegments(L.lines, function (p) { return [p[0] - cx, lz - cz, p[1] - cy]; }, token("--muted"));
       if (obj) {
         obj.userData.petek = { kind: "lines", name: L.name, label: L.name ? pretty(L.name) : "grid lines" };
         s3d.group.add(obj); built.latticeObjs.push(obj);
+        // the REAL rendered level, read back from the built geometry (tests)
+        built.latticeZ.push(obj.geometry.attributes.position.count
+          ? +(obj.geometry.attributes.position.getY(0) + cz).toFixed(6) : null);
       }
     });
 
@@ -260,9 +273,11 @@
       s3d.group.add(mj); built.contourObjs.push(mj);
     }
 
-    // ---- outline rings (flat at ref_z) ---------------------------------------
-    (sc.outlines || []).forEach(function (ring) {
-      var obj = polylinesToSegments([ring], function (p) { return [p[0] - cx, refZ - cz, p[1] - cy]; }, token("--text-secondary"));
+    // ---- outline rings: plain rings flat at ref_z; object-form {points, z}
+    // rings at their flat item's level ----------------------------------------
+    (sc.outlines || []).forEach(function (entry) {
+      var ring = entry.points || entry, oz = entry.z != null ? entry.z : refZ;
+      var obj = polylinesToSegments([ring], function (p) { return [p[0] - cx, oz - cz, p[1] - cy]; }, token("--text-secondary"));
       if (obj) {
         obj.userData.petek = { kind: "outline", label: "outline" };
         s3d.group.add(obj); built.outlineObjs.push(obj);
@@ -306,6 +321,7 @@
     setScene3dStatus("ok", {
       points: built.pointCount, triangles: built.triangleCount,
       meshes: built.meshObjs.length, wells: (sc.wells || []).length,
+      lattices: built.latticeObjs.length, latticeZ: built.latticeZ,
       buildMs: built.buildMs,
     });
   }

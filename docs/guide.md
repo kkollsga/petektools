@@ -239,10 +239,15 @@ doc's MapBundle notes for the exact payload shapes.
 handling plus wells (`trajectory()` of `[x, y, z]` rows, z elevation —
 negative down), the same `color=` / `fill=` / `contours=` semantics and spec
 grammar, and the same per-layer legend. Points render as a colour-coded 3-D
-cloud (compact binary blocks, smooth at the 200k default cap),
-surfaces/trimeshes value-colour under `fill=` (neutral + wireframe toggle
-otherwise), geometry lattices/outlines draw flat at the scene's reference
-elevation, and contours draw at their level. A `z_exaggeration=` kwarg seeds
+cloud (compact binary blocks, smooth at the 200k default cap). **Solid
+surface layers are for surfaces only**: a true regular surface
+(`kind == "surface"`) passed bare renders a neutral elevation mesh
+(value-coloured under `fill=`); every other geometry-ish item passed bare —
+a bare trimesh, a grid-geometry lattice, a `.geometry`-bearing value item —
+renders as a flat wireframe grid at the shallowest point of its own nodes
+(z is elevation, negative down; a z-less geometry uses the scene's
+shallowest point), edge rings at the same level. Contours draw at their
+level. A `z_exaggeration=` kwarg seeds
 the tab's z-exaggeration slider (display-only, default 5x — the volume tab's
 control). Inspection on both the Map and 3D tabs is **click-driven**: hover
 shows nothing; a still click on/near an object anchors a readout (dataset

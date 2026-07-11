@@ -1080,6 +1080,51 @@ def test_scene3d_smoke_renders_all_layer_kinds(tmp_path):
 
 
 @pytest.mark.skipif(not _HAVE_PW, reason="playwright + chromium not available (browser leg)")
+def test_scene3d_bare_trimesh_flat_wireframe_at_shallowest_z(tmp_path):
+    # OWNER RULING (geometry-renders-flat): a bare trimesh never renders a
+    # solid surface — it renders as a FLAT WIREFRAME GRID at the shallowest
+    # point of its own nodes. Assert against the REAL built Three.js geometry
+    # (status.latticeZ reads the rendered level back from the buffer).
+    from petektools import viewer
+
+    class BareTri:
+        name = "Inferred TriSurface"
+
+        def xyz(self):
+            n = 9
+            return [
+                [i * 500.0, j * 500.0, -2650.0 + 100.0 * (i + j) / (2 * (n - 1))]
+                for j in range(n) for i in range(n)
+            ]
+
+        def triangles(self):
+            n = 9
+            tris = []
+            for j in range(n - 1):
+                for i in range(n - 1):
+                    a = j * n + i
+                    tris.append([a, a + 1, a + n])
+                    tris.append([a + 1, a + n + 1, a + n])
+            return tris
+
+    payload = viewer.view3d_payload([_S3dPoints(2000), BareTri()])
+    sc = payload["scene3d"]
+    assert sc["meshes"] == []  # no solid layer without fill=
+    assert sc["lattices"][0]["z"] == -2550.0  # max finite vertex z
+    view = tmp_path / "scene3d_flat.html"
+    save_view(payload, view)
+    r = _run_scene3d(view)
+    assert r["rc"] == 0, r.get("failure") or r.get("stderr")
+    assert not r.get("consoleErrors"), r["consoleErrors"]
+    st = r["status"]
+    assert st["state"] == "ok" and st["meshes"] == 0 and st["lattices"] == 1
+    # the wireframe RENDERED at the expected flat level (read back from the
+    # built geometry, data-space elevation)
+    assert abs(st["latticeZ"][0] - (-2550.0)) < 1e-3, st
+    print(f"\n[scene3d] flat wireframe: lattices={st['lattices']} at z={st['latticeZ']}")
+
+
+@pytest.mark.skipif(not _HAVE_PW, reason="playwright + chromium not available (browser leg)")
 def test_scene3d_200k_points_build_and_render_budget(tmp_path):
     view, payload = _build_scene3d_view(tmp_path, "scene3d_200k.html", SCENE3D_POINTS_N)
     cloud = payload["scene3d"]["points"][0]

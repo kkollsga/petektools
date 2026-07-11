@@ -335,11 +335,11 @@ names + ramp/clamped range) drives the 3D tab's legend.
 |---|---|---|
 | `schema_version` | int | `1` |
 | `points` | list[PointCloud3D] | one `THREE.Points` per cloud, per-vertex ramp colours |
-| `meshes` | list[Mesh3D] | surface meshes — value-coloured (`fill=`) or neutral + a wireframe toggle |
-| `lattices` | list[Lattice3D] | geometry grid lines (`LineSegments`), flat at `ref_z` |
+| `meshes` | list[Mesh3D] | SOLID surface meshes — value-coloured (`fill=`) or neutral + a wireframe toggle. Emitted bare only by a TRUE regular surface (`kind == "surface"`) — see the classification note below |
+| `lattices` | list[Lattice3D] | flat lattice grids (`LineSegments`) — geometry grids AND bare-item flat wireframes, each at its own `z` level (`ref_z` fallback) |
 | `contours` | list[ContourSet] | the SAME shape as `map.contours`; each polyline renders at `z = level` (major levels stroke stronger) |
 | `wells` | list[Well3D] | identity-coloured bore paths + a screen-sized wellhead marker |
-| `outlines` | list[Ring] | edge rings (`[[x, y], …]`), flat at `ref_z` |
+| `outlines` | list[Ring \| FlatRing] | edge rings — a plain `Ring` (`[[x, y], …]`) renders flat at `ref_z`; an object-form `FlatRing` `{points: Ring, z: float \| null}` renders at its flat item's level (additive) |
 | `layers` | list[LayerName] | per-layer legend entries, emission order — `{kind: "points"\|"lines"\|"contours"\|"wells", name: str \| null}` (duck-typed producer names; fallback: the kind). Value meshes self-describe via `display_name`, like 2-D fills |
 | `point_color` | PointColor \| null | as `map.point_color`: `{by: "z", range: [min, max]}` — the explicit `color=` clamp range or the data z range; out-of-range values clamp to the ramp ends |
 | `colormap` | str \| null | the payload-pinned initial colormap (the parsed `color=`/`fill=` `<cmap>`) |
@@ -357,16 +357,29 @@ colour (never colour-guessed). The Python builder decimates each cloud past
 …], triangles: [[a, b, c], …], values: float[len(nodes)] | null, range:
 [min, max] | null}`. `values`+`range` present → per-vertex colormap colouring
 (the user's `fill=` clamp range when specified; a `null` value renders the
-neutral colour); absent → the neutral material with a panel wireframe toggle —
-also the shape a value-bearing item passed BARE (no `fill=`) emits: its
-primary value layer supplies the node elevations while `values`/`range` stay
-null (structure, never a bare-colour side effect).
+neutral colour); absent → the neutral material with a panel wireframe toggle.
 A triangle touching a `null`-z node is **skipped** (a hole, never guessed).
 `name` is the attribute identity (e.g. `"z"`); `display_name` the duck-typed
 source-object name (e.g. `"Top Dome"`).
 
-**Lattice3D:** `{name: str | null, lines: [[[x, y], …], …]}` — the 2-D
-geometry lattice polylines (clipped to `edge` exactly as on the Map tab).
+**Bare-item classification (owner ruling 2026-07-11 — solid layers are for
+surfaces only).** Only a TRUE regular surface (`kind == "surface"`, e.g.
+petekio's `Surface`) may emit a SOLID `Mesh3D` bare: its primary value layer
+becomes a NEUTRAL elevation mesh (`values`/`range` null — never
+value-coloured without `fill=`). Every OTHER geometry-ish item passed bare —
+a trimesh (e.g. the `infer_geometry` TriSurface fallback), a GridGeometry
+lattice, a `.geometry`-bearing value item — emits a FLAT `Lattice3D`
+wireframe placed at the SHALLOWEST point of its own nodes (z is elevation,
+negative down → max finite node z; a z-less GridGeometry falls back to the
+SCENE's shallowest point, null → `ref_z` for an all-flat scene), with its
+edge rings emitted as object-form `outlines` entries at that SAME level.
+`fill=` still opts any value-bearing item into the value-coloured mesh
+(explicit opt-in unchanged).
+
+**Lattice3D:** `{name: str | null, lines: [[[x, y], …], …], z: float | null}`
+— flat lattice polylines (geometry grids clipped to `edge` exactly as on the
+Map tab, or a bare item's wireframe edges), rendered at elevation `z`
+(`null`/absent → `ref_z`; additive — older payloads carry no `z`).
 
 **Well3D:** `{id: str, trajectory: [[x, y, z | null], …]}` — z is ELEVATION
 (negative down; note the 2-D `WellTrack.trajectory` carries positive-down
@@ -380,9 +393,10 @@ preview with a loud "Decimated preview" banner and a `1:stride` badge — never
 a refusal, crash, or silent blank. A malformed bundle surfaces a banner + an
 `error` status instead of a blank canvas. The build outcome is exposed for
 tests as `window.__PETEK_SCENE3D_STATUS` (`{state: "ok"|"error", points,
-triangles, meshes, wells, buildMs}`). z-exaggeration is a display-only group
-scale; the theme flip re-reads the line/background tokens while identities
-keep their slots.
+triangles, meshes, wells, lattices, latticeZ, buildMs}` — `latticeZ` is the
+per-lattice rendered flat level, read back from the built geometry).
+z-exaggeration is a display-only group scale; the theme flip re-reads the
+line/background tokens while identities keep their slots.
 
 **Click-to-inspect + orbit pivot (owner rulings 2026-07-11).** Hover shows
 nothing in the 3-D scene. A still **click** on/near an object

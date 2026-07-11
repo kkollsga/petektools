@@ -205,12 +205,18 @@ family convention) and renders them in **one Three.js scene** (payload
 `contours=` keep their exact view2d semantics and registry-match spec grammar:
 points render as a **single-draw-call colour-coded cloud** (compact base64 f32
 blocks on the wire, decoded on the volume tab's kernel; smooth at the 200k
-cap), surfaces/trimeshes render **value-coloured only under `fill=`** (neutral
-shading + a wireframe toggle otherwise — a value-bearing item passed bare, the
-petekio regular-`Surface` duck, renders as a neutral elevation mesh from its
-primary value layer; triangles touching a z-less node are
-holes, never guessed), geometry lattices and outline rings draw flat at the
-scene's reference elevation, contour polylines draw at their level, and wells
+cap), and **solid surface layers are for surfaces only** (owner ruling
+2026-07-11): only a TRUE regular surface (`kind == "surface"`, the petekio
+`Surface` duck) passed bare renders a solid layer — the neutral elevation
+mesh from its primary value layer (value-coloured under `fill=`; triangles
+touching a z-less node are holes, never guessed). Every other geometry-ish
+item passed bare — a trimesh (e.g. the petekio `infer_geometry` TriSurface
+fallback), a GridGeometry lattice, a `.geometry`-bearing value item — renders
+as a **flat wireframe grid** placed at the **shallowest point** of its own
+nodes (z is elevation, negative down → max finite node z; a z-less geometry
+falls back to the scene's shallowest point), with its edge rings at that same
+level; `fill=` still opts any value-bearing item into the value-coloured
+mesh. Contour polylines draw at their level, and wells
 draw identity-coloured with a screen-sized wellhead marker. The panel carries
 the colormap selector and the volume tab's **z-exaggeration** control (slider +
 "fit z ×N", display-only scale with a `z ×N` badge and true depths in the
