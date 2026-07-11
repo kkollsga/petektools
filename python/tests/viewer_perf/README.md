@@ -48,7 +48,9 @@ node render_bench.mjs <view.html> [flags]
 
 Prints one JSON line: `{decodeRenderMs, mapRenderMs, sectionRenderMs,
 chartsRenderMs, usedJSHeapMB, volBadge, degradedBanner, consoleErrors}` (plus
-`dragFrames/dragFrameMsMedian/hoverAvgMs/hoverReadout` with `--drag-events`).
+`dragFrames/dragFrameMsMedian/hoverAvgMs/hoverReadout/clickReadout` with
+`--drag-events` — hover must show NOTHING under the click-to-inspect ruling;
+the still-click probe must reveal the readout).
 
 Driven + budget-asserted by `test_viewer_perf.py` at the ledger scales — it builds
 a `save_view` HTML with a v3 volume **and** an areal map, then asserts a JS-heap
@@ -76,9 +78,11 @@ crashing.
 The worst case that made `view2d` unusable: 200k points with `point_color` set
 plus an inferred-geometry grid-line overlay. `--drag-events=N` dispatches a
 synthetic map drag (~3 mousemove events per animation frame — the rAF-coalesced
-path must repaint at most once per frame; exit 8 when it doesn't) and a non-drag
-hover sweep, and `--drag-frame-cap-ms` budget-asserts the median coalesced
-repaint (exit 9). Driven by `test_render_200k_points_pan_hover_budget`.
+path must repaint at most once per frame; exit 8 when it doesn't), a non-drag
+hover sweep (which must show NOTHING — click-to-inspect ruling) and a
+still-click probe (which must reveal the readout), and `--drag-frame-cap-ms`
+budget-asserts the median coalesced repaint (exit 9). Driven by
+`test_render_200k_points_pan_hover_budget`.
 
 Measured (this machine, headless Chromium), 200k coloured points + ~160 overlay
 lines, before → after the batched/baked/rAF point path:
@@ -89,6 +93,24 @@ lines, before → after the batched/baked/rAF point path:
 | drag repaint | 138.9 ms/event (sync per event) | 30 frames / 90 events, median 0.1 ms |
 | wheel zoom | 138.8 ms/event | ≤ ~10 ms worst frame (immediate), sub-ms blit |
 | hover mousemove | 2.6 ms (O(n) scan) | 0.1 ms (grid bucket) |
+
+## 3b. Click-to-inspect semantics (Playwright) — `inspect_bench.mjs`
+
+Drives the owner-ruled interaction semantics on the Map tab end to end: HOVER
+shows nothing; a still CLICK on/near a point reveals the readout anchored at
+the clicked location (dataset name + x/y/z) and it persists through plain
+mouse movement; clicking empty space — or the same target again — dismisses
+it; a moved press pans and never inspects. Zero-console-error watch.
+
+```bash
+node inspect_bench.mjs <view.html> --blob=WX,WY --empty=WX,WY
+```
+
+Driven by `test_map_click_inspect_hover_shows_nothing`. The 3-D twin
+(raycaster pick + readout + orbit re-target with the camera position
+unchanged, empty-click dismiss keeping the pivot, and the flat-wireframe
+lattice level) is asserted through `scene3d_bench.mjs`
+(`window.__PETEK_SCENE3D_PICK` / `__PETEK_SCENE3D_STATUS.latticeZ`).
 
 ## 4. 2-D map binary blocks (Node) — `map_decode_bench.js`
 

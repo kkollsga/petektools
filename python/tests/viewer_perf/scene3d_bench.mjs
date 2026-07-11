@@ -3,9 +3,12 @@
  * a scene3d payload renders: waits on the __PETEK_SCENE3D_STATUS build hook,
  * reads the build/first-render timings + the z-exag badge, harvests the
  * per-layer legend (headers / key rows / type icons / ramp scales / colormap
- * selector), pokes the orbit controls + wheel zoom, moves the z-exaggeration
- * slider, flips the colormap and the theme — all under the same
- * zero-console-error watch as render_bench.mjs.
+ * selector), pokes the orbit controls + wheel zoom, exercises click-to-inspect
+ * (hover shows nothing; a still click picks via raycaster, shows the readout
+ * and re-targets the orbit pivot with the camera unchanged; an empty click
+ * dismisses, keeping the pivot — window.__PETEK_SCENE3D_PICK), moves the
+ * z-exaggeration slider, flips the colormap and the theme — all under the
+ * same zero-console-error watch as render_bench.mjs.
  *
  * Run:  node scene3d_bench.mjs <view.html> [flags]
  *   --build-cap-ms=N    assert status.buildMs < N (exit 3)
