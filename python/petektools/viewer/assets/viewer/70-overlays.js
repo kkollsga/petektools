@@ -4,7 +4,7 @@
   // swatch = value fill, squiggle = contours, marker-with-leader = wells.
   // Drawn from the live tokens/colormap, so a theme flip or colormap change
   // restyles it on the next legend rebuild.
-  function typeIcon(kind, color) {
+  function typeIcon(kind, color, cmap) {
     var c = document.createElement("canvas");
     c.width = 18; c.height = 12; c.className = "type-icon";
     var x = c.getContext("2d");
@@ -28,9 +28,9 @@
       x.strokeStyle = token("--surface-1"); x.lineWidth = 1.2; x.stroke();
       x.strokeStyle = color || token("--text-secondary"); x.lineWidth = 1;
       x.beginPath(); x.moveTo(11, 6); x.lineTo(16, 6); x.stroke();
-    } else { // "fill": a filled swatch carrying the active colormap ramp
+    } else { // "fill": a filled swatch carrying the layer's colormap ramp
       var g = x.createLinearGradient(0, 0, 18, 0);
-      var stops = COLORMAPS[S.colormap] || COLORMAPS.viridis;
+      var stops = COLORMAPS[cmap || S.colormap] || COLORMAPS.viridis;
       stops.forEach(function (s, i) { g.addColorStop(i / (stops.length - 1), "rgb(" + s[0] + "," + s[1] + "," + s[2] + ")"); });
       x.fillStyle = g;
       x.fillRect(1, 1, 16, 10);
@@ -45,13 +45,14 @@
   }
   // One value-coloured legend block: [icon] name header + colormap ramp +
   // min/max scale (the range already reflects any user clamp — out-of-range
-  // values render at the ramp ends).
-  function rampBlock(lg, icon, label, lo, hi) {
+  // values render at the ramp ends). `cmap` pins the layer's own ramp
+  // (per-object colour); default: the panel colormap.
+  function rampBlock(lg, icon, label, lo, hi, cmap) {
     var h = el("h3");
     if (icon) h.appendChild(icon);
     h.appendChild(el("span", null, label));
     lg.appendChild(h);
-    var ramp = el("div", "ramp"); ramp.style.background = rampGradient(S.colormap);
+    var ramp = el("div", "ramp"); ramp.style.background = rampGradient(cmap || S.colormap);
     lg.appendChild(ramp);
     var sc = el("div", "scale");
     sc.appendChild(el("span", null, fmt(lo)));
@@ -78,10 +79,11 @@
     }
     // active value-coloured fill: type icon + display name + ramp + min/max.
     // Its `range` is the seam's two-float [min, max] (not the {min, max}
-    // object) — the user's fill= clamp range when one was specified.
+    // object) — the user's fill= clamp range when one was specified — and its
+    // own colormap pin (dict item form) drives the ramp.
     if (fill) {
       var fr = fill.range || [];
-      rampBlock(lg, typeIcon("fill"), disp(fill, fill.name), fr[0], fr[1]);
+      rampBlock(lg, typeIcon("fill", null, fill.colormap), disp(fill, fill.name), fr[0], fr[1], fill.colormap);
     }
     // identity keys present in this view
     var keys = el("div", "keys");
@@ -89,19 +91,24 @@
       var m = App.payload.map;
       // one entry per visible layer: type icon + display name (fallback: the
       // layer kind); value-coloured points get the ramp + their clamped range.
+      // A layer's OWN range/colormap (the per-object color ruling) draws its
+      // OWN ramp block; layers on the global point_color share one ramp.
       var pc = m.point_color;
       var pointsRampDrawn = false;
       mapLegendLayers(m).forEach(function (ly) {
         if (ly.kind === "points") {
           if (!S.showPoints || !(m.points || []).length) return;
           var plabel = ly.name ? pretty(ly.name) : "points";
-          if (pc && pc.range && !pointsRampDrawn) {
-            pointsRampDrawn = true;
-            rampBlock(lg, typeIcon("points", rampCss(S.colormap, 0.75)),
-              plabel + " · " + (pc.by || "z"), pc.range[0], pc.range[1]);
+          var colored = ly.colored !== false;
+          var prange = colored ? (ly.range || (pc && pc.range) || null) : null;
+          var pcmap = ly.colormap || S.colormap;
+          if (prange && (ly.range || !pointsRampDrawn)) {
+            if (!ly.range) pointsRampDrawn = true;
+            rampBlock(lg, typeIcon("points", rampCss(pcmap, 0.75)),
+              plabel + " · " + ((pc && pc.by) || "z"), prange[0], prange[1], pcmap);
           } else {
             keys.appendChild(iconKeyRow("points", plabel,
-              pc && pc.range ? rampCss(S.colormap, 0.75) : token("--accent")));
+              prange ? rampCss(pcmap, 0.75) : token("--accent")));
           }
         } else if (ly.kind === "lines") {
           if (!S.showGridLines || !(m.grid_lines || []).length) return;

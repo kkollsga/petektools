@@ -6,6 +6,24 @@ All notable changes to petekTools are recorded here. Format follows
 
 ## [Unreleased]
 
+### Added
+- **Per-object colour — the dict item form** (owner ruling; `view2d` AND
+  `view3d`). A scene item may now be a dict `{"object": obj, "color":
+  bool|spec, "fill": bool|spec, "name": str}`: per-object settings take
+  precedence over the call-level `color=`/`fill=` (which remain the defaults
+  for bare items — back-compat, `color=True` default unchanged) and `name`
+  overrides the duck-typed legend display name; the spec grammar is unchanged
+  (`_parse_spec`, shared by both builders). Colour/ramp/range now travel PER
+  LAYER: a 2-D points layer carries its slice of the shared points array
+  (`start`/`n`) plus its own resolved `range` (+ a pinned `colormap` for a
+  per-object spec; `colored: false` for an explicit `color=False`), a 3-D
+  point cloud carries the same fields, and fills/meshes carry their own
+  `colormap` — the renderer and the per-layer legend read these FIRST (each
+  legend entry shows its own ramp/range), and the global
+  `map.colormap`/`point_color` (+ `scene3d.*`) stay emitted as a fallback for
+  older payload consumers. Note: with several bare point items, each layer
+  now normalizes over its OWN data range (previously one merged range).
+
 ### Changed
 - **view3d: geometry renders flat — solid layers are for surfaces only**
   (owner ruling). Only a TRUE regular surface (`kind == "surface"`, the

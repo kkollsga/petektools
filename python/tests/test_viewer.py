@@ -451,10 +451,102 @@ def test_view2d_layers_record_duck_typed_names():
             return (i * 10.0, j * 10.0)
 
     p = viewer.view2d_payload([NamedPoints(), Geom()], color=True)
+    # points layers additionally carry their slice + per-layer colour fields
+    # (the per-object color ruling); names/kinds are unchanged
     assert p["map"]["layers"] == [
-        {"kind": "points", "name": "Top Dome"},
+        {"kind": "points", "name": "Top Dome", "start": 0, "n": 2,
+         "range": [-20.0, -10.0]},
         {"kind": "lines", "name": None},
     ]
+
+
+# --- the dict item form (per-object color/fill/name — owner ruling) -----------
+class _PtsA:
+    name = "Top Dome"
+
+    def xyz(self):
+        return [[0.0, 0.0, -10.0], [10.0, 0.0, -30.0]]
+
+
+class _PtsB:
+    name = "Base Dome"
+
+    def xyz(self):
+        return [[0.0, 5.0, -100.0], [10.0, 5.0, -300.0]]
+
+
+def test_view2d_dict_item_color_precedence_and_per_layer_fields():
+    p = viewer.view2d_payload(
+        [{"object": _PtsA(), "color": "magma_-40_-5"}, _PtsB()],
+        color="inferno",
+    )
+    layers = p["map"]["layers"]
+    # per-object spec WINS for its layer: pinned colormap + explicit clamp
+    assert layers[0]["name"] == "Top Dome"
+    assert layers[0]["colormap"] == "magma"
+    assert layers[0]["range"] == [-40.0, -5.0]
+    assert layers[0]["start"] == 0 and layers[0]["n"] == 2
+    # the bare item keeps the call-level default (no per-layer pin; its own
+    # data range rides the layer so the legend shows per-entry ramps)
+    assert "colormap" not in layers[1]
+    assert layers[1]["range"] == [-300.0, -100.0]
+    assert layers[1]["start"] == 2 and layers[1]["n"] == 2
+    # the global fallback fields stay for older payload consumers
+    assert p["map"]["colormap"] == "inferno"
+    assert p["map"]["point_color"]["range"] == [-300.0, -10.0]
+
+
+def test_view2d_dict_item_color_false_and_call_level_off():
+    # per-object color=False → that layer renders monochrome
+    p = viewer.view2d_payload([{"object": _PtsA(), "color": False}, _PtsB()])
+    layers = p["map"]["layers"]
+    assert layers[0]["colored"] is False and "range" not in layers[0]
+    assert layers[1]["range"] == [-300.0, -100.0]
+    # call-level color=False + per-object opt-in: only the dict layer colours;
+    # the global fallback reads the coloured layer's data
+    p2 = viewer.view2d_payload(
+        [{"object": _PtsA(), "color": True}, _PtsB()], color=False
+    )
+    layers2 = p2["map"]["layers"]
+    assert layers2[0]["range"] == [-30.0, -10.0]
+    assert layers2[1]["colored"] is False
+    assert p2["map"]["point_color"] == {"by": "z", "range": [-30.0, -10.0]}
+
+
+def test_view2d_dict_item_name_override():
+    p = viewer.view2d_payload([{"object": _PtsA(), "name": "Renamed"}])
+    assert p["map"]["layers"][0]["name"] == "Renamed"
+
+
+def test_view2d_dict_item_fill_precedence():
+    # per-object fill on a bare-fill call (call-level fill=False default)
+    mesh = _ValueMesh()
+    p = viewer.view2d_payload([{"object": mesh, "fill": "magma_0_2"}])
+    fill = p["map"]["fills"][0]
+    assert fill["range"] == [0.0, 2.0]
+    assert fill["colormap"] == "magma"  # per-fill pin
+    # the global colormap falls back to the first per-object pin
+    assert p["map"]["colormap"] == "magma"
+    # per-object fill=False beats a call-level fill=True
+    mesh2 = _ValueMesh()
+    p2 = viewer.view2d_payload([{"object": mesh2, "fill": False}], fill=True)
+    assert p2["map"]["fills"] == []
+    assert "value_attr" not in mesh2.seen
+    # a call-level fill spec does NOT pin per-fill colormap (selector-governed)
+    mesh3 = _ValueMesh()
+    p3 = viewer.view2d_payload([mesh3], fill="magma_0_2")
+    assert "colormap" not in p3["map"]["fills"][0]
+    assert p3["map"]["colormap"] == "magma"
+
+
+def test_view2d_dict_item_validation():
+    with pytest.raises(TypeError, match="'object' key"):
+        viewer.view2d_payload([{"color": True}])
+    with pytest.raises(ValueError, match="unknown dict-item key"):
+        viewer.view2d_payload([{"object": _PtsA(), "colour": True}])
+    # a single top-level dict item works (not iterated as keys)
+    p = viewer.view2d_payload({"object": _PtsA(), "name": "Solo"})
+    assert p["map"]["layers"][0]["name"] == "Solo"
 
 
 # --- value-coloured fills + contour lines (view2d fill= / contours=) ----------
@@ -990,6 +1082,41 @@ def test_view3d_contours_reuse_view2d_seam():
     assert [c["level"] for c in cs] == [1.5, 2.5]
     assert all({"level", "major", "lines"} == set(c) for c in cs)
     assert p["summary"]["contour_levels"] == 2
+
+
+def test_view3d_dict_item_per_cloud_and_mesh_fields():
+    p = viewer.view3d_payload(
+        [
+            {"object": _Points3D(), "color": "magma_-3000_-2500", "name": "Renamed"},
+            {"object": _ValueMesh(), "fill": "grays_0_2"},
+        ],
+        color=False,
+    )
+    sc = p["scene3d"]
+    cloud = sc["points"][0]
+    # per-object spec pins the CLOUD's own colormap + clamp range
+    assert cloud["name"] == "Renamed"
+    assert cloud["colormap"] == "magma"
+    assert cloud["range"] == [-3000.0, -2500.0]
+    assert {"kind": "points", "name": "Renamed"} in sc["layers"]
+    # per-object fill pins the MESH's own colormap + clamp range
+    mesh = sc["meshes"][0]
+    assert mesh["colormap"] == "grays"
+    assert mesh["range"] == [0.0, 2.0]
+    # call-level color=False + per-object opt-in: the global fallback reads
+    # the coloured cloud's data; the first per-object cmap seeds the global
+    assert sc["point_color"] == {"by": "z", "range": [-2900.0, -2600.0]}
+    assert sc["colormap"] == "magma"
+
+
+def test_view3d_dict_item_color_false_monochrome_cloud():
+    p = viewer.view3d_payload([{"object": _Points3D(), "color": False}])
+    cloud = p["scene3d"]["points"][0]
+    assert cloud["colored"] is False and "range" not in cloud
+    assert p["scene3d"]["point_color"] is None
+    # bare cloud under the call-level default carries its own data range
+    p2 = viewer.view3d_payload([_Points3D()])
+    assert p2["scene3d"]["points"][0]["range"] == [-2900.0, -2600.0]
 
 
 def test_view3d_point_decimation_cap():

@@ -292,8 +292,15 @@
     return Math.min(Math.abs(f.spacing_x), Math.abs(f.spacing_y)) * mapView.scale;
   }
   function computeLodActive() { return mapHasLod() && fullCellPx() < LOD_CELL_PX; }
-  // The ring to draw for a fill / a full-vs-lod field pair.
-  function fillRingFor(fill) { return (S.lodActive && fill && fill.lod) ? fill.lod : fill; }
+  // The ring to draw for a fill / a full-vs-lod field pair (the coarse ring
+  // inherits the fill's per-object colormap pin so colours stay stable).
+  function fillRingFor(fill) {
+    if (S.lodActive && fill && fill.lod) {
+      if (fill.colormap && !fill.lod.colormap) fill.lod.colormap = fill.colormap;
+      return fill.lod;
+    }
+    return fill;
+  }
   function lineSetRing(full, lodField) { return (S.lodActive && lodField) ? lodField : full; }
   // ONE shared zoom/gesture-settle debounce: 150 ms after the last wheel/drag
   // event that couldn't blit, do the deferred settle work — (1) recompute which
@@ -528,15 +535,34 @@
   //      event, at most ONE repaint per animation frame.
   function pointRadius() { return Math.max(1.5, Math.min(3.5, mapView.scale < 0.05 ? 1.5 : 2.5)); }
   var PT_ACCENT_BIN = 256; // bin index for uncoloured / non-finite-z points
+  // Per-layer point-colour plan (the per-object color ruling): points layer
+  // entries may carry {start, n, range, colormap, colored} — the JS reads the
+  // per-layer fields FIRST, falling back to the global point_color/colormap
+  // (older payloads render exactly as before through the one legacy segment).
+  function pointLayerPlan() {
+    var m = App.payload.map, pc = m.point_color;
+    var segs = [];
+    (m.layers || []).forEach(function (ly) {
+      if (ly.kind === "points" && ly.start != null && ly.n != null) segs.push(ly);
+    });
+    if (!segs.length) segs.push({ start: 0, n: ptN(m.points) }); // legacy: one segment
+    return segs.map(function (ly) {
+      var colored = ly.colored !== false;
+      var range = colored ? (ly.range || (pc && pc.range) || null) : null;
+      return { start: ly.start || 0, n: ly.n, range: range, cmap: ly.colormap || S.colormap };
+    });
+  }
   // Build the binned Path2D set under an affine transform sx = x*sc + oxx.
   // cull=true skips points outside the [0..cw, 0..ch] rect (immediate mode).
-  function buildPointPaths(pts, sc, oxx, oyy, r, pc, cull, cw, ch) {
+  // q0/q1 bound the point-index slice (a per-layer segment; default: all).
+  function buildPointPaths(pts, sc, oxx, oyy, r, pc, cull, cw, ch, q0, q1) {
     var square = r <= 2.5; // tiny marks: rects batch far faster than arcs
     var paths = new Array(257);
     var colored = !!(pc && pc.range), plo = 0, pf = 0;
     if (colored) { plo = pc.range[0]; pf = 255 / ((pc.range[1] - pc.range[0]) || 1); }
     var d = 2 * r;
-    for (var q = 0; q < ptN(pts); q++) {
+    var qa = q0 || 0, qb = q1 == null ? ptN(pts) : q1;
+    for (var q = qa; q < qb; q++) {
       var sx = ptX(pts, q) * sc + oxx, sy = ptY(pts, q) * sc + oyy;
       if (cull && (sx < -r || sy < -r || sx > cw + r || sy > ch + r)) continue;
       var bin = PT_ACCENT_BIN;
@@ -554,8 +580,8 @@
     return paths;
   }
   // One fillStyle assignment + one fill() per non-empty bin (≤257 calls total).
-  function fillPointPaths(ctx, paths, alpha) {
-    var lut = colormapLUT(S.colormap);
+  function fillPointPaths(ctx, paths, alpha, cmap) {
+    var lut = colormapLUT(cmap || S.colormap);
     ctx.globalAlpha = alpha;
     for (var b = 0; b < 256; b++) {
       if (!paths[b]) continue;
@@ -598,10 +624,12 @@
     var pts = App.payload.map.points;
     var r = pointRadius();
     var alpha = pts.length > 20000 ? 0.45 : 0.7;
-    var pc = App.payload.map.point_color;
+    var plan = pointLayerPlan(); // per-layer colour segments (global fallback)
     // everything the baked pixels depend on, except geometry/scale/window
-    var key = S.colormap + "|" + token("--accent") + "|" + r + "|" + alpha + "|" +
-      (pc && pc.range ? pc.range[0] + "," + pc.range[1] : "-");
+    var key = token("--accent") + "|" + r + "|" + alpha + "|" +
+      plan.map(function (sg) {
+        return sg.cmap + ":" + (sg.range ? sg.range[0] + "," + sg.range[1] : "-");
+      }).join(";");
     var bb = pointBBox(pts), pad = r + 2, padW = pad / mapView.scale;
     // the viewport in world coords, clamped to the (padded) cloud bbox — the
     // part the baked window must cover for a blit to be valid
@@ -628,7 +656,10 @@
         C.canvas.width = w; C.canvas.height = h; // also clears prior content
         var cox = -wx0 * mapView.scale, coy = -wy0 * mapView.scale;
         var cctx = C.canvas.getContext("2d");
-        fillPointPaths(cctx, buildPointPaths(pts, mapView.scale, cox, coy, r, pc, true, w, h), alpha);
+        plan.forEach(function (sg) {
+          fillPointPaths(cctx, buildPointPaths(pts, mapView.scale, cox, coy, r,
+            sg.range ? { range: sg.range } : null, true, w, h, sg.start, sg.start + sg.n), alpha, sg.cmap);
+        });
         C.ref = pts; C.key = key; C.scale = mapView.scale; C.cox = cox; C.coy = coy;
         C.wx0 = wx0; C.wy0 = wy0; C.wx1 = wx1; C.wy1 = wy1;
         usable = true; k = 1;
@@ -642,7 +673,10 @@
       ctx.restore();
     } else {
       // mid-gesture (or over the caps): batched immediate, viewport-culled
-      fillPointPaths(ctx, buildPointPaths(pts, mapView.scale, mapView.ox, mapView.oy, r, pc, true, cv.width, cv.height), alpha);
+      plan.forEach(function (sg) {
+        fillPointPaths(ctx, buildPointPaths(pts, mapView.scale, mapView.ox, mapView.oy, r,
+          sg.range ? { range: sg.range } : null, true, cv.width, cv.height, sg.start, sg.start + sg.n), alpha, sg.cmap);
+      });
       if (_mapHotFrame) scheduleSettle();
     }
   }
@@ -745,7 +779,8 @@
       var p = paths[bin] || (paths[bin] = new Path2D());
       p.moveTo(sx[a], sy[a]); p.lineTo(sx[b], sy[b]); p.lineTo(sx[c], sy[c]); p.closePath();
     }
-    var lut = colormapLUT(S.colormap);
+    // per-fill colormap pin (dict item form) wins over the panel selection
+    var lut = colormapLUT(fill.colormap || S.colormap);
     for (var i = 0; i < FILL_BINS; i++) {
       if (!paths[i]) continue;
       var l3 = Math.round(((i + 0.5) / FILL_BINS) * 255) * 3;
@@ -781,7 +816,7 @@
   }
   function drawMapFill(ctx, cv, fill) {
     if (!fill || !fill.nodes || !fill.nodes.length) return;
-    var key = S.colormap + "|" + (fill.range ? fill.range[0] + "," + fill.range[1] : "-");
+    var key = (fill.colormap || S.colormap) + "|" + (fill.range ? fill.range[0] + "," + fill.range[1] : "-");
     var bb = fillNodesBBox(fill);
     // the viewport in world coords, clamped to the fill bbox — the region a blit
     // must cover to be valid

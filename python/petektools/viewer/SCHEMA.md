@@ -56,9 +56,9 @@ state. `sections` may be empty (live mode adds them via `/section`).
 | `fills` | list[TriFill] | **additive:** selectable value-coloured trimesh fills, drawn UNDER `grid_lines`/`outline`/`points` |
 | `contours` | list[ContourSet] | **additive:** iso-lines; all levels stroke as one batched path, stronger than grid lines |
 | `grid_lines_lod` | list[Line] \| absent | **additive (LOD):** the coarse (strided) `grid_lines` ring — present only when a mesh producer supplied one; see **Stride-ladder LOD** |
-| `point_color` | PointColor \| null | **additive:** `{by: "z", range: [min, max]}` — points with a finite third component colour through the active colormap (non-finite z falls back to the accent). `range` is the producer's data range or the user's explicit `color=` clamp range — values outside it clamp to the ramp ends; the legend's points entry shows this range |
-| `colormap` | str \| null | **additive:** the initial colormap for this payload (`viridis`\|`magma`\|`grays`\|`inferno`) — the parsed `<cmap>` of a `view2d` `color=`/`fill=` spec (`color`'s wins over `fill`'s). The panel selector can still change it; an unknown/absent name keeps the viridis default |
-| `layers` | list[LayerName] | **additive:** per-emitted-layer legend names, in emission order — `{kind: "points"\|"lines"\|"contours", name: str \| null}` with `name` duck-typed from the producer object (e.g. a dataset name like `"Top Dome"`); the legend falls back to the layer kind when `null`. Fills self-describe via their own `display_name` |
+| `point_color` | PointColor \| null | **additive:** `{by: "z", range: [min, max]}` — the GLOBAL fallback for point colouring (per-layer fields on `layers` win; see below). Present when at least one points layer colours: the user's explicit call-level `color=` clamp range, else the union of the coloured layers' data. Points with a finite third component colour through the colormap (non-finite z falls back to the accent); values outside the range clamp to the ramp ends |
+| `colormap` | str \| null | **additive:** the initial colormap for this payload (`viridis`\|`magma`\|`grays`\|`inferno`) — the parsed `<cmap>` of a `view2d` `color=`/`fill=` spec (`color`'s wins over `fill`'s; falling back to the first per-object dict-item pin). The panel selector can still change it for layers without a per-layer pin; an unknown/absent name keeps the viridis default |
+| `layers` | list[LayerName] | **additive:** per-emitted-layer legend names, in emission order — `{kind: "points"\|"lines"\|"contours", name: str \| null}` with `name` duck-typed from the producer object (e.g. a dataset name like `"Top Dome"`); the legend falls back to the layer kind when `null`. Fills self-describe via their own `display_name`. **Per-layer colour (additive, the per-object color ruling):** a points layer additionally carries its slice of the shared `points` array (`start`, `n`) plus its OWN resolved `range` (`[min, max]` — the explicit spec range, else the layer's finite-z data range), an optional pinned `colormap` (a per-object dict-item spec; the panel selector does not override a pin), and `colored: false` for an explicit per-object `color=False`. The renderer and the legend read these per-layer fields FIRST and fall back to the global `point_color`/`colormap`; an older payload without them renders exactly as before through one legacy segment |
 | `horizons` | list[ScalarLayer] | selectable depth/field layers |
 | `zone_averages` | list[ScalarLayer] | selectable property layers |
 | `k_slices` | list[ScalarLayer] | optional per-k property slices |
@@ -76,7 +76,10 @@ perceptually-uniform colormap.
 **TriFill (additive; the `view2d` `fill=` output — fills are explicit, never a
 `color=` side effect):** `{name: str, display_name?: str | null, nodes:
 [[x, y], …], triangles: [[a, b, c], …], values: float[len(nodes)], range:
-[min, max]}`. Per-**node** values on a world-coordinate triangulation; each
+[min, max], colormap?: str}`. `colormap` (additive) is a per-fill ramp pin
+from a per-object dict-item `fill=` spec — it wins over the panel selection
+for this fill's paint, legend ramp and its coarse LOD ring; absent for
+call-level specs (selector-governed). Per-**node** values on a world-coordinate triangulation; each
 triangle flat-fills with the continuous-colormap colour of the **mean of its
 three node values** against `range`. A triangle with any `null`/non-finite node
 value is **skipped** (renders as a hole — never colour-guessed). The renderer
@@ -341,23 +344,32 @@ names + ramp/clamped range) drives the 3D tab's legend.
 | `wells` | list[Well3D] | identity-coloured bore paths + a screen-sized wellhead marker |
 | `outlines` | list[Ring \| FlatRing] | edge rings — a plain `Ring` (`[[x, y], …]`) renders flat at `ref_z`; an object-form `FlatRing` `{points: Ring, z: float \| null}` renders at its flat item's level (additive) |
 | `layers` | list[LayerName] | per-layer legend entries, emission order — `{kind: "points"\|"lines"\|"contours"\|"wells", name: str \| null}` (duck-typed producer names; fallback: the kind). Value meshes self-describe via `display_name`, like 2-D fills |
-| `point_color` | PointColor \| null | as `map.point_color`: `{by: "z", range: [min, max]}` — the explicit `color=` clamp range or the data z range; out-of-range values clamp to the ramp ends |
-| `colormap` | str \| null | the payload-pinned initial colormap (the parsed `color=`/`fill=` `<cmap>`) |
+| `point_color` | PointColor \| null | as `map.point_color`: the GLOBAL fallback (per-cloud `range`/`colormap`/`colored` fields win) — the explicit call-level `color=` clamp range, else the union of the coloured clouds' data |
+| `colormap` | str \| null | the payload-pinned initial colormap (the parsed `color=`/`fill=` `<cmap>`, falling back to the first per-object dict-item pin) |
 | `z_exaggeration` | float | the z-exaggeration slider seed (display-only group scale, `z ×N` badge, true depths in the readout — the volume tab's control; default 5) |
 | `ref_z` | float | the flat-element elevation: midpoint of the scene's finite z extent (0 for an all-flat scene). Lattices and outline rings carry no z of their own and render at this plane |
 
-**PointCloud3D:** `{name: str | null, n: int, xyz: Block}` — `xyz` is ONE
-compact v3-style binary block (`{dtype: "f32", shape: [n, 3], data:
-"<base64>"}`, little-endian, NaN = `0x7FC00000`) decoded on the same kernel as
-the volume blocks / well-log lanes. A NaN z renders at `ref_z` in the neutral
-colour (never colour-guessed). The Python builder decimates each cloud past
-`point_limit` (default 200k) by striding, recorded as `summary.point_stride`.
+**PointCloud3D:** `{name: str | null, n: int, xyz: Block, range?: [min, max],
+colormap?: str, colored?: bool}` — `xyz` is ONE compact v3-style binary block
+(`{dtype: "f32", shape: [n, 3], data: "<base64>"}`, little-endian, NaN =
+`0x7FC00000`) decoded on the same kernel as the volume blocks / well-log
+lanes. A NaN z renders at `ref_z` in the neutral colour (never
+colour-guessed). **Per-cloud colour (additive, the per-object color ruling):**
+`range` is the cloud's OWN resolved clamp range (explicit spec range, else its
+finite-z data range), `colormap` a per-object dict-item ramp pin (the panel
+selector does not override it), `colored: false` an explicit per-object
+`color=False` (monochrome) — the renderer and legend read these FIRST, then
+the global `point_color`/`colormap`. The Python builder decimates each cloud
+past `point_limit` (default 200k) by striding, recorded as
+`summary.point_stride`.
 
 **Mesh3D:** `{name: str, display_name: str | null, nodes: [[x, y, z | null],
 …], triangles: [[a, b, c], …], values: float[len(nodes)] | null, range:
-[min, max] | null}`. `values`+`range` present → per-vertex colormap colouring
-(the user's `fill=` clamp range when specified; a `null` value renders the
-neutral colour); absent → the neutral material with a panel wireframe toggle.
+[min, max] | null, colormap?: str}`. `values`+`range` present → per-vertex
+colormap colouring (the user's `fill=` clamp range when specified; a `null`
+value renders the neutral colour); absent → the neutral material with a panel
+wireframe toggle. `colormap` (additive) is a per-mesh ramp pin from a
+per-object dict-item `fill=` spec — paint and legend ramp read it first.
 A triangle touching a `null`-z node is **skipped** (a hole, never guessed).
 `name` is the attribute identity (e.g. `"z"`); `display_name` the duck-typed
 source-object name (e.g. `"Top Dome"`).

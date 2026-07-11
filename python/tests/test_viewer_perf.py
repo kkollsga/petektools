@@ -854,7 +854,11 @@ def test_map_inferno_points_clamped_legend_names_both_themes(tmp_path):
     assert payload["map"]["colormap"] == "inferno"
     assert payload["map"]["point_color"] == {"by": "z", "range": [-2700.0, -2500.0]}
     assert payload["map"]["fills"] == []
-    assert {"kind": "points", "name": "Top Dome"} in payload["map"]["layers"]
+    # the points layer carries its per-layer slice + colour fields (per-object
+    # color ruling) beside the duck-typed name
+    pts_layers = [ly for ly in payload["map"]["layers"] if ly["kind"] == "points"]
+    assert len(pts_layers) == 1 and pts_layers[0]["name"] == "Top Dome"
+    assert pts_layers[0]["range"] == [-2700.0, -2500.0]
 
     shots = Path(os.environ.get("PETEK_SHOTS_DIR", str(tmp_path)))
     shots.mkdir(parents=True, exist_ok=True)

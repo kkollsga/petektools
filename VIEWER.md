@@ -119,6 +119,19 @@ renders its STRUCTURE — the geometry lattice lines (or, geometry-less, its
 primary value layer's triangle edges); values still colour nothing without
 `fill=`.
 
+**Per-object colour — the dict item form (owner ruling 2026-07-11, view2d AND
+view3d).** A scene item may be a dict `{"object": obj, "color": bool|spec,
+"fill": bool|spec, "name": str}` — per-object settings take **precedence**
+over the call-level `color=`/`fill=` (which remain the defaults for bare
+items; `color=True` default unchanged), and `name` overrides the duck-typed
+display name. Colour/ramp/range travel **per layer**: each points layer /
+point cloud carries its own resolved clamp range (and a pinned colormap for a
+per-object spec — the panel selector doesn't override a pin), each fill/mesh
+its own colormap, and the legend shows each entry's own ramp + range. The
+global `map.colormap`/`point_color` (and their `scene3d.*` twins) stay
+emitted as a fallback for older payload consumers; the renderer reads the
+per-layer fields first. The spec grammar is unchanged.
+
 The map **legend renders one entry per visible layer** — a small type icon
 (dot cluster = points, lattice = grid lines, filled ramp swatch = fill/raster,
 squiggle = contours, marker = wells) + the layer's display name, duck-typed

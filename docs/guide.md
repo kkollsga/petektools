@@ -222,6 +222,21 @@ petektools.view2d([surface, well_points], color="inferno_-2700_-2500",
                   fill=True, contours=25.0)
 ```
 
+Colour can also be set **per object** (view2d and view3d): pass a dict item
+`{"object": obj, "color": ..., "fill": ..., "name": ...}` anywhere a bare
+object is accepted. Per-object settings win over the call-level
+`color=`/`fill=` (which stay the defaults for bare items), `name` overrides
+the legend display name, and each layer then carries — and the legend shows —
+its own colormap ramp and clamp range:
+
+```python
+petektools.view2d([
+    {"object": top_points, "color": "inferno_-2700_-2500"},
+    {"object": base_points, "color": "viridis", "name": "Base Dome"},
+    grid_geometry,
+])
+```
+
 Two more `view2d` kwargs tune the wire and the feel, not the picture.
 `encoding="blocks"` (the default) ships the map's bulk arrays as compact
 typed binary blocks — roughly 3× smaller than JSON floats on a large payload,

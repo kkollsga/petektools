@@ -79,10 +79,20 @@
     s3d.camera.aspect = w / h; s3d.camera.updateProjectionMatrix();
   }
 
-  function s3dRampVertex(col, i, t) {
-    var c = isFinite(t) ? rampColor(S.colormap, t) : null;
+  function s3dRampVertex(col, i, t, cmap) {
+    var c = isFinite(t) ? rampColor(cmap || S.colormap, t) : null;
     if (!c) c = S3D_NEUTRAL;
     col[i * 3] = c[0] / 255; col[i * 3 + 1] = c[1] / 255; col[i * 3 + 2] = c[2] / 255;
+  }
+  // Per-cloud colour resolution (the per-object color ruling): a cloud entry
+  // may carry {range, colormap, colored} — read per-cloud FIRST, then the
+  // global scene3d.point_color / the panel colormap (older payloads).
+  function s3dCloudColor(src, pc) {
+    var colored = !(src && src.colored === false);
+    return {
+      range: colored ? ((src && src.range) || (pc && pc.range) || null) : null,
+      cmap: (src && src.colormap) || S.colormap,
+    };
   }
 
   // A LOUD, dismissible degradation notice (the volume tab's auto-degrade
@@ -111,7 +121,7 @@
     var clouds = (sc.points || []).map(function (c) {
       var f = decodeLane(c.xyz);
       if (!f) throw new Error("point block undecodable (decode kernel unavailable)");
-      return { f: f, n: (f.length / 3) | 0, name: c.name };
+      return { f: f, n: (f.length / 3) | 0, name: c.name, src: c };
     });
     var xmin = Infinity, xmax = -Infinity, ymin = Infinity, ymax = -Infinity, zmin = Infinity, zmax = -Infinity;
     function ext(x, y, z) {
@@ -170,9 +180,11 @@
       _degraded: null,
     };
 
-    // ---- point clouds: ONE THREE.Points per cloud, per-vertex ramp colours --
+    // ---- point clouds: ONE THREE.Points per cloud, per-vertex ramp colours
+    // (each cloud's OWN range/colormap first; the global point_color fallback)
     var pc = sc.point_color;
     clouds.forEach(function (c) {
+      var cc = s3dCloudColor(c.src, pc);
       var kept = Math.ceil(c.n / ptStride);
       var pos = new Float32Array(kept * 3), col = new Float32Array(kept * 3);
       var k = 0;
@@ -181,8 +193,8 @@
         pos[k * 3] = c.f[q * 3] - cx;
         pos[k * 3 + 1] = ry(z);
         pos[k * 3 + 2] = c.f[q * 3 + 1] - cy;
-        var t = pc && pc.range ? (z - pc.range[0]) / ((pc.range[1] - pc.range[0]) || 1) : NaN;
-        s3dRampVertex(col, k, isFinite(z) ? t : NaN);
+        var t = cc.range ? (z - cc.range[0]) / ((cc.range[1] - cc.range[0]) || 1) : NaN;
+        s3dRampVertex(col, k, isFinite(z) ? t : NaN, cc.cmap);
         k++;
       }
       var geo = new THREE.BufferGeometry();
@@ -191,7 +203,7 @@
       var mat = new THREE.PointsMaterial({ size: 2.5, sizeAttenuation: false, vertexColors: true });
       var obj = new THREE.Points(geo, mat);
       s3d.group.add(obj);
-      var entry = { obj: obj, geo: geo, f: c.f, n: c.n, stride: ptStride, kept: kept };
+      var entry = { obj: obj, geo: geo, f: c.f, n: c.n, stride: ptStride, kept: kept, src: c.src };
       obj.userData.petek = { kind: "points", name: c.name, o: entry };
       built.pointObjs.push(entry);
       built.pointCount += kept;
@@ -328,23 +340,26 @@
 
   function bakeMeshColors(m, col) {
     var r0 = m.range[0], span = (m.range[1] - m.range[0]) || 1;
+    var cmap = m.colormap || S.colormap; // per-mesh pin (dict item form)
     for (var q = 0; q < m.nodes.length; q++) {
       var v = m.values[q];
-      s3dRampVertex(col, q, v == null ? NaN : (v - r0) / span);
+      s3dRampVertex(col, q, v == null ? NaN : (v - r0) / span, cmap);
     }
   }
 
   // Colormap flip: re-bake point + value-mesh vertex colours in place (the
   // geometry/positions never rebuild — the volume tab's recolour idiom).
+  // Per-object pins (cloud.colormap / mesh.colormap) keep their own ramp.
   function recolorScene3d(sc) {
     var pc = sc.point_color;
     s3dBuilt.pointObjs.forEach(function (o) {
+      var cc = s3dCloudColor(o.src, pc);
       var col = o.geo.attributes.color.array;
       var k = 0;
       for (var q = 0; q < o.n; q += o.stride) {
         var z = o.f[q * 3 + 2];
-        var t = pc && pc.range ? (z - pc.range[0]) / ((pc.range[1] - pc.range[0]) || 1) : NaN;
-        s3dRampVertex(col, k, isFinite(z) ? t : NaN);
+        var t = cc.range ? (z - cc.range[0]) / ((cc.range[1] - cc.range[0]) || 1) : NaN;
+        s3dRampVertex(col, k, isFinite(z) ? t : NaN, cc.cmap);
         k++;
       }
       o.geo.attributes.color.needsUpdate = true;
@@ -625,11 +640,12 @@
   function drawScene3dLegend(sc) {
     var lg = document.getElementById("legend"); lg.innerHTML = "";
     var keys = el("div", "keys");
-    var pc = sc.point_color, pointsRampDrawn = false;
+    var pc = sc.point_color, pointsRampDrawn = false, ptIdx = 0;
     if (S.s3dShow.meshes) {
       (sc.meshes || []).forEach(function (m) {
         if (m.values && m.range) {
-          rampBlock(lg, typeIcon("fill"), disp(m, m.name), m.range[0], m.range[1]);
+          rampBlock(lg, typeIcon("fill", null, m.colormap), disp(m, m.name),
+            m.range[0], m.range[1], m.colormap);
         } else {
           keys.appendChild(keyRow(disp(m, m.name) || "mesh", token("--muted"), false));
         }
@@ -637,15 +653,20 @@
     }
     (sc.layers || []).forEach(function (ly) {
       if (ly.kind === "points") {
+        // points layers pair with sc.points in emission order — each cloud's
+        // OWN range/colormap draws its OWN ramp (per-object color ruling);
+        // clouds on the global point_color share one ramp block.
+        var src = (sc.points || [])[ptIdx++] || null;
         if (!S.s3dShow.points || !(sc.points || []).length) return;
         var plabel = ly.name ? pretty(ly.name) : "points";
-        if (pc && pc.range && !pointsRampDrawn) {
-          pointsRampDrawn = true;
-          rampBlock(lg, typeIcon("points", rampCss(S.colormap, 0.75)),
-            plabel + " · " + (pc.by || "z"), pc.range[0], pc.range[1]);
+        var cc = s3dCloudColor(src, pc);
+        if (cc.range && ((src && src.range) || !pointsRampDrawn)) {
+          if (!(src && src.range)) pointsRampDrawn = true;
+          rampBlock(lg, typeIcon("points", rampCss(cc.cmap, 0.75)),
+            plabel + " · " + ((pc && pc.by) || "z"), cc.range[0], cc.range[1], cc.cmap);
         } else {
           keys.appendChild(iconKeyRow("points", plabel,
-            pc && pc.range ? rampCss(S.colormap, 0.75) : token("--accent")));
+            cc.range ? rampCss(cc.cmap, 0.75) : token("--accent")));
         }
       } else if (ly.kind === "lines") {
         if (!S.s3dShow.lattice || !(sc.lattices || []).length) return;

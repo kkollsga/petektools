@@ -90,6 +90,23 @@ def view2d_payload(
     A malformed spec (e.g. a colormap with a single trailing float, or
     non-float range tokens) raises ``ValueError``.
 
+    Each scene item may also be a DICT — the per-object form (owner ruling)::
+
+        {"object": obj, "color": bool | spec, "fill": bool | spec, "name": str}
+
+    All keys but ``object`` are optional. Per-object settings take PRECEDENCE
+    over the call-level ``color=``/``fill=`` (which stay the defaults for bare
+    items — back-compat, ``color=True`` default included), and ``name``
+    overrides the object's duck-typed display name. Colour/ramp/range travel
+    PER LAYER: every points layer entry carries its slice of the shared points
+    array (``start``/``n``) plus its own resolved ``range`` (the explicit spec
+    range, else the layer's finite-z data range; ``colored: false`` for an
+    explicit ``color=False``) and — for a per-object spec — a pinned
+    ``colormap``; a fill entry carries its own ``colormap`` the same way. The
+    legend shows each entry's own ramp/range. The global ``map.point_color`` /
+    ``map.colormap`` stay emitted as a fallback for older payload consumers
+    (the renderer reads the per-layer fields first).
+
     With ``color`` on, plain points carrying a finite third component are
     colour-coded by it; ``map.point_color`` records the range — the explicit
     spec range when given (out-of-range values clamp to the ends), else the
@@ -154,17 +171,25 @@ def view2d_payload(
     frame = None
     summary: dict[str, Any] = {}
 
-    for item in scene_items:
+    colored_zs: list[float] = []  # finite zs of per-layer-coloured points
+    item_cmap: str | None = None  # first per-object colormap (global fallback)
+
+    for scene_entry in scene_items:
+        item, cspec, fspec, name, c_explicit, f_explicit = _norm_item(
+            scene_entry, color_spec, fill_spec
+        )
         contributed = False
-        name = _item_name(item)
-        if fill_spec["enabled"]:
-            fill_entry = _value_fill(item, fill_spec["attr"])
+        if fspec["enabled"]:
+            fill_entry = _value_fill(item, fspec["attr"])
             if fill_entry is not None:
                 fill_entry["display_name"] = name
-                if fill_spec["range"] is not None:
-                    fill_entry["range"] = list(fill_spec["range"])
+                if fspec["range"] is not None:
+                    fill_entry["range"] = list(fspec["range"])
+                if f_explicit and fspec["cmap"]:
+                    fill_entry["colormap"] = fspec["cmap"]  # per-object pin
+                    item_cmap = item_cmap or fspec["cmap"]
                 if lod_cfg["enabled"]:
-                    ring = _value_fill_lod(item, fill_spec["attr"], lod_cfg["stride"])
+                    ring = _value_fill_lod(item, fspec["attr"], lod_cfg["stride"])
                     if ring is not None:
                         fill_entry["lod"] = {
                             "stride": lod_cfg["stride"],
@@ -176,7 +201,7 @@ def view2d_payload(
                 fills.append(fill_entry)
                 contributed = True
         if contours is not None:
-            iso = _iso_contours(item, contours, color_spec["attr"], lod_cfg)
+            iso = _iso_contours(item, contours, cspec["attr"], lod_cfg)
             if iso is not None:
                 contour_sets.extend(iso)
                 layers.append({"kind": "contours", "name": name})
@@ -235,8 +260,26 @@ def view2d_payload(
                 step = max(1, math.ceil(len(pts) / point_limit))
                 pts = pts[::step]
                 summary["point_stride"] = step
+            # Per-layer colour (per-object color ruling): the layer entry
+            # carries its slice of the shared points array (start/n) plus its
+            # OWN resolved colour — clamp range (explicit spec range, else the
+            # layer's finite-z data range) and a per-object colormap pin. The
+            # JS reads these per-layer fields first; the global
+            # map.point_color/colormap stay emitted as the fallback.
+            entry = {"kind": "points", "name": name, "start": len(points), "n": len(pts)}
+            zs = [p[2] for p in pts if len(p) > 2 and math.isfinite(p[2])]
+            if cspec["enabled"]:
+                if zs:
+                    rng = cspec["range"] or [min(zs), max(zs)]
+                    entry["range"] = [float(rng[0]), float(rng[1])]
+                    colored_zs.extend(zs)
+            else:
+                entry["colored"] = False
+            if c_explicit and cspec["cmap"]:
+                entry["colormap"] = cspec["cmap"]  # per-object pin
+                item_cmap = item_cmap or cspec["cmap"]
             points.extend(pts)
-            layers.append({"kind": "points", "name": name})
+            layers.append(entry)
             continue
 
         if contributed:
@@ -291,12 +334,17 @@ def view2d_payload(
     if not outlines:
         outlines = _rect_outline_from_frame(frame)
 
+    # The GLOBAL fallback for older payload consumers (the JS reads the
+    # per-layer fields first): present only when at least one layer actually
+    # colours — the call-level explicit clamp range when the call-level
+    # color= is on, else the union of the coloured layers' data.
     point_color = None
-    if color_spec["enabled"]:
-        zs = [p[2] for p in points if len(p) > 2 and math.isfinite(p[2])]
-        if zs:
-            rng = color_spec["range"] or [min(zs), max(zs)]
-            point_color = {"by": "z", "range": [float(rng[0]), float(rng[1])]}
+    if colored_zs:
+        rng = (color_spec["range"] if color_spec["enabled"] else None) or [
+            min(colored_zs),
+            max(colored_zs),
+        ]
+        point_color = {"by": "z", "range": [float(rng[0]), float(rng[1])]}
 
     summary["points"] = len(points)
     summary["grid_lines"] = len(grid_lines)
@@ -325,7 +373,7 @@ def view2d_payload(
             "grid_lines": grid_lines,
             "points": points,
             "point_color": point_color,
-            "colormap": color_spec["cmap"] or fill_spec["cmap"],
+            "colormap": color_spec["cmap"] or fill_spec["cmap"] or item_cmap,
             "layers": layers,
             "fills": fills,
             "contours": contour_sets,
@@ -466,7 +514,52 @@ def _item_name(item: Any) -> str | None:
     return str(nm) or None
 
 
+# The dict item form (per-object color ruling): a scene entry may be either a
+# bare object or ``{"object": obj, "color": bool|spec, "fill": bool|spec,
+# "name": display-name}``. Per-object settings take PRECEDENCE; the call-level
+# ``color=``/``fill=`` parameters stay the defaults for bare items.
+_ITEM_KEYS = {"object", "color", "fill", "name"}
+
+
+def _norm_item(
+    entry: Any,
+    color_spec: dict[str, Any],
+    fill_spec: dict[str, Any],
+) -> tuple[Any, dict[str, Any], dict[str, Any], str | None, bool, bool]:
+    """Normalize a scene entry (bare object or the dict item form).
+
+    Returns ``(obj, color_spec, fill_spec, name, color_explicit,
+    fill_explicit)`` — the per-object specs when the dict form supplies them
+    (parsed by the same :func:`_parse_spec` grammar), else the call-level
+    defaults; ``name`` is the dict's display-name override or the object's
+    duck-typed ``name``. The ``*_explicit`` flags mark per-object settings so
+    the payload can pin per-layer colormap/range fields."""
+    if isinstance(entry, dict):
+        if "object" not in entry:
+            raise TypeError(
+                "a dict scene item must carry an 'object' key: "
+                '{"object": obj, "color": ..., "fill": ..., "name": ...}'
+            )
+        unknown = set(entry) - _ITEM_KEYS
+        if unknown:
+            raise ValueError(
+                f"unknown dict-item key(s) {sorted(unknown)}; expected a subset "
+                f"of {sorted(_ITEM_KEYS)}"
+            )
+        obj = entry["object"]
+        c_explicit = "color" in entry
+        f_explicit = "fill" in entry
+        cs = _parse_spec(entry["color"], "color") if c_explicit else color_spec
+        fs = _parse_spec(entry["fill"], "fill") if f_explicit else fill_spec
+        nm = entry.get("name")
+        name = str(nm) if nm is not None else _item_name(obj)
+        return obj, cs, fs, name, c_explicit, f_explicit
+    return entry, color_spec, fill_spec, _item_name(entry), False, False
+
+
 def _scene_items(items: Any) -> list[Any]:
+    if isinstance(items, dict):
+        return [items]  # a single dict item ({"object": ...})
     if isinstance(items, (str, bytes)):
         return [items]
     if _is_point_row(items):

@@ -32,8 +32,8 @@ from ._view2d import (
     _is_geometry,
     _is_trimesh,
     _iso_contours,
-    _item_name,
     _mesh_lines,
+    _norm_item,
     _parse_spec,
     _points,
     _rings,
@@ -113,6 +113,17 @@ def view3d_payload(
     raises ``ValueError``. An explicit range clamps the normalization (values
     outside it render at the ramp ends).
 
+    Each scene item may also be a DICT — the per-object form (owner ruling,
+    identical to view2d): ``{"object": obj, "color": bool | spec, "fill":
+    bool | spec, "name": str}``. Per-object settings take PRECEDENCE over the
+    call-level parameters (which stay the defaults for bare items), ``name``
+    overrides the duck-typed display name, and colour/ramp/range travel PER
+    LAYER — each point cloud carries its own resolved ``range`` (+ a pinned
+    ``colormap`` for a per-object spec; ``colored: false`` for an explicit
+    ``color=False``) and each value mesh its own ``colormap``; the legend
+    shows each entry's own ramp/range. The global ``scene3d.point_color`` /
+    ``scene3d.colormap`` stay emitted as a fallback for older consumers.
+
     Point clouds cap at ``point_limit`` (default 200k) by striding, exactly
     like view2d (``summary.point_stride``). ``z_exaggeration`` seeds the 3D
     tab's z-exaggeration slider (display-only scale, badge + true-depth
@@ -137,26 +148,33 @@ def view3d_payload(
     layers: list[dict[str, Any]] = []
     summary: dict[str, Any] = {}
     point_zs: list[float] = []
+    colored_zs: list[float] = []  # finite zs of per-cloud-coloured points
+    item_cmap: str | None = None  # first per-object colormap (global fallback)
     n_points = 0
     n_triangles = 0
 
-    for item in scene_items:
+    for scene_entry in scene_items:
+        item, cspec, fspec, name, c_explicit, f_explicit = _norm_item(
+            scene_entry, color_spec, fill_spec
+        )
         contributed = False
         mesh_added = False
-        name = _item_name(item)
 
-        if fill_spec["enabled"]:
-            entry = _value_mesh(item, fill_spec["attr"])
+        if fspec["enabled"]:
+            entry = _value_mesh(item, fspec["attr"])
             if entry is not None:
                 entry["display_name"] = name
-                if fill_spec["range"] is not None:
-                    entry["range"] = list(fill_spec["range"])
+                if fspec["range"] is not None:
+                    entry["range"] = list(fspec["range"])
+                if f_explicit and fspec["cmap"]:
+                    entry["colormap"] = fspec["cmap"]  # per-object pin
+                    item_cmap = item_cmap or fspec["cmap"]
                 meshes.append(entry)
                 n_triangles += len(entry["triangles"])
                 contributed = True
                 mesh_added = True
         if contours is not None:
-            iso = _iso_contours(item, contours, color_spec["attr"])
+            iso = _iso_contours(item, contours, cspec["attr"])
             if iso is not None:
                 contour_sets.extend(iso)
                 layers.append({"kind": "contours", "name": name})
@@ -221,8 +239,24 @@ def view3d_payload(
                 step = max(1, math.ceil(len(pts) / point_limit))
                 pts = pts[::step]
                 summary["point_stride"] = step
-            point_zs.extend(p[2] for p in pts if len(p) > 2 and math.isfinite(p[2]))
-            clouds.append({"name": name, "n": len(pts), "xyz": _xyz_block(pts)})
+            zs = [p[2] for p in pts if len(p) > 2 and math.isfinite(p[2])]
+            point_zs.extend(zs)
+            # Per-cloud colour (per-object color ruling): each cloud carries
+            # its OWN resolved clamp range (explicit spec range, else its
+            # finite-z data range) and a per-object colormap pin; the global
+            # scene3d.point_color/colormap stay the fallback.
+            cloud: dict[str, Any] = {"name": name, "n": len(pts), "xyz": _xyz_block(pts)}
+            if cspec["enabled"]:
+                if zs:
+                    rng = cspec["range"] or [min(zs), max(zs)]
+                    cloud["range"] = [float(rng[0]), float(rng[1])]
+                    colored_zs.extend(zs)
+            else:
+                cloud["colored"] = False
+            if c_explicit and cspec["cmap"]:
+                cloud["colormap"] = cspec["cmap"]  # per-object pin
+                item_cmap = item_cmap or cspec["cmap"]
+            clouds.append(cloud)
             n_points += len(pts)
             layers.append({"kind": "points", "name": name})
             continue
@@ -280,9 +314,16 @@ def view3d_payload(
             "item can be value-coloured with fill=)"
         )
 
+    # The GLOBAL fallback for older payload consumers (per-cloud fields win):
+    # present only when at least one cloud actually colours — the call-level
+    # explicit clamp range when the call-level color= is on, else the union
+    # of the coloured clouds' data.
     point_color = None
-    if color_spec["enabled"] and point_zs:
-        rng = color_spec["range"] or [min(point_zs), max(point_zs)]
+    if colored_zs:
+        rng = (color_spec["range"] if color_spec["enabled"] else None) or [
+            min(colored_zs),
+            max(colored_zs),
+        ]
         point_color = {"by": "z", "range": [float(rng[0]), float(rng[1])]}
 
     # Resolve z-less flat items (a bare GridGeometry lattice + its rings) to
@@ -329,7 +370,7 @@ def view3d_payload(
             "outlines": outlines,
             "layers": layers,
             "point_color": point_color,
-            "colormap": color_spec["cmap"] or fill_spec["cmap"],
+            "colormap": color_spec["cmap"] or fill_spec["cmap"] or item_cmap,
             "z_exaggeration": float(z_exaggeration),
             "ref_z": _ref_z(point_zs, meshes, wells),
         },
