@@ -11,6 +11,7 @@ and the standalone demo (the second-consumer proof of the owner ruling).
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 import sys
@@ -1959,6 +1960,67 @@ def test_wells_bundle_schema(wells_bundle):
             assert CURVE_MIN_KEYS <= set(c), set(c)
             assert c["kind"] in ("continuous", "flag")
             assert set(c["values"]) == LANE_KEYS
+
+
+def test_correlation_template_value_semantics_and_chainable_tracks(wells_bundle):
+    track = (
+        viewer.CorrelationTrack(
+            "petro", title="Petrophysics", width=1.6, minimum=0, maximum=1
+        )
+        .curve("PHIE", style={"color": "#336699", "width": 2}, cutoff=0.12)
+        .curve("SW", id="sw-overlay", overlay=True, style={"dash": [4, 2]})
+    )
+    template = (
+        viewer.CorrelationTemplate(
+            "reservoir", default_hang="flatten", flatten_pick="TopShale"
+        )
+        .add_track(viewer.CorrelationTrack("facies", width=0.45).flag("FACIES"))
+        .add_track(track)
+    )
+    assert viewer.CorrelationTemplate.from_dict(template.to_dict()) == template
+    assert json.loads(json.dumps(template.to_dict())) == template.to_dict()
+    changed = template.replace(gap=20)
+    assert changed.gap == 20 and template.gap == 14
+    assert petektools.CorrelationTemplate is viewer.CorrelationTemplate
+
+    applied = template(wells_bundle)
+    assert applied["template"] == template.to_dict()
+    assert "template" not in wells_bundle  # pure apply
+    # One-well absence is explicitly allowed: that well gets a blank lane.
+    partial = copy.deepcopy(wells_bundle)
+    partial["wells"][0]["curves"] = [
+        c for c in partial["wells"][0]["curves"] if c["mnemonic"] != "SW"
+    ]
+    assert template.apply(partial)["template"]["name"] == "reservoir"
+
+
+def test_correlation_template_strong_validation_and_absent_all(wells_bundle):
+    with pytest.raises(ValueError, match="unique"):
+        viewer.CorrelationTemplate(
+            "x", tracks=(viewer.CorrelationTrack("a"), viewer.CorrelationTrack("a"))
+        )
+    with pytest.raises(ValueError, match="positive"):
+        viewer.CorrelationTrack("x", scale="log", minimum=0, maximum=1)
+    with pytest.raises(ValueError, match="opacity"):
+        viewer.CorrelationTrack("x").curve("PHIE", style={"opacity": 2})
+    missing = viewer.CorrelationTemplate("x").add_track(
+        viewer.CorrelationTrack("missing").curve("DOES_NOT_EXIST")
+    )
+    with pytest.raises(ValueError, match="absent from every well"):
+        missing.apply(wells_bundle)
+
+
+def test_well_bundle_template_is_additive_and_no_template_exact(wells_bundle):
+    from petektools.viewer._wells import build_well_log_bundle
+
+    plain = build_well_log_bundle()
+    assert set(plain) == WELL_LOG_BUNDLE_KEYS
+    template = viewer.CorrelationTemplate("reservoir").add_track(
+        viewer.CorrelationTrack("phi", minimum=0, maximum=.35).curve("PHIE")
+    )
+    templated = build_well_log_bundle(template=template)
+    assert set(templated) == WELL_LOG_BUNDLE_KEYS | {"template"}
+    assert templated["template"]["name"] == "reservoir"
 
 
 def test_wells_lanes_decode_consistently(wells_bundle):

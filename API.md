@@ -895,6 +895,19 @@ viewer.WellStyle(path=viewer.WellPathStyle(width=2, opacity=.9),
                  marker=viewer.WellMarkerStyle(size=7, shape="circle"),
                  label=viewer.WellLabelStyle(font_size=11, leader=True))
 
+# Named, chainable and JSON-serializable correlation layout. Calling/applying
+# returns a copied WellLogBundle with additive `template` metadata.
+template = (
+    viewer.CorrelationTemplate("reservoir", default_hang="flatten",
+                               flatten_pick="TopShale")
+    .add_track(viewer.CorrelationTrack("facies", width=.45).flag("FACIES"))
+    .add_track(viewer.CorrelationTrack("petro", minimum=0, maximum=1)
+               .curve("PHIE", cutoff=.12)
+               .curve("SW", id="sw", overlay=True, style={"dash": [3, 2]}))
+)
+templated_bundle = template(well_log_bundle)
+viewer.CorrelationTemplate.from_dict(template.to_dict()) == template
+
 # Live: background local server; returns the URL. `section_provider` is the
 # pluggable /section callback (line=, well=, property=) by which a DOMAIN package
 # answers fence/well requests — the unit computes nothing itself.

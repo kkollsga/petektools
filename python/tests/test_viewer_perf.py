@@ -355,6 +355,40 @@ def test_wells_correlation_render(nwells, tmp_path):
     assert r["foundHangSelect"] and r["mapRenderMs"] > 0
 
 
+@pytest.mark.skipif(not _HAVE_PW, reason="playwright + chromium not available (browser leg)")
+@pytest.mark.parametrize("nwells", [1, 4, 8])
+def test_correlation_template_layout_and_connectors(nwells, tmp_path):
+    from petektools import viewer
+    from petektools.viewer import demo
+    from petektools.viewer._wells import build_well_log_bundle
+
+    template = (
+        viewer.CorrelationTemplate(
+            "reservoir", default_hang="flatten", flatten_pick="TopShale"
+        )
+        .add_track(viewer.CorrelationTrack("facies", width=.45).flag("FACIES"))
+        .add_track(
+            viewer.CorrelationTrack("petro", minimum=0, maximum=1)
+            .curve("PHIE", cutoff=.12)
+            .curve("SW", id="sw", overlay=True, style={"dash": [3, 2]})
+        )
+    )
+    payload = demo.build_correlation_demo_payload()
+    bundle = build_well_log_bundle(template=template)
+    base = bundle["wells"]
+    bundle["wells"] = [dict(base[k % len(base)], id=f"T{k}", display_name=f"T{k}") for k in range(nwells)]
+    payload["wells_logs"] = bundle
+    view = tmp_path / f"template_{nwells}.html"
+    save_view(payload, view)
+    r = _run_wells(view)
+    assert r["rc"] == 0, r.get("failure") or r.get("stderr")
+    layout = r["correlationLayout"]
+    assert layout["template"] == "reservoir" and layout["tracks"] == ["facies", "petro"]
+    assert layout["hang"] == "flatten"
+    if nwells > 1:
+        assert layout["connectors"] > 0
+
+
 # --- regression: JSON null layer depths must not poison the section frame ------
 # petekStatic emits f64::NAN for an inactive/truncated layer (follow-conformity
 # pinch); serde serializes NaN -> JSON null. The global isFinite() coerces

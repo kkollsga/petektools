@@ -8,6 +8,17 @@
   // such pick are parked unflattened + tagged). Curve identity is by TRACK
   // (mnemonic), never by well — PHIE is one colour everywhere.
   function trackRatio(kind) { return kind === "flag" ? 0.42 : 1.0; }
+  function correlationTracks(w) {
+    var tpl = S.wl.template;
+    if (!tpl || !tpl.tracks || !tpl.tracks.length) return w.curves.map(function(c){ return { curve:c, curves:[{curve:c, layer:null}], ratio:trackRatio(c.kind), def:null }; });
+    return tpl.tracks.map(function(t) {
+      var cs = (t.layers || []).map(function(l) {
+        var c = null; for (var q=0;q<w.curves.length;q++) if (w.curves[q].mnemonic===l.mnemonic) { c=w.curves[q]; break; }
+        return { curve:c, layer:l };
+      });
+      return { curve:cs.length ? cs[0].curve : null, curves:cs, ratio:t.width || 1, def:t };
+    });
+  }
   function curveAutoRange(track) {
     if (track._ar) return track._ar;
     var r = track.curve.range;
@@ -25,8 +36,8 @@
       var w = wl.wells[i], shift = flat ? pickShift(w, wl.pick) : 0;
       if (flat && shift == null) return;                 // parked — not in the shared window
       var lo, hi;
-      if (w.zones.length) { lo = w.zones[0].top_tvd_m; hi = w.zones[w.zones.length - 1].base_tvd_m; }
-      else if (w.tvd && w.tvd.length) { lo = w.tvd[0]; hi = w.tvd[w.tvd.length - 1]; }
+      if (w.zones.length) { lo = wellDisplayDepth(w,w.zones[0].top_tvd_m); hi = wellDisplayDepth(w,w.zones[w.zones.length - 1].base_tvd_m); }
+      else if (w.tvd && w.tvd.length) { lo = wellDisplayDepth(w,w.tvd[0],0); hi = wellDisplayDepth(w,w.tvd[w.tvd.length - 1],w.tvd.length-1); }
       else return;
       dmin = Math.min(dmin, lo - shift); dmax = Math.max(dmax, hi - shift);
     });
@@ -35,7 +46,7 @@
       vis.forEach(function (i) {
         var w = wl.wells[i];
         if (!w.tvd || !w.tvd.length) return;
-        dmin = Math.min(dmin, w.tvd[0]); dmax = Math.max(dmax, w.tvd[w.tvd.length - 1]);
+        dmin = Math.min(dmin, wellDisplayDepth(w,w.tvd[0],0)); dmax = Math.max(dmax, wellDisplayDepth(w,w.tvd[w.tvd.length - 1],w.tvd.length-1));
       });
     }
     if (!isFinite(dmin)) { dmin = 0; dmax = 1; }
@@ -54,9 +65,9 @@
     var vis = visibleWellIdx();
     if (!vis.length) { showEmpty("No wells selected. Toggle wells on in the panel."); return; }
     var win = wellsDepthWindow(vis);
-    var padL = 56, padR = 14, padT = 82, padB = 28;
+    var tpl = S.wl.template, padL = 56, padR = tpl && tpl.layout ? tpl.layout.padding : 14, padT = 82, padB = 28;
     var W = cv.width - padL - padR, H = cv.height - padT - padB;
-    var groupGap = 14;
+    var groupGap = tpl && tpl.layout ? tpl.layout.gap : 14;
     var groupW = (W - groupGap * (vis.length - 1)) / vis.length;
     function Yshared(z) { return padT + ((z - win.dmin) / ((win.dmax - win.dmin) || 1)) * H; }
 
@@ -70,24 +81,27 @@
       // are still legible), but it is clearly NOT on the shared datum — tagged.
       var locLo = 0, locHi = 1;
       if (parked) {
-        locLo = w.zones.length ? w.zones[0].top_tvd_m : (w.tvd ? w.tvd[0] : 0);
-        locHi = w.zones.length ? w.zones[w.zones.length - 1].base_tvd_m : (w.tvd ? w.tvd[w.tvd.length - 1] : 1);
+        locLo = w.zones.length ? wellDisplayDepth(w,w.zones[0].top_tvd_m) : (w.tvd ? wellDisplayDepth(w,w.tvd[0],0) : 0);
+        locHi = w.zones.length ? wellDisplayDepth(w,w.zones[w.zones.length - 1].base_tvd_m) : (w.tvd ? wellDisplayDepth(w,w.tvd[w.tvd.length - 1],w.tvd.length-1) : 1);
         var lp = Math.max(2, 0.03 * (locHi - locLo)); locLo -= lp; locHi += lp;
       }
-      function Y(z) { return parked ? padT + ((z - locLo) / ((locHi - locLo) || 1)) * H : Yshared(z - shift); }
+      function Y(z,index) { var d=wellDisplayDepth(w,z,index); return parked ? padT + ((d - locLo) / ((locHi - locLo) || 1)) * H : Yshared(d - shift); }
 
       // derive tracks from the well's curves (flag strips + continuous curves)
-      var tratio = 0; w.curves.forEach(function (c) { tratio += trackRatio(c.kind); });
-      var usableW = groupW * 0.9;
+      var trackDefs = correlationTracks(w), tratio = 0; trackDefs.forEach(function (t) { tratio += t.ratio; });
+      var innerGroupGap=4, breaks=0;
+      for(var bi=1;bi<trackDefs.length;bi++) if(trackDefs[bi-1].def&&trackDefs[bi].def&&trackDefs[bi-1].def.group!==trackDefs[bi].def.group) breaks++;
+      var usableW = groupW * 0.9 - breaks*innerGroupGap;
       var tx = gx0, tracks = [];
-      w.curves.forEach(function (c) {
-        var tw = usableW * (trackRatio(c.kind) / (tratio || 1));
-        tracks.push({ curve: c, x0: tx, w: tw }); tx += tw;
+      trackDefs.forEach(function (td, ti) {
+        var tw = usableW * (td.ratio / (tratio || 1));
+        tracks.push({ curve: td.curve, curves:td.curves, def:td.def, x0: tx, w: tw }); tx += tw;
+        if(ti+1<trackDefs.length&&td.def&&trackDefs[ti+1].def&&td.def.group!==trackDefs[ti+1].def.group) tx+=innerGroupGap;
       });
       var spanX0 = gx0, spanX1 = tx;   // the well's full track span (for tops/zones)
 
       // zone shading between tops (translucent identity fill per zone name)
-      w.zones.forEach(function (z) {
+      if (!tpl || !tpl.zones || tpl.zones.show !== false) w.zones.forEach(function (z) {
         var yt = Y(z.top_tvd_m), yb = Y(z.base_tvd_m);
         ctx.save(); ctx.globalAlpha = 0.14; ctx.fillStyle = idColor("zone:" + z.name);
         ctx.fillRect(spanX0, Math.min(yt, yb), spanX1 - spanX0, Math.abs(yb - yt)); ctx.restore();
@@ -97,14 +111,16 @@
       tracks.forEach(function (tk) { drawWellTrack(ctx, tk, w, Y, padT, H); });
 
       // tops: one horizontal rule across the well's tracks, labelled once at right
-      w.tops.forEach(function (t) {
+      if (!tpl || !tpl.tops || tpl.tops.show !== false) w.tops.forEach(function (t) {
         var y = Y(t.tvd_m);
         if (y < padT - 1 || y > padT + H + 1) return;
         ctx.strokeStyle = idColor("hz:" + t.horizon); ctx.lineWidth = 1.5; ctx.setLineDash([]);
         ctx.beginPath(); ctx.moveTo(spanX0, y); ctx.lineTo(spanX1, y); ctx.stroke();
-        ctx.fillStyle = token("--text-secondary"); ctx.font = "10px system-ui";
-        ctx.textAlign = "right"; ctx.textBaseline = "bottom";
-        ctx.fillText(pretty(t.horizon), spanX1 - 2, y - 1);
+        if (!tpl || !tpl.tops || tpl.tops.labels !== false) {
+          ctx.fillStyle = token("--text-secondary"); ctx.font = "10px system-ui";
+          ctx.textAlign = "right"; ctx.textBaseline = "bottom";
+          ctx.fillText(pretty(t.horizon), spanX1 - 2, y - 1);
+        }
         ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
       });
 
@@ -126,6 +142,23 @@
       hit.push({ wi: wi, x0: spanX0, x1: spanX1, tracks: tracks, Y: Y, parked: parked, shift: shift });
     });
 
+    // Actual same-horizon correlation connectors between adjacent visible wells.
+    // Each endpoint uses that well's own Y transform, so TVD, flattening, parked
+    // missing picks, reorder and visibility are all honoured naturally.
+    var connectorCount = 0;
+    if (tpl && (!tpl.tops || tpl.tops.connectors !== false)) {
+      for (var hi=0; hi+1<hit.length; hi++) {
+        var a=hit[hi], b=hit[hi+1], wa=S.wl.wells[a.wi], wb=S.wl.wells[b.wi];
+        wa.tops.forEach(function(ta) {
+          var tb=null; for(var qi=0;qi<wb.tops.length;qi++) if(wb.tops[qi].horizon===ta.horizon){tb=wb.tops[qi];break;}
+          if(!tb) return;
+          var ya=a.Y(ta.tvd_m), yb=b.Y(tb.tvd_m);
+          ctx.save(); ctx.strokeStyle=idColor("hz:"+ta.horizon); ctx.globalAlpha=.7; ctx.lineWidth=1.25;
+          ctx.beginPath(); ctx.moveTo(a.x1,ya); ctx.lineTo(b.x0,yb); ctx.stroke(); ctx.restore(); connectorCount++;
+        });
+      }
+    }
+
     // shared inverted depth axis (left gutter) — recessive hairlines
     ctx.strokeStyle = token("--baseline"); ctx.lineWidth = 1;
     ctx.beginPath(); ctx.moveTo(padL, padT); ctx.lineTo(padL, padT + H); ctx.stroke();
@@ -138,10 +171,12 @@
     ctx.textBaseline = "alphabetic"; ctx.textAlign = "left";
     ctx.save(); ctx.translate(13, padT + H / 2); ctx.rotate(-Math.PI / 2);
     ctx.fillStyle = token("--muted"); ctx.font = "10px system-ui"; ctx.textAlign = "center";
-    ctx.fillText(win.flat ? "Δ depth vs " + pretty(S.wl.pick) + " (m)" : "TVD-SS (m, +down)", 0, 0);
+    var axisName=tpl&&tpl.layout&&tpl.layout.depth_axis==="md"?"MD":"TVD-SS";
+    ctx.fillText(win.flat ? "Δ " + axisName + " vs " + pretty(S.wl.pick) + " (m)" : axisName + " (m, +down)", 0, 0);
     ctx.restore(); ctx.textAlign = "left";
 
     S._wellsHit = { wells: hit, win: win, padT: padT, H: H };
+    window.__PETEK_CORRELATION_LAYOUT = { template:tpl ? tpl.name : null, wells:vis.slice(), tracks:hit.length ? hit[0].tracks.map(function(t){return t.def?t.def.id:t.curve.mnemonic;}) : [], connectors:connectorCount, hang:S.wl.hang, pick:S.wl.pick };
     drawWellsLegend();
   }
 
@@ -158,44 +193,65 @@
     var c = tk.curve, x0 = tk.x0, tw = tk.w, x1 = x0 + tw;
     // frame
     ctx.strokeStyle = token("--grid"); ctx.lineWidth = 1; ctx.strokeRect(x0, padT, tw, H);
+    if (tk.def) { ctx.strokeStyle=token("--baseline"); ctx.lineWidth=1.5; ctx.beginPath(); var ax=tk.def.side==="right"?x1:x0; ctx.moveTo(ax,padT);ctx.lineTo(ax,padT+H);ctx.stroke(); }
     // boxed header (name on top, hi–lo scale below — the petrophysical track header)
     var hy = padT - 30, hh = 26;
     ctx.strokeStyle = token("--border"); ctx.strokeRect(x0 + 1, hy, tw - 2, hh);
     ctx.fillStyle = token("--text-secondary"); ctx.font = "600 9px system-ui"; ctx.textAlign = "center"; ctx.textBaseline = "top";
-    ctx.fillText(c.mnemonic, (x0 + x1) / 2, hy + 4);
-    if (c.kind === "flag") {
+    ctx.fillText(tk.def ? (tk.def.title || tk.def.id) : c.mnemonic, (x0 + x1) / 2, hy + 4);
+    if (!c) { ctx.textAlign="left"; ctx.textBaseline="alphabetic"; return; }
+    if (!tk.def && c.kind === "flag") {
       drawFlagStrip(ctx, tk, w, Y);
       ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
       return;
     }
     // continuous: hi–lo scale text in the header (compact; skipped if too narrow)
-    var r = curveAutoRange(tk);
+    var r = tk.def && tk.def.minimum != null ? {min:tk.def.minimum,max:tk.def.maximum} : curveAutoRange(tk);
     if (tw >= 46) {
       ctx.fillStyle = token("--muted"); ctx.font = "8px system-ui"; ctx.textBaseline = "top";
-      ctx.textAlign = "left"; ctx.fillText(fmtScale(r.min), x0 + 3, hy + 16);
-      ctx.textAlign = "right"; ctx.fillText(fmtScale(r.max), x1 - 3, hy + 16);
+      var rl=tk.def&&tk.def.reversed?r.max:r.min, rr=tk.def&&tk.def.reversed?r.min:r.max;
+      ctx.textAlign = "left"; ctx.fillText(fmtScale(rl), x0 + 3, hy + 16);
+      ctx.textAlign = "right"; ctx.fillText(fmtScale(rr), x1 - 3, hy + 16);
     }
     ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
     // cutoff line + reservoir fill (a curve that declares a cutoff, e.g. PHIE)
-    if (c.cutoff != null && isFinite(c.cutoff)) drawCutoffFill(ctx, tk, w, Y, r);
-    // the curve polyline
-    drawWellCurve(ctx, tk, w, Y, r);
+    var ents=tk.curves || [{curve:c,layer:null}];
+    ents.forEach(function(ent) {
+      if (!ent.curve) return;
+      var one={curve:ent.curve,x0:tk.x0,w:tk.w,def:tk.def,layer:ent.layer};
+      var rr=tk.def && tk.def.minimum != null ? r : curveAutoRange(one);
+      if (ent.curve.kind === "flag" || (ent.layer && ent.layer.kind === "flag")) drawFlagStrip(ctx, one, w, Y);
+      else {
+        var cutoff=ent.layer && ent.layer.cutoff != null ? ent.layer.cutoff : ent.curve.cutoff;
+        if(ent.layer&&ent.layer.fill&&typeof ent.layer.fill.to==="number") cutoff=ent.layer.fill.to;
+        if (cutoff != null && isFinite(cutoff)) { one.curve=Object.assign({},ent.curve,{cutoff:cutoff}); drawCutoffFill(ctx,one,w,Y,rr); }
+        drawWellCurve(ctx,one,w,Y,rr);
+      }
+    });
+    ents.forEach(function(ent){
+      if(!ent.curve||!ent.layer||!ent.layer.fill||typeof ent.layer.fill.to!=="string") return;
+      var target=null; for(var ei=0;ei<ents.length;ei++) if(ents[ei].curve&&(ents[ei].layer.id===ent.layer.fill.to||ents[ei].curve.mnemonic===ent.layer.fill.to)){target=ents[ei];break;}
+      if(target) drawBetweenFill(ctx,tk,ent,target,w,Y,r,ent.layer.fill);
+    });
   }
   function trackX(tk, r, v) {
-    var t = (v - r.min) / ((r.max - r.min) || 1); if (t < 0) t = 0; else if (t > 1) t = 1;
+    var vv=v, lo=r.min, hi=r.max;
+    if (tk.def && tk.def.scale === "log") { vv=Math.log(Math.max(vv,1e-30)); lo=Math.log(Math.max(lo,1e-30)); hi=Math.log(Math.max(hi,1e-30)); }
+    var t = (vv - lo) / ((hi - lo) || 1); if (t < 0) t = 0; else if (t > 1) t = 1;
+    if (tk.def && tk.def.reversed) t=1-t;
     return tk.x0 + t * tk.w;
   }
   function drawWellCurve(ctx, tk, w, Y, r) {
     var v = tk.curve.values, tvd = w.tvd; if (!v || !tvd) return;
-    ctx.strokeStyle = idColor("curve:" + tk.curve.mnemonic); ctx.lineWidth = 1.4; ctx.lineJoin = "round";
+    var st=(tk.layer&&tk.layer.style)||{}; ctx.strokeStyle = st.color || idColor("curve:" + tk.curve.mnemonic); ctx.lineWidth = st.width || 1.4; ctx.globalAlpha=st.opacity==null?1:st.opacity; ctx.setLineDash(st.dash||[]); ctx.lineJoin = "round";
     ctx.beginPath(); var started = false;
     for (var s = 0; s < v.length; s++) {
       var val = v[s];
       if (val !== val) { started = false; continue; }        // NaN gap
-      var x = trackX(tk, r, val), y = Y(tvd[s]);
+      var x = trackX(tk, r, val), y = Y(tvd[s],s);
       if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
     }
-    ctx.stroke();
+    ctx.stroke(); ctx.globalAlpha=1; ctx.setLineDash([]);
   }
   // Reservoir shading: fill between the cutoff line and the curve where value ≥
   // cutoff (net), in the track colour at low opacity — the logsuite porosity fill.
@@ -207,7 +263,7 @@
       var a = v[s], b = v[s + 1];
       if (a !== a || b !== b) continue;
       if (a < tk.curve.cutoff && b < tk.curve.cutoff) continue;
-      var y0 = Y(tvd[s]), y1 = Y(tvd[s + 1]);
+      var y0 = Y(tvd[s],s), y1 = Y(tvd[s + 1],s+1);
       var xa = Math.max(xc, trackX(tk, r, a)), xb = Math.max(xc, trackX(tk, r, b));
       ctx.beginPath(); ctx.moveTo(xc, y0); ctx.lineTo(xa, y0); ctx.lineTo(xb, y1); ctx.lineTo(xc, y1);
       ctx.closePath(); ctx.fill();
@@ -215,7 +271,15 @@
     ctx.restore();
     // the cutoff reference line
     ctx.strokeStyle = token("--text-secondary"); ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
-    ctx.beginPath(); ctx.moveTo(xc, Y(tvd[0])); ctx.lineTo(xc, Y(tvd[tvd.length - 1])); ctx.stroke(); ctx.setLineDash([]);
+    ctx.beginPath(); ctx.moveTo(xc, Y(tvd[0],0)); ctx.lineTo(xc, Y(tvd[tvd.length - 1],tvd.length-1)); ctx.stroke(); ctx.setLineDash([]);
+  }
+  function drawBetweenFill(ctx,tk,a,b,w,Y,r,fill) {
+    var av=a.curve.values,bv=b.curve.values,tvd=w.tvd;if(!av||!bv||!tvd)return;
+    ctx.save();ctx.globalAlpha=fill.opacity==null?.18:fill.opacity;ctx.fillStyle=fill.color||idColor("curve:"+a.curve.mnemonic);
+    for(var s=0;s+1<Math.min(av.length,bv.length);s++){
+      if(av[s]!==av[s]||av[s+1]!==av[s+1]||bv[s]!==bv[s]||bv[s+1]!==bv[s+1])continue;
+      var y0=Y(tvd[s],s),y1=Y(tvd[s+1],s+1);ctx.beginPath();ctx.moveTo(trackX(tk,r,av[s]),y0);ctx.lineTo(trackX(tk,r,bv[s]),y0);ctx.lineTo(trackX(tk,r,bv[s+1]),y1);ctx.lineTo(trackX(tk,r,av[s+1]),y1);ctx.closePath();ctx.fill();
+    }ctx.restore();
   }
   function flagCats(c) {
     if (c.codes) return Object.keys(c.codes).map(function (k) { return { code: +k, label: c.codes[k] }; });
@@ -232,7 +296,7 @@
     var v = tk.curve.values, tvd = w.tvd; if (!v || !tvd) return;
     for (var s = 0; s + 1 < v.length; s++) {
       var val = v[s]; if (val !== val) continue;
-      var y0 = Y(tvd[s]), y1 = Y(tvd[s + 1]);
+      var y0 = Y(tvd[s],s), y1 = Y(tvd[s + 1],s+1);
       ctx.fillStyle = flagColor(tk.curve, Math.round(val));
       ctx.fillRect(tk.x0 + 1, Math.min(y0, y1), tk.w - 2, Math.max(1, Math.abs(y1 - y0)));
     }
@@ -247,9 +311,10 @@
     var w = S.wl.wells[g.wi], tvd = w.tvd; if (!tvd || !tvd.length) { hideReadout(); return; }
     // nearest sample by screen depth
     var best = 0, bd = 1e9;
-    for (var s = 0; s < tvd.length; s++) { var d = Math.abs(g.Y(tvd[s]) - px[1]); if (d < bd) { bd = d; best = s; } }
+    for (var s = 0; s < tvd.length; s++) { var d = Math.abs(g.Y(tvd[s],s) - px[1]); if (d < bd) { bd = d; best = s; } }
     var rows = [["", w.display]];
     rows.push(["TVD-SS", fmt(tvd[best], "m")]);
+    if(S.wl.template&&S.wl.template.layout&&S.wl.template.layout.depth_axis==="md") rows.push(["MD",fmt(w.md[best],"m")]);
     if (h.win.flat && !g.parked) rows.push(["Δ pick", fmt(tvd[best] - g.shift, "m")]);
     if (g.parked) rows.push(["", "(no " + pretty(S.wl.pick) + " pick — TVD)"]);
     w.curves.forEach(function (c) {
@@ -319,4 +384,3 @@
     });
     body.appendChild(wg);
   }
-

@@ -294,6 +294,28 @@ you clicked:
 petektools.view3d([pts, geom], color="inferno_-2700_-2500")
 ```
 
+For repeatable log-correlation layouts, build a named template in the viewer
+unit and apply it to any plain `wells_logs` bundle. The result remains ordinary
+versioned JSON and can be saved offline or persisted by a project owner:
+
+```python
+from petektools import CorrelationTemplate, CorrelationTrack
+
+reservoir = (
+    CorrelationTemplate("reservoir", default_hang="flatten", flatten_pick="TopShale")
+    .add_track(CorrelationTrack("facies", width=.45).flag("FACIES"))
+    .add_track(CorrelationTrack("petro", minimum=0, maximum=1)
+               .curve("PHIE", cutoff=.12)
+               .curve("SW", id="sw", overlay=True, style={"dash": [3, 2]}))
+)
+viewer.save_view(reservoir(well_log_bundle), "correlation.html")
+```
+
+Templates are immutable-ish values: `.add_track()` / `.curve()` return new
+values, `.replace()` makes an edited copy, and `.to_dict()` / `.from_dict()`
+round-trip through JSON. A curve absent in one well renders blank; a mnemonic
+absent from all wells is rejected when the template is applied.
+
 ## Where to go next
 
 - **`API.md`** — the locked public contract (the *what*).

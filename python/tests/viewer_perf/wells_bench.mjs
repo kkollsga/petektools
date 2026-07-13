@@ -68,6 +68,7 @@ const result = await page.evaluate(async () => {
     await sleep(60);
   }
   out.wellsFlattenRenderMs = renderMs();
+  out.correlationLayout = window.__PETEK_CORRELATION_LAYOUT || null;
 
   // 3) Synthetic hover over the wells canvas (readout must not throw).
   const wc = document.getElementById("wells-canvas");

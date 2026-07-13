@@ -292,6 +292,15 @@ Wells can be shown/hidden and reordered in the panel; hover reads depth (TVD, pl
 Δ-vs-pick when flattened) + every curve's value. The log lanes are the same f32
 binary blocks the volume decodes (tiny → inline, no worker). Both themes.
 
+An additive `CorrelationTemplate` replaces the inferred one-track-per-curve
+layout with an explicit ordered layout: weighted/grouped tracks, curve/flag
+overlays, fixed/linear/log/reversed scales, styles and fills, tops/labels,
+zone shading, padding/gaps and the default TVD/flatten hang. The renderer draws
+same-horizon connectors between adjacent visible wells using the current order;
+missing picks and parked wells keep their existing semantics. A missing curve in
+one well is a blank lane, while Python application rejects a mnemonic absent
+from every well. With no template, the historic layout is unchanged.
+
 ### Charts (canvas 2-D)
 Analytics marks driven by the payload's `charts` list (a picker chooses one). All
 three are **strictly render-only** — pivots, bins, exceedance points and

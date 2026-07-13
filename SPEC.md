@@ -74,6 +74,12 @@ it (petekStatic `StaticModel` views, petekIO logs/crossplots, peteksim MC charts
 The viewer is horizontal capability because it serves all layers — owner ruling
 `decision_viewer_home_petektools` (2026-07-04).
 
+Viewer layout specifications such as `CorrelationTemplate` are similarly
+domain-agnostic JSON values: they name generic curve lanes, scales, tracks and
+marks but never import or interpret a petekIO/petekStatic/petekSim object. A
+producer may persist the dictionary and apply it to its own bundle; petekTools
+owns validation and rendering without a reverse dependency.
+
 ## 4. Hold parity with the source you consolidate
 
 Where a kernel is lifted from petekio (the author's own prior art — the GATE-0

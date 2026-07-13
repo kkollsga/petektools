@@ -107,6 +107,8 @@ from .asset import (
     write_wellpath,
 )
 from .viewer import (
+    CorrelationTemplate,
+    CorrelationTrack,
     WellLabelStyle,
     WellMarkerStyle,
     WellPathStyle,
@@ -119,6 +121,8 @@ from .viewer import (
 
 __all__ = [
     "Clamped",
+    "CorrelationTemplate",
+    "CorrelationTrack",
     "AnisotropicVariogram",
     "ExperimentalVariogram",
     "Georef",

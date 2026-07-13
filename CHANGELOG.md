@@ -7,6 +7,15 @@ All notable changes to petekTools are recorded here. Format follows
 ## [Unreleased]
 
 ### Added
+- **Correlation view templates.** Public frozen `CorrelationTemplate` and
+  `CorrelationTrack` values provide chainable curve/flag overlays, ordered and
+  grouped weighted tracks, linear/log/reversed scales, styles/fills, layout,
+  tops/connectors/zones, and a default TVD/flatten hang. They round-trip through
+  versioned JSON, validate curve references when applied to a `WellLogBundle`,
+  leave a missing per-well curve blank, and reject curves absent from every
+  well. The additive `wells_logs.template` renderer draws actual same-horizon
+  connectors between adjacent visible/reordered wells and exposes stable layout
+  instrumentation; no-template payloads retain the existing layout exactly.
 - **First-class polished wells in `view2d` and `view3d`.** Both adapters accept
   `wells=` as a bare well, project-wells collection, or explicit dictionary,
   with `well_labels=False|True|"auto"`. Shared frozen `WellStyle` /

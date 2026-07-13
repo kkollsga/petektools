@@ -32,7 +32,11 @@
     var picks = [];
     wells.forEach(function (w) { w.tops.forEach(function (t) { if (picks.indexOf(t.horizon) < 0) picks.push(t.horizon); }); });
     var pick = wlb.flatten_default && picks.indexOf(wlb.flatten_default) >= 0 ? wlb.flatten_default : (picks[0] || null);
-    S.wl = { wells: wells, hang: "tvd", pick: pick, picks: picks };
+    var tpl = wlb.template || null;
+    if (tpl && tpl.spec !== "CorrelationTemplate") throw new Error("wells_logs.template is not a CorrelationTemplate");
+    var hang = tpl && tpl.default_hang === "flatten" ? "flatten" : "tvd";
+    if (tpl && tpl.flatten_pick && picks.indexOf(tpl.flatten_pick) >= 0) pick = tpl.flatten_pick;
+    S.wl = { wells: wells, hang: hang, pick: pick, picks: picks, template: tpl };
     S.wlOrder = wells.map(function (_, i) { return i; });   // display order (reorderable)
     S.wlVis = wells.map(function () { return true; });        // per-well visibility
   }
@@ -40,11 +44,22 @@
     if (!S.wl) return [];
     return S.wlOrder.filter(function (i) { return S.wlVis[i]; });
   }
+  function wellDisplayDepth(w, tvd, index) {
+    var md = S.wl && S.wl.template && S.wl.template.layout
+      && S.wl.template.layout.depth_axis === "md";
+    if (!md || !w.md || !w.md.length) return tvd;
+    if (index != null && index >= 0 && index < w.md.length) return w.md[index];
+    var best = 0, bd = Infinity;
+    for (var q = 0; q < w.tvd.length; q++) {
+      var d = Math.abs(w.tvd[q] - tvd); if (d < bd) { bd = d; best = q; }
+    }
+    return w.md[best];
+  }
   // The shift (m) that aligns a well's chosen pick to the flatten datum, or null
   // when the well has no such pick (it is "parked" — shown unflattened, tagged).
   function pickShift(w, pick) {
     if (!pick) return 0;
-    for (var q = 0; q < w.tops.length; q++) if (w.tops[q].horizon === pick) return w.tops[q].tvd_m;
+    for (var q = 0; q < w.tops.length; q++) if (w.tops[q].horizon === pick) return wellDisplayDepth(w, w.tops[q].tvd_m);
     return null;
   }
 

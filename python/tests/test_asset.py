@@ -14,6 +14,8 @@ def test_public_api_lock():
     assert sorted(pt.__all__) == [
         "AnisotropicVariogram",
         "Clamped",
+        "CorrelationTemplate",
+        "CorrelationTrack",
         "ExperimentalVariogram",
         "Georef",
         "Lattice",

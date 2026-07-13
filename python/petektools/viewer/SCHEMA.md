@@ -492,7 +492,25 @@ carries picks, not transforms). A well with no top for the chosen pick is *parke
 | `kind` | str | `"wells_logs"` |
 | `schema_version` | int | `4` |
 | `flatten_default` | str \| null | the pick pre-selected in flatten mode (else the first pick) |
+| `template` | CorrelationTemplate \| null | additive named layout; absent preserves the exact historic inferred-track layout |
 | `wells` | list[LogWell] | one per bore, in display order (reorderable in the panel) |
+
+**CorrelationTemplate v1:** `{spec:"CorrelationTemplate", schema_version:1,
+name, tracks:[CorrelationTrack], layout:{depth_axis,padding,gap},
+tops:{show,labels,connectors}, zones:{show}, default_hang, flatten_pick}`.
+Tracks are ordered; `width` is their relative width and `group` optionally names
+a visual group. **CorrelationTrack:** `{spec:"CorrelationTrack",
+schema_version:1, id, title?, width, group?, scale:"linear"|"log",
+side:"left"|"right", minimum?, maximum?, reversed, layers:[Layer]}`. A layer is
+`{id, kind:"curve"|"flag", mnemonic, style, fill?, cutoff?, overlay}`. Styles
+carry optional CSS `color`, positive `width`/`dash`, and bounded opacity. A curve
+missing from one well leaves that lane blank; a template applied through the
+Python value rejects a curve absent from every well. Same-horizon connectors
+join adjacent visible wells after current reorder/visibility and use each well's
+TVD/flatten/parked transform. `window.__PETEK_CORRELATION_LAYOUT` exposes the
+resolved template name, visible order, track ids, connector count and hang/pick
+for stable browser assertions. Saved HTML embeds the same object and remains
+fully offline.
 
 The **numeric lanes** (`md_m`, `tvd_m`, curve `values`) are **v3-style f32 binary
 blocks** — `{dtype:"f32", shape:[n], data:"<base64>"}`, little-endian,
