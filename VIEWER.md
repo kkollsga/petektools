@@ -65,6 +65,10 @@ and canonical escaped path IDs; list leaves require an explicit `id`. Explicit
 leaves use `{"object": obj, "id"?, "label"?, "visible"?, "views"?}`.
 Duplicate IDs, cycles, ambiguous list leaves, unknown views, and unsupported
 generic adapter options fail before a server opens.
+An omitted leaf `visible` selects all of that leaf's enabled views; use
+`visible=False` on leaves or `view(..., visible={})` for a catalog-only opening
+that materializes nothing until the user enables an item. Provider/project
+catalogs should always emit their intended initial visibility explicitly.
 
 The live `model.json` contains only workspace manifest v1 and any caller-supplied
 typed payload. `./workspace-resource?item=…&view=…&lane=…` constructs one
@@ -74,6 +78,15 @@ initially visible resources; `include="selected"` embeds every catalogued
 resource so the full chosen tree remains available offline. Both use the same
 zero-network, self-contained HTML export. `refresh()` is the explicit boundary
 for producer/tree mutation and clears the resource snapshot.
+
+The right-panel Project tree is searchable and collapsible. Group checkboxes
+show checked/unchecked/indeterminate state and counts; leaf checkboxes affect
+only the active Map, 3-D, or Wells tab, so selections remain independent across
+views. Large catalogs use a virtual scroll window (the ordered manifest remains
+complete) to keep search and group-toggle work bounded. A failed live resource
+stays local to its leaf and offers retry; a resource omitted from a visible-only
+static snapshot is disabled with the snapshot explanation. Map surface fills
+retain the normal attribute selector and lazy block decoding after composition.
 
 The workspace never traverses a project or interprets domain roles. Generic
 objects use the existing `view2d_payload` / `view3d_payload` ducks. Sections,

@@ -96,6 +96,22 @@
   input[type="range"] { width: 130px; }
   .toggle { display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 3px 0; }
   .toggle input { accent-color: var(--accent); }
+  .workspace-search {
+    width: 100%; font: inherit; color: var(--text-primary); background: var(--plane);
+    border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; margin-bottom: 7px;
+  }
+  .workspace-tree { max-height: 280px; overflow: auto; border-block: 1px solid var(--border); padding: 4px 0; }
+  .workspace-tree-virtual { position: relative; height: 280px; padding: 0; }
+  .workspace-tree-spacer { width: 1px; opacity: 0; }
+  .workspace-tree-window { position: absolute; inset: 0 0 auto 0; }
+  .workspace-row { min-height: 25px; display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .workspace-row > span:not(.workspace-count) { overflow: hidden; text-overflow: ellipsis; }
+  .workspace-group { font-weight: 600; }
+  .workspace-twist { appearance: none; border: 0; background: transparent; color: var(--muted); width: 18px; padding: 0; cursor: pointer; }
+  .workspace-count, .workspace-status { margin-left: auto; color: var(--muted); font-size: 10px; }
+  .workspace-role { color: var(--accent); font-size: 9px; flex: none; }
+  .workspace-disabled { color: var(--muted); }
+  .workspace-retry { appearance: none; border: 0; background: transparent; color: var(--swing-lo); font: inherit; font-size: 10px; cursor: pointer; margin-left: auto; }
   .swatch { width: 11px; height: 11px; border-radius: 3px; flex: none; }
   .swatch.line { height: 0; border-top: 2px solid; border-radius: 0; width: 14px; }
   .btn {

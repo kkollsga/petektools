@@ -35,6 +35,7 @@
   // ---- boot ----------------------------------------------------------------
   function boot(payload) {
     App.payload = payload;
+    initWorkspace(payload);
     // Resolve the 2-D map's binary blocks (SCHEMA.md) into typed arrays — off the
     // main thread when a Worker is available, else synchronously. A JSON-shaped
     // (blockless) map is a no-op; the renderer reads either shape.
@@ -93,6 +94,9 @@
   }
   function registerIdentities() {
     var p = App.payload;
+    // Register workspace identities before deferred resources arrive so colour
+    // slots never depend on fetch order.
+    workspaceIdentityKeys().forEach(registerId);
     // Order = payload order → stable across sessions of the same bundle.
     (p.wells || []).forEach(function (w) { registerId("well:" + w.id); });
     // 3-D scene wells (view3d payloads) take the same well: identity slots.
@@ -285,7 +289,7 @@
     S.s3dShow = { points: true, meshes: true, lattice: true, contours: true, wells: true, outlines: true };
     S.s3dWireframe = false;
     var tab3d = document.querySelector('.tab[data-tab="scene3d"]');
-    if (tab3d) tab3d.hidden = !p.scene3d;
+    if (tab3d) tab3d.hidden = !p.scene3d && !workspaceHasView("scene3d");
 
     var v = p.volume || {};
     S.dims = deriveDims();

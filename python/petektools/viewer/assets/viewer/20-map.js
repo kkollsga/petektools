@@ -165,9 +165,9 @@
     }
   }
   // Boot hook (called from boot() before initState): resolve the map's blocks.
-  function decodeMap2d(payload) {
+  function decodeMap2d(payload, onReady) {
     var m = payload && payload.map;
-    if (!m || !m.blocks || m.__blocksReady) return;
+    if (!m || !m.blocks || m.__blocksReady) { if (onReady) onReady(); return; }
     prepMap2d(m);
     var requested = baseDigests(m), initialFill = (m.fills || [])[0];
     mergeDigests(requested, valueDigests(initialFill));
@@ -175,6 +175,7 @@
     decodeMapDigests(m, requested, function () {
       var cache = blockCache(); fillMap2dBase(m, cache); fillMap2dValues(initialFill, cache);
       m.__blocksReady = true; m.__blocksPending = false; updateBlockStatus(m);
+      if (onReady) onReady();
     });
   }
   // Worker `decoded2d` reply → cache the transferred buffers by digest, fill the
@@ -204,11 +205,12 @@
     var needs = valueDigests(fill), cache = blockCache(), lazy = false;
     for (var d in needs) if (cache[d] == null) { lazy = true; break; }
     if (lazy) perfCount("lazyFillDecodes");
-    decodeMapDigests(m, needs, function () {
+    var decodeMap = fill.__workspaceMap || m;
+    decodeMapDigests(decodeMap, needs, function () {
       fillMap2dValues(fill, cache);
-      if (_mapFillWanted !== index) { updateBlockStatus(m); return; }
+      if (_mapFillWanted !== index) { updateBlockStatus(decodeMap); return; }
       S.mapFillIdx = index;
-      updateBlockStatus(m); renderMap(); if (typeof buildPanel === "function") buildPanel();
+      updateBlockStatus(decodeMap); renderMap(); if (typeof buildPanel === "function") buildPanel();
     });
   }
 
@@ -216,10 +218,14 @@
   // plain nested array. points: f32[n,3]; fill nodes: f32[n,2]; triangles:
   // u32[n,3]; values: f32[n]; line sets (grid_lines / contour lines): CSR coords
   // f32[total,2] + offsets u32[n+1], or a plain [[ [x,y] ... ]] array.
+  function virtualPart(P, i) {
+    for (var q = 0; q < P.parts.length; q++) if (i < P.parts[q].end) return [P.parts[q].value, i - P.parts[q].start];
+    return [null, 0];
+  }
   function ptN(P) { return P ? P.length : 0; }
-  function ptX(P, i) { return P.a ? P.a[i * 3] : P[i][0]; }
-  function ptY(P, i) { return P.a ? P.a[i * 3 + 1] : P[i][1]; }
-  function ptZ(P, i) { if (P.a) return P.a[i * 3 + 2]; var p = P[i]; return p.length > 2 ? p[2] : NaN; }
+  function ptX(P, i) { if (P.parts) { var v = virtualPart(P, i); return ptX(v[0], v[1]); } return P.a ? P.a[i * 3] : P[i][0]; }
+  function ptY(P, i) { if (P.parts) { var v = virtualPart(P, i); return ptY(v[0], v[1]); } return P.a ? P.a[i * 3 + 1] : P[i][1]; }
+  function ptZ(P, i) { if (P.parts) { var v = virtualPart(P, i); return ptZ(v[0], v[1]); } if (P.a) return P.a[i * 3 + 2]; var p = P[i]; return p.length > 2 ? p[2] : NaN; }
   function ndX(N, i) { return N.a ? N.a[i * 2] : N[i][0]; }
   function ndY(N, i) { return N.a ? N.a[i * 2 + 1] : N[i][1]; }
   function trN(T) { return T ? T.length : 0; }
@@ -227,9 +233,9 @@
   function vlAt(V, i) { return V ? (V.a ? V.a[i] : V[i]) : null; }
   function maskAt(V, i) { return V ? (V.a ? V.a[i] : V[i]) : 0; }
   function lsN(L) { return L ? L.length : 0; }
-  function lineLen(L, k) { return L.offsets ? (L.offsets[k + 1] - L.offsets[k]) : L[k].length; }
-  function lineX(L, k, i) { return L.offsets ? L.coords[(L.offsets[k] + i) * 2] : L[k][i][0]; }
-  function lineY(L, k, i) { return L.offsets ? L.coords[(L.offsets[k] + i) * 2 + 1] : L[k][i][1]; }
+  function lineLen(L, k) { if (L.parts) { var v = virtualPart(L, k); return lineLen(v[0], v[1]); } return L.offsets ? (L.offsets[k + 1] - L.offsets[k]) : L[k].length; }
+  function lineX(L, k, i) { if (L.parts) { var v = virtualPart(L, k); return lineX(v[0], v[1], i); } return L.offsets ? L.coords[(L.offsets[k] + i) * 2] : L[k][i][0]; }
+  function lineY(L, k, i) { if (L.parts) { var v = virtualPart(L, k); return lineY(v[0], v[1], i); } return L.offsets ? L.coords[(L.offsets[k] + i) * 2 + 1] : L[k][i][1]; }
   // Stroke one line set (typed or plain) into the current path.
   function strokeLineSet(ctx, L, sc, ox, oy) {
     if (sc == null) { sc = mapView.scale; ox = mapView.ox; oy = mapView.oy; }
@@ -535,7 +541,18 @@
 
   function renderMap() {
     var cv = document.getElementById("map-canvas");
-    if (!App.payload.map) { showEmpty("No map bundle in this payload."); return; }
+    if (!App.payload.map) {
+      showEmpty("No map bundle in this payload.");
+      // The empty-state overlay does not replace the canvas. Erase its backing
+      // store explicitly so a previously drawn fill/point patch cannot remain
+      // visible through or around the overlay.
+      var emptyCtx = cv && cv.getContext("2d");
+      if (emptyCtx) emptyCtx.clearRect(0, 0, cv.width, cv.height);
+      var legend = document.getElementById("legend");
+      if (legend) { legend.innerHTML = ""; legend.style.display = "none"; }
+      hideReadout();
+      return;
+    }
     if (App.payload.map.__blocksPending) { showEmpty("Decoding map…"); return; }
     hideEmpty();
     sizeCanvas(cv);

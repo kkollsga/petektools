@@ -14,8 +14,11 @@ All notable changes to petekTools are recorded here. Format follows
   carries stable item IDs, independent per-view visibility, deferred resource
   links, and additive Map/3-D item bindings. Live resources materialize once on
   first request; `.save(..., include="visible"|"selected")` freezes the same
-  resources into the existing self-contained HTML contract. Existing single-
-  view payloads and `view2d` / `view3d` / `serve` / `save_view` are unchanged.
+  resources into the existing self-contained HTML contract. Its virtualized,
+  searchable project tree has tri-state groups and independent Map/3-D/Wells
+  visibility; composed surface resources preserve their attribute selector and
+  lazy content-addressed decoding. Existing single-view payloads and `view2d` /
+  `view3d` / `serve` / `save_view` are unchanged.
 - **Correlation view templates.** Public frozen `CorrelationTemplate` and
   `CorrelationTrack` values provide chainable curve/flag overlays, ordered and
   grouped weighted tracks, linear/log/reversed scales, styles/fills, layout,

@@ -157,6 +157,12 @@ def view3d_payload(
     n_points = 0
     n_triangles = 0
 
+    def extend_outlines(rings: list[Any], item_id: str | None) -> None:
+        if item_id is None:
+            outlines.extend(rings)
+        else:
+            outlines.extend({"points": ring, "item_id": item_id} for ring in rings)
+
     for scene_entry in scene_items:
         item, cspec, fspec, name, item_id, c_explicit, f_explicit = _norm_item(
             scene_entry, color_spec, fill_spec
@@ -197,7 +203,7 @@ def view3d_payload(
             edge = getattr(item, "edge", None)
             edge_rings = _rings(edge) if edge is not None else []
             if mesh_added:
-                outlines.extend(edge_rings)
+                extend_outlines(edge_rings, item_id)
                 continue
             entry = _value_mesh(item, None)
             if entry is None:
@@ -233,7 +239,7 @@ def view3d_payload(
             )
             lattices.append({"name": name, "lines": lines, "z": None, **({"item_id": item_id} if item_id is not None else {})})
             for ring in edge_rings:
-                flat_rings.append({"points": ring, "z": None})
+                flat_rings.append({"points": ring, "z": None, **({"item_id": item_id} if item_id is not None else {})})
             summary["grid"] = f"{int(getattr(item, 'ncol'))} x {int(getattr(item, 'nrow'))}"
             layers.append({"kind": "lines", "name": name, **({"item_id": item_id} if item_id is not None else {})})
             continue
@@ -244,7 +250,7 @@ def view3d_payload(
             if mesh_added:
                 # fill= opted this mesh into the value-coloured surface;
                 # its edge rings keep the ref_z plane (pre-ruling behaviour)
-                outlines.extend(edge_rings)
+                extend_outlines(edge_rings, item_id)
                 continue
             # A bare geometry-shell trimesh (e.g. infer_geometry's MeshShell):
             # a FLAT WIREFRAME GRID at the item's own shallowest point
@@ -256,7 +262,7 @@ def view3d_payload(
             z_flat = _verts_shallowest(_mesh_vertices(item))
             lattices.append({"name": name, "lines": lines, "z": z_flat, **({"item_id": item_id} if item_id is not None else {})})
             for ring in edge_rings:
-                flat_rings.append({"points": ring, "z": z_flat})
+                flat_rings.append({"points": ring, "z": z_flat, **({"item_id": item_id} if item_id is not None else {})})
             summary["triangles"] = summary.get("triangles", 0) + n_tris
             if edge_stride > 1:
                 summary["mesh_edge_stride"] = edge_stride
@@ -278,14 +284,21 @@ def view3d_payload(
             if item_id is not None:
                 for well in added:
                     well["item_id"] = item_id
-            layers.extend({"kind": "wells", "name": w["id"]} for w in added)
+            layers.extend(
+                {
+                    "kind": "wells",
+                    "name": w["id"],
+                    **({"item_id": item_id} if item_id is not None else {}),
+                }
+                for w in added
+            )
             continue
 
         # Stable point metadata is authoritative even if a producer also
         # exposes topology helpers such as edge/rings for other workflows.
         rings = _rings(item) if role != "points" else []
         if rings:
-            outlines.extend(rings)
+            extend_outlines(rings, item_id)
             continue
 
         pts = _points(item)
@@ -341,7 +354,7 @@ def view3d_payload(
             )
             lattices.append({"name": name, "lines": lines, "z": z_flat, **({"item_id": item_id} if item_id is not None else {})})
             for ring in edge_rings:
-                flat_rings.append({"points": ring, "z": z_flat})
+                flat_rings.append({"points": ring, "z": z_flat, **({"item_id": item_id} if item_id is not None else {})})
             layers.append({"kind": "lines", "name": name, **({"item_id": item_id} if item_id is not None else {})})
             continue
         if entry is not None:

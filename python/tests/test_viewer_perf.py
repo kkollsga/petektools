@@ -35,6 +35,8 @@ _BENCH_JS = Path(__file__).parent / "viewer_perf" / "decode_bench.js"
 _RENDER_JS = Path(__file__).parent / "viewer_perf" / "render_bench.mjs"
 _WELLS_JS = Path(__file__).parent / "viewer_perf" / "wells_bench.mjs"
 _WELL_RENDER_JS = Path(__file__).parent / "viewer_perf" / "well_render_bench.mjs"
+_WORKSPACE_JS = Path(__file__).parent / "viewer_perf" / "workspace_bench.mjs"
+_WORKSPACE_SCALE_JS = Path(__file__).parent / "viewer_perf" / "workspace_scale_bench.mjs"
 _NODE = shutil.which("node")
 
 
@@ -129,6 +131,116 @@ def test_decode_kernel_5m(tmp_path):
 # regression to a full ncol×nrow repaint blows straight past it.
 HEAP_CAP_MB = {"100k": 200.0, "1M": 350.0, "5M": 900.0}
 FRAME_CAP_MS = 50.0
+
+
+@pytest.mark.skipif(not _HAVE_PW, reason="playwright/chromium not installed")
+def test_workspace_tree_search_tristate_and_per_view_visibility(tmp_path):
+    import petektools as pto
+
+    class WorkspaceSurface:
+        kind = "surface"
+        geometry = None
+
+        def __init__(self, name, shift):
+            self.name = name
+            self.shift = shift
+
+        def attr_names(self):
+            return ["thickness"]
+
+        def value_layer(self, attr=None, stride=None):
+            offset = self.shift + (100.0 if attr == "thickness" else 0.0)
+            return {
+                "name": attr or "values",
+                "nodes": [[self.shift, 0.0], [self.shift + 50.0, 0.0],
+                          [self.shift, 50.0], [self.shift + 50.0, 50.0]],
+                "triangles": [[0, 1, 2], [1, 3, 2]],
+                "values": [offset + 1.0, offset + 2.0, offset + 3.0, offset + 4.0],
+                "range": [offset + 1.0, offset + 4.0],
+            }
+
+    session = pto.view(
+        {
+            "Interpretation": {
+                "Cloud A": {
+                    "object": WorkspaceSurface("Cloud A", 0.0),
+                    "views": {
+                        "map": {"encoding": "blocks", "block_threshold_bytes": 1},
+                        "scene3d": {},
+                    },
+                    "visible": {"map": True, "scene3d": False},
+                },
+                "Cloud B": {
+                    "object": WorkspaceSurface("Cloud B", 1000.0),
+                    "views": {
+                        "map": {"encoding": "blocks", "block_threshold_bytes": 1},
+                        "scene3d": {},
+                    },
+                    "visible": {"map": False, "scene3d": True},
+                },
+            }
+        },
+        serve=False,
+    )
+    view = tmp_path / "workspace-selected.html"
+    session.save(view, include="selected")
+    out = subprocess.run(
+        [_NODE, str(_WORKSPACE_JS), str(view)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert out.returncode == 0, out.stdout + out.stderr
+    result = json.loads(out.stdout.strip().splitlines()[-1])
+    assert result["consoleErrors"] == []
+    assert result["triStateInitial"] is True
+    assert result["returned"]["fetches"] == 0
+
+
+@pytest.mark.skipif(not _HAVE_PW, reason="playwright/chromium not installed")
+def test_workspace_tree_2000_leaf_interaction_budget(tmp_path):
+    leaves = [
+        {
+            "id": f"surface:{i}",
+            "label": f"Surface {i}",
+            "views": ["map"],
+            "visible": {"map": False},
+            "resources": {},
+        }
+        for i in range(2000)
+    ]
+    payload = {
+        "schema_version": 3,
+        "kind": "workspace",
+        "workspace": {
+            "schema_version": 1,
+            "title": "2,000-leaf workspace",
+            "available_views": ["map"],
+            "tree": [
+                {
+                    "id": "group:surfaces",
+                    "label": "Surfaces",
+                    "expanded": True,
+                    "children": leaves,
+                }
+            ],
+            "resources": {},
+            "snapshot": {"include": "visible", "message": "Performance fixture."},
+        },
+    }
+    view = tmp_path / "workspace-2000.html"
+    save_view(payload, view)
+    out = subprocess.run(
+        [_NODE, str(_WORKSPACE_SCALE_JS), str(view)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert out.returncode == 0, out.stdout + out.stderr
+    result = json.loads(out.stdout.strip().splitlines()[-1])
+    assert result["renderedRows"] <= 40
+    assert result["treeBuildP95Ms"] < 16.7
+    assert result["groupToggleP95Ms"] < 16.7
 
 
 def _build_scale_view(scale: str, tmp_path: Path) -> Path:

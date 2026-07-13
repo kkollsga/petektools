@@ -867,6 +867,8 @@ from petektools import viewer
 # Generic lazy project workspace. Mapping keys form ordered groups/path IDs;
 # explicit list leaves require stable IDs. Construction catalogs only: resource
 # ducks are called once, on first enable. The returned session is inspectable.
+# Omitted leaf visibility selects all enabled views; pass visible={} for a
+# catalog-only opening, or emit explicit per-view visibility from a provider.
 session = viewer.view({
     "Interpretation": {
         "Top Agat": {"object": top_agat, "visible": True},

@@ -208,7 +208,7 @@
       var obj = new THREE.Points(geo, mat);
       s3d.group.add(obj);
       var entry = { obj: obj, geo: geo, f: c.f, n: c.n, stride: ptStride, kept: kept, src: c.src };
-      obj.userData.petek = { kind: "points", name: c.name, o: entry };
+      obj.userData.petek = { kind: "points", name: c.name, item_id: c.src.item_id, o: entry };
       built.pointObjs.push(entry);
       built.pointCount += kept;
     });
@@ -247,7 +247,7 @@
         color: hasValues ? 0xffffff : S3D_MESH_NEUTRAL,
       });
       var mesh = new THREE.Mesh(geo, mat);
-      mesh.userData.petek = { kind: "mesh", m: m };
+      mesh.userData.petek = { kind: "mesh", item_id: m.item_id, m: m };
       s3d.group.add(mesh);
       built.meshObjs.push({ mesh: mesh, geo: geo, m: m, hasValues: hasValues });
       built.triangleCount += idx.length / 3;
@@ -259,7 +259,7 @@
       var lz = L.z != null ? L.z : refZ;
       var obj = polylinesToSegments(L.lines, function (p) { return [p[0] - cx, lz - cz, p[1] - cy]; }, token("--muted"));
       if (obj) {
-        obj.userData.petek = { kind: "lines", name: L.name, label: L.name ? pretty(L.name) : "grid lines" };
+        obj.userData.petek = { kind: "lines", name: L.name, item_id: L.item_id, label: L.name ? pretty(L.name) : "grid lines" };
         s3d.group.add(obj); built.latticeObjs.push(obj);
         // the REAL rendered level, read back from the built geometry (tests)
         built.latticeZ.push(obj.geometry.attributes.position.count
@@ -268,26 +268,23 @@
     });
 
     // ---- contour polylines at their level elevation (minor + major batches) -
-    var minor = [], major = [];
+    var contourGroups = {};
     (sc.contours || []).forEach(function (cs) {
-      var dst = cs.major ? major : minor;
+      var key = (cs.item_id || "") + "::" + (cs.major ? "major" : "minor");
+      var group = contourGroups[key] || (contourGroups[key] = { item_id: cs.item_id, major: !!cs.major, pairs: [] });
       cs.lines.forEach(function (line) {
         for (var q = 0; q < line.length - 1; q++) {
-          dst.push([line[q][0] - cx, cs.level - cz, line[q][1] - cy]);
-          dst.push([line[q + 1][0] - cx, cs.level - cz, line[q + 1][1] - cy]);
+          group.pairs.push([line[q][0] - cx, cs.level - cz, line[q][1] - cy]);
+          group.pairs.push([line[q + 1][0] - cx, cs.level - cz, line[q + 1][1] - cy]);
         }
       });
     });
-    if (minor.length) {
-      var mn = segmentsFromPairs(minor, token("--text-secondary"), 0.55);
-      mn.userData.petek = { kind: "contours", label: "contour" };
-      s3d.group.add(mn); built.contourObjs.push(mn);
-    }
-    if (major.length) {
-      var mj = segmentsFromPairs(major, token("--text-secondary"), 0.9);
-      mj.userData.petek = { kind: "contours", label: "contour" };
-      s3d.group.add(mj); built.contourObjs.push(mj);
-    }
+    Object.keys(contourGroups).forEach(function (key) {
+      var cg = contourGroups[key]; if (!cg.pairs.length) return;
+      var obj = segmentsFromPairs(cg.pairs, token("--text-secondary"), cg.major ? 0.9 : 0.55);
+      obj.userData.petek = { kind: "contours", item_id: cg.item_id, label: "contour" };
+      s3d.group.add(obj); built.contourObjs.push(obj);
+    });
 
     // ---- outline rings: plain rings flat at ref_z; object-form {points, z}
     // rings at their flat item's level ----------------------------------------
@@ -295,7 +292,7 @@
       var ring = entry.points || entry, oz = entry.z != null ? entry.z : refZ;
       var obj = polylinesToSegments([ring], function (p) { return [p[0] - cx, oz - cz, p[1] - cy]; }, token("--text-secondary"));
       if (obj) {
-        obj.userData.petek = { kind: "outline", label: "outline" };
+        obj.userData.petek = { kind: "outline", item_id: entry.item_id, label: "outline" };
         s3d.group.add(obj); built.outlineObjs.push(obj);
       }
     });
@@ -319,8 +316,8 @@
       mgeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array([pts[0].x, pts[0].y, pts[0].z]), 3));
       var markerColor = ms.fill || idColor("well:" + w.id) || color;
       var marker = new THREE.Points(mgeo, new THREE.PointsMaterial({ size: ms.size || 7, sizeAttenuation: false, color: new THREE.Color(markerColor) }));
-      line.userData.petek = { kind: "well", name: w.id, label: disp(w, w.id) };
-      marker.userData.petek = { kind: "well", name: w.id, label: disp(w, w.id) };
+      line.userData.petek = { kind: "well", name: w.id, item_id: w.item_id, label: disp(w, w.id) };
+      marker.userData.petek = { kind: "well", name: w.id, item_id: w.item_id, label: disp(w, w.id) };
       s3d.group.add(line); s3d.group.add(marker);
       built.wellObjs.push(line); built.wellObjs.push(marker);
       if (w.label) built.wellLabels.push({ w: w, p: pts[0].clone() });
@@ -353,6 +350,7 @@
     if (!s3dBuilt || !S.s3dShow.wells) return;
     var rect = s3d.renderer.domElement.getBoundingClientRect(), boxes = [];
     s3dBuilt.wellLabels.forEach(function (entry) {
+      if (!workspaceItemVisible(entry.w.item_id, "scene3d")) return;
       var p = entry.p.clone().applyMatrix4(s3d.group.matrixWorld).project(s3d.camera);
       if (p.z < -1 || p.z > 1) return;
       var ax = (p.x * .5 + .5) * rect.width, ay = (-p.y * .5 + .5) * rect.height;
@@ -449,15 +447,15 @@
 
   function applyScene3dVisibility() {
     if (!s3dBuilt) return;
-    s3dBuilt.pointObjs.forEach(function (o) { o.obj.visible = S.s3dShow.points; });
+    s3dBuilt.pointObjs.forEach(function (o) { o.obj.visible = S.s3dShow.points && workspaceItemVisible(o.src.item_id, "scene3d"); });
     s3dBuilt.meshObjs.forEach(function (o) {
-      o.mesh.visible = S.s3dShow.meshes;
+      o.mesh.visible = S.s3dShow.meshes && workspaceItemVisible(o.m.item_id, "scene3d");
       o.mesh.material.wireframe = S.s3dWireframe;
     });
-    s3dBuilt.latticeObjs.forEach(function (o) { o.visible = S.s3dShow.lattice; });
-    s3dBuilt.contourObjs.forEach(function (o) { o.visible = S.s3dShow.contours; });
-    s3dBuilt.outlineObjs.forEach(function (o) { o.visible = S.s3dShow.outlines; });
-    s3dBuilt.wellObjs.forEach(function (o) { o.visible = S.s3dShow.wells; });
+    s3dBuilt.latticeObjs.forEach(function (o) { o.visible = S.s3dShow.lattice && workspaceItemVisible(o.userData.petek.item_id, "scene3d"); });
+    s3dBuilt.contourObjs.forEach(function (o) { o.visible = S.s3dShow.contours && workspaceItemVisible(o.userData.petek.item_id, "scene3d"); });
+    s3dBuilt.outlineObjs.forEach(function (o) { o.visible = S.s3dShow.outlines && workspaceItemVisible(o.userData.petek.item_id, "scene3d"); });
+    s3dBuilt.wellObjs.forEach(function (o) { o.visible = S.s3dShow.wells && workspaceItemVisible(o.userData.petek.item_id, "scene3d"); });
   }
 
   // z-exaggeration: a display-only group scale (same control the volume tab
@@ -628,6 +626,7 @@
   // The scene3d control panel: colormap + z-exag (+ fit) + per-layer toggles.
   function buildScene3dPanel(body) {
     var sc = App.payload.scene3d;
+    if (!sc) { body.appendChild(el("div", "hint", workspaceLoadingHint("scene3d") || "No 3-D scene bundle in this payload.")); return; }
     var built = s3dBuilt && s3dBuilt._for === sc ? s3dBuilt : null;
     var g = group("Scene");
     g.appendChild(el("div", "hint",
@@ -683,6 +682,7 @@
     var pc = sc.point_color, pointsRampDrawn = false, ptIdx = 0;
     if (S.s3dShow.meshes) {
       (sc.meshes || []).forEach(function (m) {
+        if (!workspaceItemVisible(m.item_id, "scene3d")) return;
         if (m.values && m.range) {
           rampBlock(lg, typeIcon("fill", null, m.colormap), disp(m, m.name),
             m.range[0], m.range[1], m.colormap);
@@ -697,6 +697,7 @@
         // OWN range/colormap draws its OWN ramp (per-object color ruling);
         // clouds on the global point_color share one ramp block.
         var src = (sc.points || [])[ptIdx++] || null;
+        if (!workspaceItemVisible(ly.item_id || (src && src.item_id), "scene3d")) return;
         if (!S.s3dShow.points || !(sc.points || []).length) return;
         var plabel = ly.name ? pretty(ly.name) : "points";
         var cc = s3dCloudColor(src, pc);
@@ -709,12 +710,15 @@
             cc.range ? rampCss(cc.cmap, 0.75) : token("--accent")));
         }
       } else if (ly.kind === "lines") {
+        if (!workspaceItemVisible(ly.item_id, "scene3d")) return;
         if (!S.s3dShow.lattice || !(sc.lattices || []).length) return;
         keys.appendChild(iconKeyRow("lines", ly.name ? pretty(ly.name) : "grid lines", token("--muted")));
       } else if (ly.kind === "contours") {
+        if (!workspaceItemVisible(ly.item_id, "scene3d")) return;
         if (!S.s3dShow.contours || !(sc.contours || []).length) return;
         keys.appendChild(iconKeyRow("contours", ly.name ? pretty(ly.name) : "contours", token("--text-secondary")));
       } else if (ly.kind === "wells") {
+        if (!workspaceItemVisible(ly.item_id, "scene3d")) return;
         if (!S.s3dShow.wells) return;
         keys.appendChild(iconKeyRow("wells", pretty(ly.name || "well"), idColor("well:" + ly.name)));
       }

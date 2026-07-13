@@ -1,6 +1,7 @@
   // ---- control panel (per tab) ---------------------------------------------
   function buildPanel() {
     var body = document.getElementById("panel-body"); body.innerHTML = "";
+    buildWorkspaceTree(body);
     if (App.tab === "map") buildMapPanel(body);
     else if (App.tab === "section") buildSectionPanel(body);
     else if (App.tab === "scene3d") buildScene3dPanel(body);
@@ -11,6 +12,7 @@
     if (App.payload.summary) body.appendChild(summaryGroup());
   }
   function buildMapPanel(body) {
+    if (!App.payload.map) { body.appendChild(el("div", "hint", workspaceLoadingHint("map") || "No map bundle in this payload.")); return; }
     if (S.mapLayers.length) {
       var g = group("Field");
       g.appendChild(selectRow("Layer", S.mapLayers.map(function (l) { return l.display; }), S.mapLayerIdx, function (i) { S.mapLayerIdx = i; renderMap(); }));

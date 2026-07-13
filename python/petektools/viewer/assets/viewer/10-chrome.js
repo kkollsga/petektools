@@ -16,7 +16,7 @@
     if (!wlb || !wlb.wells || !wlb.wells.length) return;
     var wells = wlb.wells.map(function (w) {
       return {
-        id: w.id, display: disp(w, w.id), datum: w.datum_m,
+        id: w.id, item_id: w.item_id || w.id, display: disp(w, w.id), datum: w.datum_m,
         md: decodeLane(w.md_m), tvd: decodeLane(w.tvd_m),
         curves: (w.curves || []).map(function (c) {
           return {
@@ -87,6 +87,7 @@
     hideReadout();
     buildPanel();
     renderActive();
+    ensureWorkspaceTab(tab);
   }
   function renderActive() {
     // Time the active render and stash it on window for the perf harness (a

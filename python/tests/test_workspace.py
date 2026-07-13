@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -123,6 +124,10 @@ def test_generic_resource_is_lazy_cached_and_bound():
         {"id": item_id, "point_range": [0, 2], "layer_range": [0, 1]}
     ]
 
+    scene = session.resource(item_id, "scene3d")["payload"]["scene3d"]
+    assert scene["points"][0]["item_id"] == item_id
+    assert scene["layers"][0]["item_id"] == item_id
+
 
 class Provider:
     def __init__(self):
@@ -237,3 +242,17 @@ def test_notebook_style_view_without_serve_and_visible_save(tmp_path):
     session.save(path)
     assert path.exists()
     assert points.calls == 2  # one Map + one 3-D visible resource
+
+
+def test_2000_leaf_manifest_only_startup_budget():
+    catalog = {
+        "Interpretation": {
+            f"Surface {i}": {"object": Points(f"Surface {i}"), "visible": False}
+            for i in range(2000)
+        }
+    }
+    started = time.perf_counter()
+    session = pto.view(catalog, serve=False)
+    elapsed_ms = (time.perf_counter() - started) * 1000.0
+    assert len(session.tree()[0]["children"]) == 2000
+    assert elapsed_ms < 500.0
