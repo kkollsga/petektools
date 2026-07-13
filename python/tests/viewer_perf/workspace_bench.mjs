@@ -26,6 +26,35 @@ const result = await page.evaluate(async () => {
   const project = document.querySelector(".workspace-tree");
   const group = document.querySelector(".workspace-group input[type=checkbox]");
   const triStateInitial = !!(group && group.indeterminate);
+  const shell = {
+    enabled: document.getElementById("app").classList.contains("workspace-shell"),
+    treeInNavigator: !!(project && project.closest("#navigator")),
+    treeInInspector: !!document.querySelector("#panel .workspace-tree"),
+    visibleTabs: Array.from(document.querySelectorAll(".tab")).filter((tab) => !tab.hidden).map((tab) => tab.dataset.tab),
+    statusVisible: document.getElementById("statusbar").offsetParent !== null,
+  };
+
+  // Keyboard access: help traps focus and Escape restores it; / targets search;
+  // the separator is keyboard-resizable and panel toggles expose state.
+  const helpButton = document.getElementById("help-toggle"); helpButton.focus();
+  document.dispatchEvent(new KeyboardEvent("keydown", { key: "?", bubbles: true }));
+  await sleep(20);
+  const help = {
+    open: !document.getElementById("shortcut-help").hidden,
+    focusedInside: document.getElementById("shortcut-help").contains(document.activeElement),
+  };
+  document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  help.closed = document.getElementById("shortcut-help").hidden;
+  help.restored = document.activeElement === helpButton;
+  document.dispatchEvent(new KeyboardEvent("keydown", { key: "/", bubbles: true }));
+  help.searchFocused = document.activeElement.classList.contains("workspace-search");
+  const resize = document.getElementById("navigator-resizer");
+  const widthBefore = document.getElementById("navigator").getBoundingClientRect().width;
+  resize.focus(); resize.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+  const widthAfter = document.getElementById("navigator").getBoundingClientRect().width;
+  const inspectorToggle = document.getElementById("inspector-toggle"); inspectorToggle.click();
+  const inspectorClosed = document.getElementById("panel").hidden; inspectorToggle.click();
+  const inspectorReopened = !document.getElementById("panel").hidden;
 
   // Search is display-only and must retain the canonical item state.
   const search = document.querySelector(".workspace-search");
@@ -82,9 +111,19 @@ const result = await page.evaluate(async () => {
       return true;
     })(),
   };
-  return { initial, triStateInitial, visibleLabels, afterMapGroup, fillOptions, activeFillLegend, scene,
+  return { initial, triStateInitial, shell, help, resize: { widthBefore, widthAfter }, inspectorClosed, inspectorReopened,
+    visibleLabels, afterMapGroup, fillOptions, activeFillLegend, scene,
     afterSceneToggle, returned, hiddenMap, hasTree: !!project };
 });
+await page.setViewportSize({ width: 720, height: 760 });
+await page.waitForTimeout(40);
+result.narrow = await page.evaluate(() => ({
+  viewWidth: document.getElementById("view").getBoundingClientRect().width,
+  navigatorPosition: getComputedStyle(document.getElementById("navigator")).position,
+  inspectorPosition: getComputedStyle(document.getElementById("panel")).position,
+  navigatorToggleVisible: document.getElementById("navigator-toggle").offsetParent !== null,
+  inspectorToggleVisible: document.getElementById("inspector-toggle").offsetParent !== null,
+}));
 if (screenshot) await page.screenshot({ path: screenshot, fullPage: false });
 result.consoleErrors = errors;
 await browser.close();
@@ -93,6 +132,13 @@ const ids = Object.keys(result.initial.visible);
 const fail = (message) => { console.log(JSON.stringify({ ...result, failure: message })); process.exit(7); };
 if (errors.length) fail("console errors");
 if (!result.hasTree || !result.triStateInitial) fail("tree/tri-state missing");
+if (!result.shell.enabled || !result.shell.treeInNavigator || result.shell.treeInInspector) fail("workspace regions are not separated");
+if (result.shell.visibleTabs.join(",") !== "map,scene3d") fail("tabs are not capability-derived");
+if (!result.shell.statusVisible) fail("workspace status bar missing");
+if (!result.help.open || !result.help.focusedInside || !result.help.closed || !result.help.restored || !result.help.searchFocused) fail("shortcut/focus contract failed");
+if (!(result.resize.widthAfter > result.resize.widthBefore) || !result.inspectorClosed || !result.inspectorReopened) fail("panel controls failed");
+if (result.narrow.viewWidth < 700 || result.narrow.navigatorPosition !== "absolute" || result.narrow.inspectorPosition !== "absolute"
+    || !result.narrow.navigatorToggleVisible || !result.narrow.inspectorToggleVisible) fail("narrow layout is not usable");
 if (!result.visibleLabels.some((label) => /cloud b/i.test(label))) fail("search did not retain Cloud B");
 if (ids.length !== 2) fail("expected two items");
 if (!ids.every((id) => result.afterMapGroup.visible[id].map)) fail("Map group did not select both leaves");

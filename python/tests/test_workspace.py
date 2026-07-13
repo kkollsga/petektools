@@ -13,6 +13,7 @@ import pytest
 
 import petektools as pto
 from petektools import WorkspaceSession
+from petektools.viewer import ASSETS, _bundle
 
 
 class Points:
@@ -467,3 +468,45 @@ def test_2000_leaf_provider_catalog_with_disabled_assets_stays_metadata_only():
     assert all(leaf["disabled"] and leaf["resources"] == {} for leaf in leaves)
     assert provider.resource_calls == 0
     assert elapsed_ms < 500.0
+
+
+def test_workspace_shell_has_separate_semantic_regions_and_bounded_preferences():
+    html = (ASSETS / "index.html").read_text()
+    source = _bundle.viewer_js()
+
+    assert html.index('id="navigator"') < html.index('id="view"') < html.index('id="panel"')
+    assert 'aria-labelledby="navigator-heading"' in html
+    assert 'aria-labelledby="inspector-heading"' in html
+    assert 'id="statusbar"' in html and 'role="status"' in html
+    assert 'id="shortcut-help"' in html and 'role="dialog"' in html
+    assert 'role="separator"' in html
+
+    # Workspace mode is additive: the class and capability pruning are applied
+    # only after a workspace manifest exists; legacy typed payloads retain the
+    # historic two-region shell and tabs.
+    assert 'if (!W) return;\n    root.classList.add("workspace-shell")' in source
+    assert 'button.hidden = !workspaceTabAvailable(tab)' in source
+    assert 'buildWorkspaceNavigator();\n    buildPanel();' in source
+    panel_boot = (ASSETS / "viewer" / "80-panel-boot.js").read_text()
+    assert "buildWorkspaceTree(body)" not in panel_boot
+
+    # Persistence is deliberately UI-only: no manifest, visibility, lane, or
+    # producer data is serialized into browser storage.
+    assert 'localStorage.setItem(UI_PREF_KEY, JSON.stringify(safe))' in source
+    assert "navigatorWidth" in source and "inspectorWidth" in source
+    pref_source = source[source.index("function saveUiPrefs") : source.index("function boundedPanelWidth")]
+    assert all(token not in pref_source for token in ("manifest", "visible", "activeLane", "resources"))
+
+
+def test_workspace_shell_declares_keyboard_and_accessibility_contract():
+    html = (ASSETS / "index.html").read_text()
+    source = _bundle.viewer_js()
+
+    for shortcut in ('event.key === "/"', 'event.key === "?"', '/^[123]$/', 'toLowerCase() === "f"'):
+        assert shortcut in source
+    assert 'setAttribute("aria-controls"' in source
+    assert 'setAttribute("aria-labelledby"' in source
+    assert 'setAttribute("aria-expanded"' in source
+    assert 'setAttribute("aria-label", "Search project")' in source
+    assert ':focus-visible' in html
+    assert 'id="shortcut-close"' in html

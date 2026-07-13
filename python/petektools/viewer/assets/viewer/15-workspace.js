@@ -90,12 +90,13 @@
       fetches: W.fetches, compositions: W.compositions,
       treeBuildMs: W.treeBuildMs.slice(), groupToggleMs: W.groupToggleMs.slice(),
     };
+    updateWorkspaceChrome();
   }
 
   function workspaceLoadingHint(view) {
     if (!W || !workspaceHasView(view)) return "";
     var pending = Object.keys(W.loading).some(function (key) { return W.loading[key].view === view; });
-    return pending ? "Loading selected workspace resources…" : "Select an item in the project tree.";
+    return pending ? "Loading selected workspace resources…" : "Select an item in the Project navigator.";
   }
 
   function ensureWorkspaceTab(tab) {
@@ -127,7 +128,7 @@
   function scheduleWorkspacePanel() {
     if (W.panelTimer) return;
     W.panelTimer = setTimeout(function () {
-      W.panelTimer = null; exposeWorkspaceState(); buildPanel();
+      W.panelTimer = null; exposeWorkspaceState(); buildWorkspaceNavigator(); buildPanel();
     }, 0);
   }
 
@@ -197,7 +198,7 @@
     else if (view === "scene3d") composeWorkspaceScene3d();
     else if (view === "wells") composeWorkspaceWells();
     W.compositions++; exposeWorkspaceState();
-    buildPanel(); if (workspaceViewName(App.tab) === view) renderActive();
+    buildWorkspaceNavigator(); buildPanel(); if (workspaceViewName(App.tab) === view) renderActive();
   }
 
   function composeWorkspaceMap() {
@@ -351,7 +352,7 @@
       S.wl.wells.forEach(function (well, i) { if (well.item_id === id) S.wlVis[i] = visible; });
       renderWells();
     }
-    exposeWorkspaceState(); buildPanel();
+    exposeWorkspaceState(); buildWorkspaceNavigator(); buildPanel();
   }
 
   function setWorkspaceLane(id, view, lane) {
@@ -362,7 +363,7 @@
       if (workspaceResource(id, view, lane)) composeWorkspaceView(view);
       else loadWorkspaceResource(id, view, lane, false, previous);
     }
-    exposeWorkspaceState(); buildPanel();
+    exposeWorkspaceState(); buildWorkspaceNavigator(); buildPanel();
   }
 
   function workspaceDescendantItems(node, view, out) {
@@ -377,16 +378,16 @@
   function buildWorkspaceTree(body) {
     if (!W) return;
     var started = performance.now();
-    var view = workspaceViewName(App.tab), groupEl = group("Project");
+    var view = workspaceViewName(App.tab), groupEl = el("div", "workspace-project");
     var search = el("input", "workspace-search"); search.type = "search";
-    search.placeholder = "Search project"; search.value = W.query;
+    search.placeholder = "Search project"; search.value = W.query; search.setAttribute("aria-label", "Search project");
     search.addEventListener("input", function () {
       W.query = search.value.toLowerCase();
       var caret = search.selectionStart;
       if (W.searchTimer) clearTimeout(W.searchTimer);
       W.searchTimer = setTimeout(function () {
-        W.searchTimer = null; buildPanel();
-        var next = document.querySelector(".workspace-search");
+        W.searchTimer = null; buildWorkspaceNavigator();
+        var next = document.querySelector("#navigator .workspace-search");
         if (next) { next.focus(); next.setSelectionRange(caret, caret); }
       }, 80);
     });
@@ -415,9 +416,12 @@
         var checked = ids.filter(function (id) { return workspaceItemVisible(id, view); }).length;
         var row = el("div", "workspace-row workspace-group"); row.style.paddingLeft = (depth * 12) + "px";
         var twist = el("button", "workspace-twist", W.expanded[node.id] ? "▾" : "▸");
-        twist.onclick = function () { W.expanded[node.id] = !W.expanded[node.id]; buildPanel(); };
+        twist.setAttribute("aria-label", (W.expanded[node.id] ? "Collapse " : "Expand ") + node.label);
+        twist.setAttribute("aria-expanded", W.expanded[node.id] ? "true" : "false");
+        twist.onclick = function () { W.expanded[node.id] = !W.expanded[node.id]; buildWorkspaceNavigator(); };
         var cb = el("input"); cb.type = "checkbox"; cb.checked = ids.length > 0 && checked === ids.length;
         cb.indeterminate = checked > 0 && checked < ids.length; cb.disabled = !ids.length;
+        cb.setAttribute("aria-label", "Show " + node.label + " in " + view);
         cb.onchange = function () {
           var toggleStarted = performance.now(), next = cb.checked;
           ids.forEach(function (id) { W.visible[id][view] = cb.checked; });
@@ -441,6 +445,7 @@
         var key = workspaceRequestKey(node.id, view, lane);
         var row = el("div", "workspace-row"); row.style.paddingLeft = (depth * 12 + 22) + "px";
         var cb = el("input"); cb.type = "checkbox"; cb.checked = has && workspaceItemVisible(node.id, view); cb.disabled = !has;
+        cb.setAttribute("aria-label", (has ? "Show " : "Unavailable: ") + node.label + " in " + view);
         cb.dataset.workspaceItem = node.id;
         cb.onchange = function () { setWorkspaceVisible(node.id, view, cb.checked); };
         row.appendChild(cb); row.appendChild(el("span", "workspace-role", node.role ? "◆" : "•"));
@@ -454,14 +459,18 @@
             var option = el("option", null, entry.label); option.value = entry.id; select.appendChild(option);
           });
           select.value = lane;
-          select.title = "Attribute for " + node.label;
+          select.title = "Attribute for " + node.label; select.setAttribute("aria-label", "Attribute for " + node.label);
           select.onchange = function () { setWorkspaceLane(node.id, view, select.value); };
           row.appendChild(select);
         }
-        if (W.loading[key]) row.appendChild(el("span", "workspace-status", "…"));
+        if (W.loading[key]) row.appendChild(el("span", "workspace-status", "loading"));
         if (W.errors[key]) {
-          var retry = el("button", "workspace-retry", "retry"); retry.title = W.errors[key];
-          retry.onclick = function () { loadWorkspaceResource(node.id, view, lane, true); }; row.appendChild(retry);
+          if (App.mode === "file") {
+            var offline = el("span", "workspace-status", "offline"); offline.title = W.errors[key]; row.appendChild(offline);
+          } else {
+            var retry = el("button", "workspace-retry", "retry"); retry.title = W.errors[key];
+            retry.setAttribute("aria-label", "Retry " + node.label); retry.onclick = function () { loadWorkspaceResource(node.id, view, lane, true); }; row.appendChild(retry);
+          }
         } else if (!has && node.reason) {
           var unavailable = el("span", "workspace-status", "unavailable");
           unavailable.title = node.reason; row.appendChild(unavailable);
@@ -470,6 +479,10 @@
       }
     }
     (W.manifest.tree || []).forEach(function (node) { flatten(node, 0); });
+    if (!flat.length) {
+      tree.appendChild(el("div", "workspace-region-state", W.query
+        ? "No project items match this search." : "This workspace has no catalogued items."));
+    }
     if (flat.length <= 160) {
       flat.forEach(function (entry) { draw(entry, tree); });
     } else {
@@ -493,4 +506,12 @@
     }
     groupEl.appendChild(tree); body.appendChild(groupEl); exposeWorkspaceState();
     W.treeBuildMs.push(performance.now() - started); exposeWorkspaceState();
+  }
+
+  function buildWorkspaceNavigator() {
+    if (!W) return;
+    var body = document.getElementById("navigator-body");
+    if (!body) return;
+    body.innerHTML = "";
+    buildWorkspaceTree(body);
   }

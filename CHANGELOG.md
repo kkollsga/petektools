@@ -7,6 +7,16 @@ All notable changes to petekTools are recorded here. Format follows
 ## [Unreleased]
 
 ### Added
+- **Workspace application shell.** Workspace payloads now render as a deliberate
+  three-region application: a persistent, resizable Project navigator on the
+  left, the active viewport in the centre, and a collapsible contextual
+  Inspector on the right. Tabs are derived from real payload/catalog
+  capabilities; the app bar and status bar expose live/offline, loading, empty,
+  ready, and resource-failure states. Pointer and keyboard controls include
+  panel toggles/resizers, `/` search, `1`–`3` view switching, `F` fit, and a
+  focus-trapped `?` shortcut reference. Bounded browser preferences retain only
+  theme/layout/selected-tab UI state—never project data. Narrow notebook widths
+  use overlay panels. Non-workspace payload chrome remains unchanged.
 - **Lazy multi-view project workspaces.** New top-level `petektools.view()` and
   `petektools.viewer.view()` entry points return an inspectable
   `WorkspaceSession` over either an ordered nested Python tree or the generic

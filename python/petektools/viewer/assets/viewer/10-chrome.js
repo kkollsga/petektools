@@ -64,30 +64,230 @@
   }
 
   // ---- chrome (tabs, theme, panel) -----------------------------------------
+  var UI_PREF_KEY = "petek.viewer.ui.v1";
+  var uiPrefs = {};
+  function readUiPrefs() {
+    if (!W) return {};
+    try {
+      var parsed = JSON.parse(localStorage.getItem(UI_PREF_KEY) || "{}");
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch (_) { return {}; }
+  }
+  function saveUiPrefs() {
+    if (!W) return;
+    var safe = {
+      theme: root.getAttribute("data-theme") === "dark" ? "dark" : "light",
+      navigatorOpen: !document.getElementById("navigator").hidden,
+      inspectorOpen: !document.getElementById("panel").hidden,
+      navigatorWidth: boundedPanelWidth(parseFloat(getComputedStyle(root).getPropertyValue("--navigator-width")), 264),
+      inspectorWidth: boundedPanelWidth(parseFloat(getComputedStyle(root).getPropertyValue("--inspector-width")), 268),
+      selectedTab: App.tab,
+    };
+    try { localStorage.setItem(UI_PREF_KEY, JSON.stringify(safe)); } catch (_) {}
+  }
+  function boundedPanelWidth(value, fallback) {
+    return isFinite(value) ? Math.max(180, Math.min(420, Math.round(value))) : fallback;
+  }
+  function workspaceTabAvailable(tab) {
+    var p = App.payload || {};
+    if (tab === "map") return !!p.map || workspaceHasView("map");
+    if (tab === "section") return !!((p.sections && p.sections.length) || (S.sections && S.sections.length));
+    if (tab === "volume") return !!p.volume;
+    if (tab === "scene3d") return !!p.scene3d || workspaceHasView("scene3d");
+    if (tab === "wells") return !!(p.wells_logs && p.wells_logs.wells && p.wells_logs.wells.length) || workspaceHasView("wells");
+    if (tab === "charts") return !!(p.charts && p.charts.length);
+    return false;
+  }
+  function availableWorkspaceTabs() {
+    return Array.prototype.filter.call(document.querySelectorAll(".tab"), function (button) {
+      return workspaceTabAvailable(button.getAttribute("data-tab"));
+    }).map(function (button) { return button.getAttribute("data-tab"); });
+  }
+  function refreshWorkspaceCapabilities() {
+    if (!W) return;
+    Array.prototype.forEach.call(document.querySelectorAll(".tab"), function (button) {
+      button.hidden = !workspaceTabAvailable(button.getAttribute("data-tab"));
+    });
+  }
+  function configureWorkspaceShell() {
+    if (!W) return;
+    root.classList.add("workspace-shell");
+    uiPrefs = readUiPrefs();
+    if (uiPrefs.theme === "dark" || uiPrefs.theme === "light") root.setAttribute("data-theme", uiPrefs.theme);
+    document.getElementById("theme-toggle").textContent = root.getAttribute("data-theme") === "dark" ? "☀" : "☾";
+    root.style.setProperty("--navigator-width", boundedPanelWidth(uiPrefs.navigatorWidth, 264) + "px");
+    root.style.setProperty("--inspector-width", boundedPanelWidth(uiPrefs.inspectorWidth, 268) + "px");
+    setPanelOpen("navigator", uiPrefs.navigatorOpen !== false, false);
+    var narrow = window.matchMedia && window.matchMedia("(max-width: 780px)").matches;
+    setPanelOpen("panel", uiPrefs.inspectorOpen == null ? !narrow : uiPrefs.inspectorOpen !== false, false);
+    Array.prototype.forEach.call(document.querySelectorAll(".tab"), function (button, index) {
+      var tab = button.getAttribute("data-tab");
+      button.hidden = !workspaceTabAvailable(tab);
+      button.id = "tab-" + tab;
+      button.setAttribute("aria-controls", "pane-" + tab);
+      var pane = document.querySelector('.pane[data-pane="' + tab + '"]');
+      if (pane) { pane.id = "pane-" + tab; pane.setAttribute("aria-labelledby", button.id); }
+    });
+    if (uiPrefs.selectedTab && workspaceTabAvailable(uiPrefs.selectedTab)) App.tab = uiPrefs.selectedTab;
+    wirePanelToggle("navigator-toggle", "navigator");
+    wirePanelToggle("inspector-toggle", "panel");
+    wirePanelResizer("navigator-resizer", "--navigator-width", 1);
+    wirePanelResizer("inspector-resizer", "--inspector-width", -1);
+    wireShortcutHelp();
+    document.addEventListener("keydown", workspaceShortcut);
+    buildWorkspaceNavigator();
+    updateWorkspaceChrome();
+  }
+  function setPanelOpen(id, open, persist) {
+    var region = document.getElementById(id);
+    var toggle = document.getElementById(id === "panel" ? "inspector-toggle" : "navigator-toggle");
+    if (!region) return;
+    region.hidden = !open;
+    if (toggle) toggle.setAttribute("aria-expanded", open ? "true" : "false");
+    if (persist !== false) { saveUiPrefs(); setTimeout(renderActive, 0); }
+  }
+  function wirePanelToggle(buttonId, regionId) {
+    var button = document.getElementById(buttonId);
+    if (!button) return;
+    button.addEventListener("click", function () {
+      var region = document.getElementById(regionId);
+      setPanelOpen(regionId, region.hidden);
+    });
+  }
+  function wirePanelResizer(id, property, direction) {
+    var handle = document.getElementById(id);
+    if (!handle) return;
+    function setWidth(value) {
+      root.style.setProperty(property, boundedPanelWidth(value, property === "--navigator-width" ? 264 : 268) + "px");
+      renderActive();
+    }
+    handle.addEventListener("pointerdown", function (event) {
+      var startX = event.clientX;
+      var start = parseFloat(getComputedStyle(root).getPropertyValue(property));
+      handle.setPointerCapture(event.pointerId);
+      function move(ev) { setWidth(start + (ev.clientX - startX) * direction); }
+      function done() {
+        handle.removeEventListener("pointermove", move); handle.removeEventListener("pointerup", done);
+        saveUiPrefs();
+      }
+      handle.addEventListener("pointermove", move); handle.addEventListener("pointerup", done);
+    });
+    handle.addEventListener("keydown", function (event) {
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      event.preventDefault();
+      var delta = (event.key === "ArrowRight" ? 12 : -12) * direction;
+      setWidth(parseFloat(getComputedStyle(root).getPropertyValue(property)) + delta); saveUiPrefs();
+    });
+  }
+  function wireShortcutHelp() {
+    var help = document.getElementById("shortcut-help"), toggle = document.getElementById("help-toggle");
+    var card = help.querySelector(".shortcut-card"), close = document.getElementById("shortcut-close"), priorFocus = null;
+    function setOpen(open) {
+      help.hidden = !open; toggle.setAttribute("aria-expanded", open ? "true" : "false");
+      if (open) { priorFocus = document.activeElement; card.focus(); }
+      else if (priorFocus && priorFocus.focus) priorFocus.focus();
+    }
+    toggle.addEventListener("click", function () { setOpen(help.hidden); });
+    close.addEventListener("click", function () { setOpen(false); });
+    help.addEventListener("click", function (event) { if (event.target === help) setOpen(false); });
+    help.addEventListener("keydown", function (event) {
+      if (event.key === "Escape") { event.preventDefault(); setOpen(false); return; }
+      if (event.key !== "Tab") return;
+      var focusable = Array.prototype.slice.call(help.querySelectorAll('button:not([disabled]), [tabindex]:not([tabindex="-1"])'));
+      if (!focusable.length) { event.preventDefault(); card.focus(); return; }
+      var first = focusable[0], last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+      else if (document.activeElement === card) { event.preventDefault(); (event.shiftKey ? last : first).focus(); }
+    });
+    help._setOpen = setOpen;
+  }
+  function fitActiveWorkspaceView() {
+    if (App.tab === "map") { mapView.fitted = false; renderMap(); }
+    else if (App.tab === "scene3d" && s3d) { frameScene3d(); s3d.render(); }
+    else if (App.tab === "volume" && three) { three.framed = false; renderVolume(); }
+    else renderActive();
+  }
+  function workspaceShortcut(event) {
+    if (!W) return;
+    var target = event.target;
+    var typing = target && (/^(INPUT|SELECT|TEXTAREA)$/.test(target.tagName) || target.isContentEditable);
+    var help = document.getElementById("shortcut-help");
+    if (event.key === "Escape" && !help.hidden) { help._setOpen(false); return; }
+    if (typing) return;
+    if (event.key === "/") {
+      event.preventDefault(); setPanelOpen("navigator", true);
+      var search = document.querySelector(".workspace-search"); if (search) search.focus();
+    } else if (event.key === "?") {
+      event.preventDefault(); help._setOpen(help.hidden);
+    } else if (/^[123]$/.test(event.key)) {
+      var tabs = availableWorkspaceTabs(), tab = tabs[parseInt(event.key, 10) - 1];
+      if (tab) { event.preventDefault(); selectTab(tab); }
+    } else if (event.key.toLowerCase() === "f") {
+      event.preventDefault(); fitActiveWorkspaceView();
+    }
+  }
+  function updateWorkspaceChrome() {
+    if (!W) return;
+    var view = workspaceViewName(App.tab), selected = 0, loaded = 0, pending = 0, errors = 0;
+    W.order.forEach(function (id) {
+      if (workspaceItemVisible(id, view) && workspaceItemHasView(id, view)) selected++;
+      if (workspaceResource(id, view, workspaceLane(id, view))) loaded++;
+    });
+    Object.keys(W.loading).forEach(function (key) { if (W.loading[key].view === view) pending++; });
+    Object.keys(W.errors).forEach(function (key) { if (key.indexOf("\u0000" + view + "\u0000") >= 0) errors++; });
+    var label = (document.querySelector('.tab[data-tab="' + App.tab + '"]') || {}).textContent || App.tab;
+    var state = pending ? "Loading " + pending : errors ? errors + " failed" : selected ? "Ready" : "Empty";
+    document.getElementById("status-view").textContent = label + " · " + state;
+    document.getElementById("status-detail").textContent = selected
+      ? selected + " selected · " + loaded + " resources cached" + (App.mode === "file" ? " · offline snapshot" : "")
+      : "Select a compatible item in the Project navigator.";
+    document.getElementById("mode-badge").textContent = pending ? "loading " + pending
+      : App.mode === "server" ? "live" : "offline · static";
+  }
   function wireChrome() {
     Array.prototype.forEach.call(document.querySelectorAll(".tab"), function (btn) {
       btn.addEventListener("click", function () { selectTab(btn.getAttribute("data-tab")); });
+      btn.addEventListener("keydown", function (event) {
+        if (["ArrowLeft", "ArrowRight", "Home", "End"].indexOf(event.key) < 0) return;
+        var tabs = Array.prototype.filter.call(document.querySelectorAll(".tab"), function (candidate) { return !candidate.hidden; });
+        var index = tabs.indexOf(btn), next = index;
+        if (event.key === "Home") next = 0;
+        else if (event.key === "End") next = tabs.length - 1;
+        else next = (index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+        if (tabs[next]) { event.preventDefault(); tabs[next].focus(); selectTab(tabs[next].getAttribute("data-tab")); }
+      });
     });
     document.getElementById("theme-toggle").addEventListener("click", function () {
       var dark = root.getAttribute("data-theme") === "dark";
       root.setAttribute("data-theme", dark ? "light" : "dark");
       this.textContent = dark ? "☾" : "☀";
       invalidateThemeTokens();
+      saveUiPrefs();
       renderActive(); // re-read tokens; identities keep their slot, colours restep
     });
+    configureWorkspaceShell();
   }
   function selectTab(tab) {
+    refreshWorkspaceCapabilities();
+    if (W && !workspaceTabAvailable(tab)) {
+      var available = availableWorkspaceTabs(); tab = available[0] || "map";
+    }
     App.tab = tab;
     Array.prototype.forEach.call(document.querySelectorAll(".tab"), function (b) {
-      b.setAttribute("aria-selected", b.getAttribute("data-tab") === tab ? "true" : "false");
+      var selected = b.getAttribute("data-tab") === tab;
+      b.setAttribute("aria-selected", selected ? "true" : "false");
+      b.tabIndex = selected ? 0 : -1;
     });
     Array.prototype.forEach.call(document.querySelectorAll(".pane"), function (pane) {
       pane.hidden = pane.getAttribute("data-pane") !== tab;
     });
     hideReadout();
+    buildWorkspaceNavigator();
     buildPanel();
     renderActive();
     ensureWorkspaceTab(tab);
+    updateWorkspaceChrome(); saveUiPrefs();
   }
   function renderActive() {
     // Time the active render and stash it on window for the perf harness (a

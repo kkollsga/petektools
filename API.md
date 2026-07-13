@@ -867,6 +867,9 @@ from petektools import viewer
 # Generic lazy project workspace. Mapping keys form ordered groups/path IDs;
 # explicit list leaves require stable IDs. Construction catalogs only: resource
 # ducks are called once, on first enable. The returned session is inspectable.
+# Workspace payloads get Project | viewport | Inspector application chrome;
+# tabs are derived from actual payload/catalog capabilities. Browser-local
+# persistence is bounded to theme/layout/selected-tab UI preferences only.
 # Omitted leaf visibility selects all enabled views; pass visible={} for a
 # catalog-only opening, or emit explicit per-view visibility from a provider.
 session = viewer.view({

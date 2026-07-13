@@ -109,14 +109,27 @@ visible view's declared active lane. Both use the same zero-network,
 self-contained HTML export. `refresh()` is the explicit boundary
 for producer/tree mutation and clears the resource snapshot.
 
-The right-panel Project tree is searchable and collapsible. Group checkboxes
-show checked/unchecked/indeterminate state and counts; leaf checkboxes affect
-only the active Map, 3-D, or Wells tab, so selections remain independent across
-views. Large catalogs use a virtual scroll window (the ordered manifest remains
-complete) to keep search and group-toggle work bounded. A failed live resource
-stays local to its leaf and offers retry; a resource omitted from a visible-only
-static snapshot is disabled with the snapshot explanation. Map surface fills
-retain the normal attribute selector and lazy block decoding after composition.
+Workspace payloads use a three-region application shell: the searchable Project
+navigator owns the left side, the active viewport stays central, and a
+contextual Inspector owns view controls on the right. Only views backed by a
+typed payload or catalog capability appear. The app bar carries the title,
+available-view tabs, live/offline/loading state, theme, help, and panel toggles;
+the status bar reports the active view and selected/cached resource state.
+Both side panels are collapsible, pointer/keyboard resizable, and become overlays
+at narrow notebook widths. Bounded browser preferences retain only theme,
+selected tab, and panel layout—not catalog, visibility, lane, or project data.
+
+The navigator's group checkboxes show checked/unchecked/indeterminate state and
+counts; leaf checkboxes affect only the active Map, 3-D, or Wells tab, so
+selections remain independent across views. `/` focuses Project search, `1`–`3`
+switch the available views, `F` fits the active viewport, and `?` opens the
+in-app shortcut reference. Large catalogs use a virtual scroll window (the
+ordered manifest remains complete) to keep search and group-toggle work bounded.
+A failed live resource stays local to its leaf and offers retry; a resource
+omitted from a visible-only static snapshot is marked offline with the snapshot
+explanation. Map surface fills retain the normal attribute selector and lazy
+block decoding after composition. Non-workspace payloads keep their historic
+two-region chrome and rendering behavior.
 
 The workspace never traverses a project or interprets domain roles. Generic
 objects use the existing `view2d_payload` / `view3d_payload` ducks. Sections,

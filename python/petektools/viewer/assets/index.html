@@ -47,6 +47,7 @@
   [hidden] { display: none !important; }
   html, body { margin: 0; height: 100%; }
   .viz-root {
+    --navigator-width: 264px; --inspector-width: 268px;
     height: 100vh; display: flex; flex-direction: column;
     font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
     background: var(--plane); color: var(--text-primary); font-size: 13px;
@@ -71,14 +72,45 @@
   .badge { font-size: 11px; color: var(--text-secondary); padding: 3px 8px; border: 1px solid var(--border); border-radius: 20px; }
   .ghost { appearance: none; background: transparent; border: 1px solid var(--border); color: var(--text-primary); border-radius: 7px; width: 30px; height: 30px; cursor: pointer; font-size: 14px; }
   .ghost:hover { background: var(--plane); }
+  :where(button, input, select, [tabindex]):focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px;
+  }
+  .workspace-only { display: none; }
+  .workspace-shell #navigator.workspace-only { display: block; }
+  .workspace-shell .topright > .workspace-only { display: inline-flex; align-items: center; justify-content: center; }
+  .workspace-shell .region-heading.workspace-only { display: flex; }
+  .workspace-shell .panel-resizer.workspace-only { display: block; }
+  .workspace-shell #topbar { gap: 12px; }
+  .workspace-shell #tabs { min-width: 0; }
+  .workspace-shell .brand { min-width: 150px; }
+  .workspace-shell #title { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .icon-label { font-size: 11px; margin-left: 5px; }
   /* --- stage --- */
   #stage { flex: 1 1 auto; display: grid; grid-template-columns: 1fr 268px; min-height: 0; }
+  .workspace-shell #stage { grid-template-columns: auto minmax(0, 1fr) auto; position: relative; }
   #view { position: relative; min-width: 0; background: var(--surface-1); }
   .pane { position: absolute; inset: 0; }
   .pane canvas, #volume-host, #scene3d-host { width: 100%; height: 100%; display: block; }
   #volume-host, #scene3d-host { position: absolute; inset: 0; }
   /* --- control panel --- */
-  #panel { border-left: 1px solid var(--border); background: var(--surface-1); overflow-y: auto; }
+  #navigator, #panel { position: relative; background: var(--surface-1); min-width: 0; }
+  #navigator { width: var(--navigator-width); border-right: 1px solid var(--border); overflow: hidden; }
+  #navigator-body { height: calc(100% - 39px); padding: 10px 10px 24px; overflow: hidden; }
+  #panel { border-left: 1px solid var(--border); overflow-y: auto; }
+  .workspace-shell #panel { width: var(--inspector-width); }
+  .region-heading {
+    position: sticky; z-index: 2; top: 0; height: 39px; display: flex; align-items: center; padding: 0 12px;
+    background: var(--surface-1);
+    border-bottom: 1px solid var(--border); color: var(--text-secondary);
+    font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+  }
+  .panel-resizer {
+    position: absolute; z-index: 10; top: 0; bottom: 0; width: 7px; cursor: col-resize;
+    touch-action: none;
+  }
+  #navigator-resizer { right: -4px; }
+  #inspector-resizer { left: -4px; }
+  .panel-resizer:hover, .panel-resizer:focus-visible { background: color-mix(in srgb, var(--accent) 25%, transparent); }
   .panel-body { padding: 14px 14px 40px; }
   .group { margin-bottom: 16px; }
   .group > h2 {
@@ -100,8 +132,9 @@
     width: 100%; font: inherit; color: var(--text-primary); background: var(--plane);
     border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; margin-bottom: 7px;
   }
-  .workspace-tree { max-height: 280px; overflow: auto; border-block: 1px solid var(--border); padding: 4px 0; }
-  .workspace-tree-virtual { position: relative; height: 280px; padding: 0; }
+  .workspace-project { height: 100%; }
+  .workspace-tree { height: calc(100% - 40px); overflow: auto; border-block: 1px solid var(--border); padding: 4px 0; }
+  .workspace-tree-virtual { position: relative; padding: 0; }
   .workspace-tree-spacer { width: 1px; opacity: 0; }
   .workspace-tree-window { position: absolute; inset: 0 0 auto 0; }
   .workspace-row { min-height: 25px; display: flex; align-items: center; gap: 6px; white-space: nowrap; }
@@ -114,6 +147,7 @@
   .workspace-role { color: var(--accent); font-size: 9px; flex: none; }
   .workspace-disabled { color: var(--muted); }
   .workspace-retry { appearance: none; border: 0; background: transparent; color: var(--swing-lo); font: inherit; font-size: 10px; cursor: pointer; margin-left: auto; }
+  .workspace-region-state { color: var(--muted); font-size: 11px; line-height: 1.45; padding: 10px 4px; }
   .swatch { width: 11px; height: 11px; border-radius: 3px; flex: none; }
   .swatch.line { height: 0; border-top: 2px solid; border-radius: 0; width: 14px; }
   .btn {
@@ -162,6 +196,50 @@
   }
   .banner b { color: var(--swing-lo); }
   .banner .hint { margin-top: 4px; }
+  #statusbar {
+    height: 28px; flex: none; align-items: center; gap: 14px; padding: 0 12px;
+    background: var(--surface-1); border-top: 1px solid var(--border);
+    color: var(--text-secondary); font-size: 11px;
+  }
+  .workspace-shell #statusbar { display: flex; }
+  #statusbar .status-primary { color: var(--text-primary); font-weight: 600; }
+  #statusbar .status-detail { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #shortcut-help {
+    position: fixed; z-index: 20; inset: 0; background: rgba(0,0,0,.32);
+    align-items: center; justify-content: center; padding: 20px;
+  }
+  #shortcut-help:not([hidden]) { display: flex; }
+  .shortcut-card {
+    position: relative;
+    width: min(420px, 100%); background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: 10px; padding: 18px; box-shadow: 0 12px 40px rgba(0,0,0,.25);
+  }
+  .shortcut-card h2 { margin: 0 0 12px; font-size: 16px; }
+  #shortcut-close { position: absolute; right: 12px; top: 12px; }
+  .shortcut-grid { display: grid; grid-template-columns: auto 1fr; gap: 8px 14px; }
+  kbd { border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; padding: 1px 6px; font: inherit; text-align: center; }
+  @media (max-width: 1100px) {
+    .workspace-shell #navigator { width: min(var(--navigator-width), 230px); }
+    .workspace-shell #panel { width: min(var(--inspector-width), 240px); }
+    .workspace-shell #title { max-width: 190px; }
+    .workspace-shell .tab { padding-inline: 9px; }
+    .workspace-shell .icon-label { display: none; }
+  }
+  @media (max-width: 780px) {
+    .workspace-shell #topbar { padding-inline: 8px; }
+    .workspace-shell .brand { min-width: 0; }
+    .workspace-shell #title { max-width: 140px; }
+    .workspace-shell #stage { grid-template-columns: minmax(0, 1fr); }
+    .workspace-shell #navigator, .workspace-shell #panel {
+      position: absolute; z-index: 12; top: 0; bottom: 0; max-width: calc(100% - 48px);
+      box-shadow: 0 8px 28px rgba(0,0,0,.18);
+    }
+    .workspace-shell #navigator { left: 0; }
+    .workspace-shell #panel { right: 0; }
+    .workspace-shell #view { grid-column: 1; }
+    .workspace-shell #tabs { overflow-x: auto; }
+    .workspace-shell .tab { padding-inline: 7px; white-space: nowrap; }
+  }
 </style>
 </head>
 <body>
@@ -177,25 +255,54 @@
       <button class="tab" data-tab="charts" role="tab" aria-selected="false">Charts</button>
     </nav>
     <div class="topright">
-      <span id="mode-badge" class="badge" title="capability mode"></span>
-      <button id="theme-toggle" class="ghost" title="Toggle light / dark">☾</button>
+      <span id="mode-badge" class="badge" title="capability mode">starting</span>
+      <button id="navigator-toggle" class="ghost workspace-only" type="button" aria-controls="navigator" aria-expanded="true" title="Toggle Project navigator">☰</button>
+      <button id="inspector-toggle" class="ghost workspace-only" type="button" aria-controls="panel" aria-expanded="true" title="Toggle Inspector">◧</button>
+      <button id="help-toggle" class="ghost workspace-only" type="button" aria-haspopup="dialog" aria-controls="shortcut-help" title="Keyboard shortcuts (?)">?</button>
+      <button id="theme-toggle" class="ghost" type="button" aria-label="Toggle light or dark theme" title="Toggle light / dark">☾</button>
     </div>
   </header>
   <main id="stage">
-    <section id="view">
-      <div class="pane" data-pane="map"><canvas id="map-canvas"></canvas></div>
-      <div class="pane" data-pane="section" hidden><canvas id="section-canvas"></canvas></div>
-      <div class="pane" data-pane="volume" hidden><div id="volume-host"></div></div>
-      <div class="pane" data-pane="scene3d" hidden><div id="scene3d-host"></div></div>
-      <div class="pane" data-pane="wells" hidden><canvas id="wells-canvas"></canvas></div>
-      <div class="pane" data-pane="charts" hidden><canvas id="charts-canvas"></canvas></div>
+    <aside id="navigator" class="workspace-only" aria-labelledby="navigator-heading" hidden>
+      <div id="navigator-heading" class="region-heading">Project</div>
+      <div id="navigator-body"></div>
+      <div id="navigator-resizer" class="panel-resizer" role="separator" tabindex="0" aria-label="Resize Project navigator" aria-orientation="vertical"></div>
+    </aside>
+    <section id="view" aria-label="Active workspace view">
+      <div class="pane" data-pane="map" role="tabpanel"><canvas id="map-canvas"></canvas></div>
+      <div class="pane" data-pane="section" role="tabpanel" hidden><canvas id="section-canvas"></canvas></div>
+      <div class="pane" data-pane="volume" role="tabpanel" hidden><div id="volume-host"></div></div>
+      <div class="pane" data-pane="scene3d" role="tabpanel" hidden><div id="scene3d-host"></div></div>
+      <div class="pane" data-pane="wells" role="tabpanel" hidden><canvas id="wells-canvas"></canvas></div>
+      <div class="pane" data-pane="charts" role="tabpanel" hidden><canvas id="charts-canvas"></canvas></div>
       <div id="readout" class="readout" hidden></div>
       <div id="legend" class="legend"></div>
       <div id="banner" class="banner" hidden></div>
       <div id="empty" class="empty" hidden></div>
     </section>
-    <aside id="panel"><div class="panel-body" id="panel-body"></div></aside>
+    <aside id="panel" aria-labelledby="inspector-heading">
+      <div id="inspector-heading" class="region-heading workspace-only">Inspector</div>
+      <div class="panel-body" id="panel-body"></div>
+      <div id="inspector-resizer" class="panel-resizer workspace-only" role="separator" tabindex="0" aria-label="Resize Inspector" aria-orientation="vertical"></div>
+    </aside>
   </main>
+  <footer id="statusbar" class="workspace-only" role="status" aria-live="polite">
+    <span id="status-view" class="status-primary">Starting</span>
+    <span id="status-detail" class="status-detail">Preparing workspace…</span>
+  </footer>
+  <div id="shortcut-help" role="dialog" aria-modal="true" aria-labelledby="shortcut-title" hidden>
+    <div class="shortcut-card" tabindex="-1">
+      <h2 id="shortcut-title">Keyboard shortcuts</h2>
+      <button id="shortcut-close" class="ghost" type="button" aria-label="Close keyboard shortcuts">×</button>
+      <div class="shortcut-grid">
+        <kbd>/</kbd><span>Search the Project navigator</span>
+        <kbd>1–3</kbd><span>Switch among available views</span>
+        <kbd>F</kbd><span>Fit the active view</span>
+        <kbd>?</kbd><span>Open or close this reference</span>
+        <kbd>Esc</kbd><span>Close this reference</span>
+      </div>
+    </div>
+  </div>
   <script src="./decode.js"></script>
   <script src="./three.global.js"></script>
   <script src="./orbitcontrols.global.js"></script>

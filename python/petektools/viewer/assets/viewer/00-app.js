@@ -231,9 +231,10 @@
   function initState() {
     var p = App.payload;
     document.getElementById("title").textContent =
-      (p.kind ? p.kind + " · " : "") + (p.property || "model") + " viewer";
+      W && W.manifest.title ? W.manifest.title
+        : (p.kind ? p.kind + " · " : "") + (p.property || "model") + " viewer";
     document.getElementById("mode-badge").textContent =
-      App.mode === "server" ? "live" : "file · static";
+      App.mode === "server" ? "live" : (W ? "offline · static" : "file · static");
 
     // Map field layers = horizons + zone averages + k-slices (each a ScalarLayer).
     var m = p.map || {};
