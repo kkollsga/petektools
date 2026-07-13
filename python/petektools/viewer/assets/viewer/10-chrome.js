@@ -66,6 +66,7 @@
   // ---- chrome (tabs, theme, panel) -----------------------------------------
   var UI_PREF_KEY = "petek.viewer.ui.v1";
   var uiPrefs = {};
+  var narrowWorkspaceMedia = null;
   function readUiPrefs() {
     if (!W) return {};
     try {
@@ -75,18 +76,41 @@
   }
   function saveUiPrefs() {
     if (!W) return;
+    var narrow = isNarrowWorkspace();
+    var navigatorOpen = !document.getElementById("navigator").hidden;
+    var inspectorOpen = !document.getElementById("panel").hidden;
     var safe = {
       theme: root.getAttribute("data-theme") === "dark" ? "dark" : "light",
-      navigatorOpen: !document.getElementById("navigator").hidden,
-      inspectorOpen: !document.getElementById("panel").hidden,
+      // Narrow drawers are mutually exclusive presentation state. Preserve the
+      // wider desktop choices rather than replacing them when a notebook drawer
+      // is opened or closed.
+      navigatorOpen: narrow ? uiPrefs.navigatorOpen !== false : navigatorOpen,
+      inspectorOpen: narrow ? uiPrefs.inspectorOpen !== false : inspectorOpen,
+      narrowPanel: narrow ? (navigatorOpen ? "navigator" : inspectorOpen ? "inspector" : "none") : uiPrefs.narrowPanel,
       navigatorWidth: boundedPanelWidth(parseFloat(getComputedStyle(root).getPropertyValue("--navigator-width")), 264),
       inspectorWidth: boundedPanelWidth(parseFloat(getComputedStyle(root).getPropertyValue("--inspector-width")), 268),
       selectedTab: App.tab,
     };
+    uiPrefs = safe;
     try { localStorage.setItem(UI_PREF_KEY, JSON.stringify(safe)); } catch (_) {}
   }
   function boundedPanelWidth(value, fallback) {
     return isFinite(value) ? Math.max(180, Math.min(420, Math.round(value))) : fallback;
+  }
+  function isNarrowWorkspace() {
+    return !!(narrowWorkspaceMedia && narrowWorkspaceMedia.matches);
+  }
+  function applyResponsivePanelState() {
+    var navigatorOpen = uiPrefs.navigatorOpen !== false;
+    var inspectorOpen = uiPrefs.inspectorOpen !== false;
+    if (isNarrowWorkspace()) {
+      if (uiPrefs.narrowPanel === "navigator") { navigatorOpen = true; inspectorOpen = false; }
+      else if (uiPrefs.narrowPanel === "inspector") { navigatorOpen = false; inspectorOpen = true; }
+      else if (uiPrefs.narrowPanel === "none") { navigatorOpen = false; inspectorOpen = false; }
+      else if (navigatorOpen && inspectorOpen) inspectorOpen = false;
+    }
+    setPanelOpen("navigator", navigatorOpen, false);
+    setPanelOpen("panel", inspectorOpen, false);
   }
   function workspaceTabAvailable(tab) {
     var p = App.payload || {};
@@ -117,9 +141,13 @@
     document.getElementById("theme-toggle").textContent = root.getAttribute("data-theme") === "dark" ? "☀" : "☾";
     root.style.setProperty("--navigator-width", boundedPanelWidth(uiPrefs.navigatorWidth, 264) + "px");
     root.style.setProperty("--inspector-width", boundedPanelWidth(uiPrefs.inspectorWidth, 268) + "px");
-    setPanelOpen("navigator", uiPrefs.navigatorOpen !== false, false);
-    var narrow = window.matchMedia && window.matchMedia("(max-width: 780px)").matches;
-    setPanelOpen("panel", uiPrefs.inspectorOpen == null ? !narrow : uiPrefs.inspectorOpen !== false, false);
+    narrowWorkspaceMedia = window.matchMedia ? window.matchMedia("(max-width: 780px)") : null;
+    applyResponsivePanelState();
+    if (narrowWorkspaceMedia) {
+      var onResponsiveChange = function () { applyResponsivePanelState(); setTimeout(renderActive, 0); };
+      if (narrowWorkspaceMedia.addEventListener) narrowWorkspaceMedia.addEventListener("change", onResponsiveChange);
+      else if (narrowWorkspaceMedia.addListener) narrowWorkspaceMedia.addListener(onResponsiveChange);
+    }
     Array.prototype.forEach.call(document.querySelectorAll(".tab"), function (button, index) {
       var tab = button.getAttribute("data-tab");
       button.hidden = !workspaceTabAvailable(tab);
@@ -142,6 +170,13 @@
     var region = document.getElementById(id);
     var toggle = document.getElementById(id === "panel" ? "inspector-toggle" : "navigator-toggle");
     if (!region) return;
+    if (open && isNarrowWorkspace()) {
+      var otherId = id === "panel" ? "navigator" : "panel";
+      var other = document.getElementById(otherId);
+      var otherToggle = document.getElementById(otherId === "panel" ? "inspector-toggle" : "navigator-toggle");
+      if (other) other.hidden = true;
+      if (otherToggle) otherToggle.setAttribute("aria-expanded", "false");
+    }
     region.hidden = !open;
     if (toggle) toggle.setAttribute("aria-expanded", open ? "true" : "false");
     if (persist !== false) { saveUiPrefs(); setTimeout(renderActive, 0); }

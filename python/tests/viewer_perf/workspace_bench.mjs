@@ -32,6 +32,8 @@ const result = await page.evaluate(async () => {
     treeInInspector: !!document.querySelector("#panel .workspace-tree"),
     visibleTabs: Array.from(document.querySelectorAll(".tab")).filter((tab) => !tab.hidden).map((tab) => tab.dataset.tab),
     statusVisible: document.getElementById("statusbar").offsetParent !== null,
+    accessibleNames: ["navigator-toggle", "inspector-toggle", "help-toggle"].map((id) =>
+      document.getElementById(id).getAttribute("aria-label")),
   };
 
   // Keyboard access: help traps focus and Escape restores it; / targets search;
@@ -116,14 +118,28 @@ const result = await page.evaluate(async () => {
     afterSceneToggle, returned, hiddenMap, hasTree: !!project };
 });
 await page.setViewportSize({ width: 720, height: 760 });
-await page.waitForTimeout(40);
-result.narrow = await page.evaluate(() => ({
-  viewWidth: document.getElementById("view").getBoundingClientRect().width,
-  navigatorPosition: getComputedStyle(document.getElementById("navigator")).position,
-  inspectorPosition: getComputedStyle(document.getElementById("panel")).position,
-  navigatorToggleVisible: document.getElementById("navigator-toggle").offsetParent !== null,
-  inspectorToggleVisible: document.getElementById("inspector-toggle").offsetParent !== null,
-}));
+// Reload at narrow width with the just-persisted desktop state (both panels
+// open): initialization must still choose at most one drawer.
+await page.reload();
+await page.waitForFunction(() => !!window.__PETEK_WORKSPACE_STATE, null, { timeout: 5000 });
+await page.waitForTimeout(80);
+result.narrow = await page.evaluate(() => {
+  const navigator = document.getElementById("navigator");
+  const inspector = document.getElementById("panel");
+  const initial = { navigatorOpen: !navigator.hidden, inspectorOpen: !inspector.hidden };
+  document.getElementById("inspector-toggle").click();
+  const inspectorWins = { navigatorOpen: !navigator.hidden, inspectorOpen: !inspector.hidden };
+  document.getElementById("navigator-toggle").click();
+  const navigatorWins = { navigatorOpen: !navigator.hidden, inspectorOpen: !inspector.hidden };
+  return {
+    viewWidth: document.getElementById("view").getBoundingClientRect().width,
+    navigatorPosition: getComputedStyle(navigator).position,
+    inspectorPosition: getComputedStyle(inspector).position,
+    navigatorToggleVisible: document.getElementById("navigator-toggle").offsetParent !== null,
+    inspectorToggleVisible: document.getElementById("inspector-toggle").offsetParent !== null,
+    initial, inspectorWins, navigatorWins,
+  };
+});
 if (screenshot) await page.screenshot({ path: screenshot, fullPage: false });
 result.consoleErrors = errors;
 await browser.close();
@@ -134,11 +150,15 @@ if (errors.length) fail("console errors");
 if (!result.hasTree || !result.triStateInitial) fail("tree/tri-state missing");
 if (!result.shell.enabled || !result.shell.treeInNavigator || result.shell.treeInInspector) fail("workspace regions are not separated");
 if (result.shell.visibleTabs.join(",") !== "map,scene3d") fail("tabs are not capability-derived");
+if (result.shell.accessibleNames.join("|") !== "Toggle Project navigator|Toggle Inspector|Keyboard shortcuts") fail("app controls lack descriptive accessible names");
 if (!result.shell.statusVisible) fail("workspace status bar missing");
 if (!result.help.open || !result.help.focusedInside || !result.help.closed || !result.help.restored || !result.help.searchFocused) fail("shortcut/focus contract failed");
 if (!(result.resize.widthAfter > result.resize.widthBefore) || !result.inspectorClosed || !result.inspectorReopened) fail("panel controls failed");
 if (result.narrow.viewWidth < 700 || result.narrow.navigatorPosition !== "absolute" || result.narrow.inspectorPosition !== "absolute"
     || !result.narrow.navigatorToggleVisible || !result.narrow.inspectorToggleVisible) fail("narrow layout is not usable");
+if (result.narrow.initial.navigatorOpen === result.narrow.initial.inspectorOpen
+    || result.narrow.inspectorWins.navigatorOpen || !result.narrow.inspectorWins.inspectorOpen
+    || !result.narrow.navigatorWins.navigatorOpen || result.narrow.navigatorWins.inspectorOpen) fail("narrow drawers are not mutually exclusive");
 if (!result.visibleLabels.some((label) => /cloud b/i.test(label))) fail("search did not retain Cloud B");
 if (ids.length !== 2) fail("expected two items");
 if (!ids.every((id) => result.afterMapGroup.visible[id].map)) fail("Map group did not select both leaves");

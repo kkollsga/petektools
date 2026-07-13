@@ -510,3 +510,9 @@ def test_workspace_shell_declares_keyboard_and_accessibility_contract():
     assert 'setAttribute("aria-label", "Search project")' in source
     assert ':focus-visible' in html
     assert 'id="shortcut-close"' in html
+    assert 'id="navigator-toggle"' in html and 'aria-label="Toggle Project navigator"' in html
+    assert 'id="inspector-toggle"' in html and 'aria-label="Toggle Inspector"' in html
+    assert 'id="help-toggle"' in html and 'aria-label="Keyboard shortcuts"' in html
+    assert 'narrowPanel:' in source
+    assert 'if (open && isNarrowWorkspace())' in source
+    assert 'applyResponsivePanelState()' in source
