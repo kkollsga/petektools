@@ -263,6 +263,64 @@ class _Mesh:
         return Edge()
 
 
+class _MeshShell:
+    """Geometry-only level-3 mesh duck: XY comes from ``nodes()``, not points."""
+
+    kind = "mesh_shell"
+    name = "Top Dome geometry"
+
+    def nodes(self):
+        return [
+            [0.0, 0.0],
+            [10.0, 0.0],
+            [0.0, 10.0],
+            [10.0, 10.0],
+        ]
+
+    def triangles(self):
+        return [(0, 1, 2), (1, 3, 2)]
+
+    def wireframe_edges(self, stride=None):
+        return [(0, 1), (1, 3), (3, 2), (2, 0)]
+
+    @property
+    def edge(self):
+        return _Mesh().edge
+
+
+def test_view2d_role_dispatch_exact_points_plus_mesh_shell_shape():
+    class IrapPoints:
+        kind = "point_set"
+        name = "Top Dome"
+
+        def xyz(self):
+            return [
+                [0.0, 0.0, -2600.0],
+                [10.0, 0.0, -2610.0],
+                [0.0, 10.0, -2620.0],
+                [10.0, 10.0, -2630.0],
+            ]
+
+    p = viewer.view2d_payload(
+        [_MeshShell(), IrapPoints()], lod=False, encoding="json"
+    )
+    m = p["map"]
+    assert m["fills"] == []
+    assert m["points"] == IrapPoints().xyz()  # complete source cloud, in order
+    assert sum(len(line) - 1 for line in m["grid_lines"]) == 4
+    assert m["outline"] == [_Mesh().edge.rings()[0]]
+    assert m["layers"] == [
+        {"kind": "lines", "name": "Top Dome geometry"},
+        {
+            "kind": "points",
+            "name": "Top Dome",
+            "start": 0,
+            "n": 4,
+            "range": [-2630.0, -2600.0],
+        },
+    ]
+
+
 def test_view2d_payload_renders_trimesh_edges_and_edge_outline():
     p = viewer.view2d_payload([_Mesh()], title="Top Dome trimesh")
 
@@ -893,6 +951,105 @@ class _AttributedSurfaceDuck(_SurfaceDuck):
         }
 
 
+class _StructuredAttributedSurfaceDuck(_AttributedSurfaceDuck):
+    kind = "structured_mesh"
+    ncol = 2
+    nrow = 2
+
+    def node_xy(self, i, j):
+        return (i * 10.0, j * 10.0)
+
+
+class _TriAttributedSurfaceDuck(_AttributedSurfaceDuck):
+    kind = "tri_surface"
+
+    def xyz(self):
+        return [
+            [0.0, 0.0, -2600.0],
+            [10.0, 0.0, -2610.0],
+            [0.0, 10.0, -2620.0],
+            [10.0, 10.0, -2630.0],
+        ]
+
+    def triangles(self):
+        return [(0, 1, 2), (1, 3, 2)]
+
+    def wireframe_edges(self, stride=None):
+        return [(0, 1), (1, 3), (3, 2), (2, 0)]
+
+
+@pytest.mark.parametrize(
+    "surface_type",
+    [
+        _AttributedSurfaceDuck,
+        _StructuredAttributedSurfaceDuck,
+        _TriAttributedSurfaceDuck,
+    ],
+)
+def test_view2d_all_surface_roles_auto_enumerate_primary_then_attrs(surface_type):
+    surf = surface_type()
+    p = viewer.view2d_payload(surf, lod=False, encoding="json")
+
+    assert [f["name"] for f in p["map"]["fills"]] == [
+        "values",
+        "thickness",
+        "poro",
+    ]
+    assert surf.attr_calls == 1
+    assert surf.value_calls == [(None, None), ("thickness", None), ("poro", None)]
+
+
+@pytest.mark.parametrize(
+    "shell",
+    [
+        type(
+            "GridGeometry",
+            (_SurfaceGeom,),
+            {"kind": "grid_geometry", "name": "grid"},
+        )(),
+        type(
+            "StructuredShell",
+            (_SurfaceGeom,),
+            {"kind": "structured_shell", "name": "structured"},
+        )(),
+        _MeshShell(),
+    ],
+)
+def test_view2d_all_geometry_roles_are_wireframe_only_when_fill_is_omitted(shell):
+    p = viewer.view2d_payload(shell, lod=False, encoding="json")
+
+    assert p["map"]["fills"] == []
+    assert p["map"]["points"] == []
+    assert p["map"]["grid_lines"]
+    assert p["map"]["layers"] == [{"kind": "lines", "name": shell.name}]
+
+
+def test_view2d_geometry_role_suppresses_auto_fill_but_honours_explicit_fill():
+    class AttributedMeshShell(_MeshShell):
+        def __init__(self):
+            self.attr_calls = 0
+            self.value_calls = []
+
+        def attr_names(self):
+            self.attr_calls += 1
+            return ("thickness",)
+
+        def value_layer(self, attr=None, stride=None):
+            self.value_calls.append((attr, stride))
+            return _AttributedSurfaceDuck().value_layer(attr=attr, stride=stride)
+
+    omitted = AttributedMeshShell()
+    p = viewer.view2d_payload(omitted, lod=False, encoding="json")
+    assert p["map"]["fills"] == []
+    assert omitted.attr_calls == 0 and omitted.value_calls == []
+
+    explicit = AttributedMeshShell()
+    p = viewer.view2d_payload(explicit, fill="thickness", lod=False, encoding="json")
+    assert [f["name"] for f in p["map"]["fills"]] == ["thickness"]
+    assert explicit.attr_calls == 0
+    assert explicit.value_calls == [("thickness", None)]
+
+
 def test_view2d_bare_surface_renders_structure_lines():
     # A legacy single-layer producer without attr_names keeps the historical
     # structure-only path (the .geometry lattice), never a bare-color fill.
@@ -1343,21 +1500,50 @@ def test_view3d_zless_geometry_lattice_at_scene_shallowest():
     assert p2["scene3d"]["lattices"][0]["z"] is None
 
 
-def test_view3d_non_surface_geometry_bearing_item_renders_flat():
-    # OWNER RULING: only kind == "surface" may render a solid layer bare —
-    # any other .geometry-bearing value-bearing item (e.g. the infer_geometry
-    # TriSurface fallback exposing a .geometry) renders its lattice FLAT at
-    # the shallowest of its OWN nodes (value-as-elevation for 2-D nodes)
+def test_view3d_tri_surface_role_renders_neutral_elevation_mesh():
+    # Value-bearing surface roles stay surfaces in 3-D; they are not confused
+    # with their geometry-only shell counterparts.
     class TriSurfaceish(_SurfaceDuck):
         kind = "tri_surface"
 
     item = TriSurfaceish()
     p = viewer.view3d_payload([item])
     sc = p["scene3d"]
-    assert sc["meshes"] == []  # no solid layer for a non-surface kind
+    assert len(sc["meshes"]) == 1
+    assert sc["lattices"] == []
+    assert sc["meshes"][0]["values"] is None
+    assert [n[2] for n in sc["meshes"][0]["nodes"]] == [
+        -2600.0,
+        -2610.0,
+        -2620.0,
+        -2630.0,
+    ]
+
+
+@pytest.mark.parametrize(
+    "surface_type",
+    [_SurfaceDuck, _StructuredAttributedSurfaceDuck, _TriAttributedSurfaceDuck],
+)
+def test_view3d_all_surface_roles_render_as_neutral_meshes(surface_type):
+    sc = viewer.view3d_payload([surface_type()])["scene3d"]
+    assert len(sc["meshes"]) == 1
+    assert sc["meshes"][0]["values"] is None
+    assert sc["lattices"] == []
+
+
+@pytest.mark.parametrize(
+    "shell",
+    [
+        type("GridGeometry3D", (_SurfaceGeom,), {"kind": "grid_geometry"})(),
+        type("StructuredShell3D", (_SurfaceGeom,), {"kind": "structured_shell"})(),
+        _MeshShell(),
+    ],
+)
+def test_view3d_all_geometry_roles_render_as_lattices(shell):
+    sc = viewer.view3d_payload([shell])["scene3d"]
+    assert sc["meshes"] == []
     assert len(sc["lattices"]) == 1
-    assert sc["lattices"][0]["z"] == -2600.0  # max of its own node elevations
-    assert {"kind": "lines", "name": "Top Dome"} in sc["layers"]
+    assert sc["lattices"][0]["lines"]
 
 
 def test_view3d_bare_value_layer_only_item_draws_flat_wireframe():

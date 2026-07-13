@@ -6,6 +6,16 @@ All notable changes to petekTools are recorded here. Format follows
 
 ## [Unreleased]
 
+### Fixed
+- **Surface-role navigation across petekIO's six-level seam.** Viewer dispatch
+  now trusts stable `kind` metadata before overlapping method ducks: point sets
+  render as points, `grid_geometry` / `structured_shell` / `mesh_shell` render
+  as wireframes without omitted auto-fill, and `surface` / `structured_mesh` /
+  `tri_surface` auto-enumerate primary + named attributes. Explicit `fill=`
+  remains exact for any `value_layer()` producer, `MeshShell.nodes()` is an
+  accepted vertex source, and `view3d` uses the same geometry-shell versus
+  value-surface distinction.
+
 ## [0.2.13] - 2026-07-13
 
 ### Added

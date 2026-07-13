@@ -57,7 +57,11 @@ kernel crate excludes it and stays lean; the Rust kernel charter is unwidened).
 It carries **no domain logic, performs no computation, and does no domain I/O**:
 it draws exactly what the payload declares. Its generic Python adapters may
 discover producer-declared render lanes through small duck-typed conventions
-(`value_layer` / `attr_names`), but never interpret their domain meaning. New
+(`value_layer` / `attr_names`), but never interpret their domain meaning. Stable
+producer `kind` strings classify points (`point_set`), geometry-only shells
+(`grid_geometry`, `structured_shell`, `mesh_shell`), and value surfaces
+(`surface`, `structured_mesh`, `tri_surface`) before overlapping method ducks;
+only the value-surface role participates in omitted-fill lane discovery. New
 cross-sections come from a consumer-supplied `section_provider` callback (live)
 or are pre-computed into the
 payload (file). petekTools defines the **generic render schema** (its contract,

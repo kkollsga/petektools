@@ -53,7 +53,7 @@ state. `sections` may be empty (live mode adds them via `/section`).
 | `outline` | list[Ring] | boundary rings; `Ring` = list of `[x, y]` |
 | `grid_lines` | list[Line] | optional 2-D QA overlay; `Line` = list of `[x, y]` |
 | `points` | list[Point] | optional 2-D QA overlay; `Point` = `[x, y, z?]` |
-| `fills` | list[TriFill] | **additive:** selectable value-coloured trimesh fills, drawn UNDER `grid_lines`/`outline`/`points`; omitted-fill `view2d` auto mode emits primary + named attributes as ordinary entries |
+| `fills` | list[TriFill] | **additive:** selectable value-coloured trimesh fills, drawn UNDER `grid_lines`/`outline`/`points`; omitted-fill `view2d` auto mode emits primary + named attributes as ordinary entries for value-surface roles only |
 | `contours` | list[ContourSet] | **additive:** iso-lines; all levels stroke as one batched path, stronger than grid lines |
 | `grid_lines_lod` | list[Line] \| absent | **additive (LOD):** the coarse (strided) `grid_lines` ring — present only when a mesh producer supplied one; see **Stride-ladder LOD** |
 | `point_color` | PointColor \| null | **additive:** `{by: "z", range: [min, max]}` — the GLOBAL fallback for point colouring (per-layer fields on `layers` win; see below). Present when at least one points layer colours: the user's explicit call-level `color=` clamp range, else the union of the coloured layers' data. Points with a finite third component colour through the colormap (non-finite z falls back to the accent); values outside the range clamp to the ramp ends |
@@ -91,11 +91,15 @@ specified (out-of-range values clamp to the ramp ends). `display_name` is the
 duck-typed source-object name (e.g. `"Top Dome"`; `name` stays the attribute
 identity, e.g. `"z"`). The selector/legend combines them as `source · layer`,
 so equal attribute names across multiple sources remain unambiguous. When
-`view2d`'s `fill` argument is omitted, an object exposing callable
+`view2d`'s `fill` argument is omitted, a value-surface role (`kind` is
+`surface`, `structured_mesh`, or `tri_surface`) exposing callable
 `attr_names()` + `value_layer()` emits its primary `value_layer()` first and
-then one TriFill per advertised name in producer order. Explicit `fill=False`
-emits none, `fill=True` emits only primary, and `fill="name"` emits exactly that
-lane; producers without both ducks keep their prior omitted-fill behaviour.
+then one TriFill per advertised name in producer order. Point roles
+(`point_set`, with `points` accepted as an alias) emit points only; geometry
+roles (`grid_geometry`, `structured_shell`, `mesh_shell`) emit wireframes only.
+Explicit `fill=False` emits none, `fill=True` emits only primary, and
+`fill="name"` emits exactly that lane from any producer offering
+`value_layer()`.
 One fill is active at a time (a panel selector when
 several are present); a "Fill" toggle controls visibility, and the active fill
 drives a legend entry (type icon + display name + ramp + min/max). Both
@@ -381,19 +385,18 @@ A triangle touching a `null`-z node is **skipped** (a hole, never guessed).
 `name` is the attribute identity (e.g. `"z"`); `display_name` the duck-typed
 source-object name (e.g. `"Top Dome"`).
 
-**Bare-item classification (owner ruling 2026-07-11 — solid layers are for
-surfaces only).** Only a TRUE regular surface (`kind == "surface"`, e.g.
-petekio's `Surface`) may emit a SOLID `Mesh3D` bare: its primary value layer
-becomes a NEUTRAL elevation mesh (`values`/`range` null — never
-value-coloured without `fill=`). Every OTHER geometry-ish item passed bare —
-a trimesh (e.g. the `infer_geometry` TriSurface fallback), a GridGeometry
-lattice, a `.geometry`-bearing value item — emits a FLAT `Lattice3D`
-wireframe placed at the SHALLOWEST point of its own nodes (z is elevation,
-negative down → max finite node z; a z-less GridGeometry falls back to the
-SCENE's shallowest point, null → `ref_z` for an all-flat scene), with its
-edge rings emitted as object-form `outlines` entries at that SAME level.
-`fill=` still opts any value-bearing item into the value-coloured mesh
-(explicit opt-in unchanged).
+**Bare-item classification — solid layers are for value surfaces only.** All
+three value-surface roles (`surface`, `structured_mesh`, `tri_surface`) emit a
+SOLID `Mesh3D` bare: their primary value layer becomes a NEUTRAL elevation mesh
+(`values`/`range` null — never value-coloured without `fill=`). Geometry-only
+roles (`grid_geometry`, `structured_shell`, `mesh_shell`; the last accepts
+vertices from `nodes()` as well as `xyz()`/`points()`) emit a FLAT `Lattice3D`
+wireframe placed at the SHALLOWEST point of their own nodes (z is elevation,
+negative down → max finite node z; a z-less shell falls back to the SCENE's
+shallowest point, null → `ref_z` for an all-flat scene), with edge rings emitted
+as object-form `outlines` entries at that SAME level. Unclassified legacy
+geometry/value ducks retain the flat fallback. `fill=` still opts any producer
+offering `value_layer()` into the value-coloured mesh (explicit opt-in unchanged).
 
 **Lattice3D:** `{name: str | null, lines: [[[x, y], …], …], z: float | null}`
 — flat lattice polylines (geometry grids clipped to `edge` exactly as on the

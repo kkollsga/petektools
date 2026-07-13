@@ -945,6 +945,7 @@ def _build_attribute_fill_view(tmp_path: Path) -> tuple[Path, dict]:
     from petektools import viewer
 
     class Surface:
+        kind = "surface"
         geometry = None
 
         def __init__(self, name, base):

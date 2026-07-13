@@ -184,8 +184,11 @@ The viewer is horizontal capability: it serves every layer of the ecosystem, so
 it lives here. The full guide is in `VIEWER.md`.
 
 For lightweight map QC, `petektools.view2d([...])` accepts point-like objects,
-geometry-like objects, and triangulated meshes. Point sets render as points
-only. Geometry-like objects render grid lines, and when they expose an `edge`
+geometry-like objects, and triangulated meshes. Stable `kind` metadata separates
+point sets (`point_set`), geometry-only shells (`grid_geometry`,
+`structured_shell`, `mesh_shell`), and value surfaces (`surface`,
+`structured_mesh`, `tri_surface`). Point sets render as points only.
+Geometry-like objects render grid lines, and when they expose an `edge`
 polygon the grid-line overlay is clipped to that edge so inferred grids,
 structured surfaces, and point clouds line up in the same view. Mesh-like
 objects (`triangles()` over `xyz()`/`points()` vertices) render their unique
@@ -196,11 +199,12 @@ quad-dominant, with interior cell diagonals removed.
 Three kwargs add value rendering. `color=` colours **points**
 by their z value (and selects the colormap for whatever is value-coloured) —
 it never triggers fills, and it defaults ON (pass `color=False` for
-monochrome points). When `fill` is omitted, an item offering callable
-`attr_names()` and `value_layer()` contributes its primary layer followed by
-every named attribute to the Fill selector. Explicit `fill=False` disables
-fills, `fill=True` requests primary only, and `fill="name"` requests that one
-attribute. Each per-node value layer paints as a value-coloured
+monochrome points). When `fill` is omitted, only a value-surface role offering
+callable `attr_names()` and `value_layer()` contributes its primary layer
+followed by every named attribute to the Fill selector; geometry shells remain
+wireframes. Explicit `fill=False` disables fills, `fill=True` requests primary
+only, and `fill="name"` requests that one attribute from any producer offering
+`value_layer()`. Each per-node value layer paints as a value-coloured
 fill *under* the grid lines (each triangle flat-filled with the colormap
 colour of its mean node value; a triangle touching a NaN node is left
 unfilled). `contours=25.0` asks each item offering `iso_lines()` for contour

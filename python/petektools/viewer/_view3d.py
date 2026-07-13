@@ -32,10 +32,12 @@ from ._view2d import (
     _is_geometry,
     _is_trimesh,
     _iso_contours,
+    _mesh_vertices,
     _mesh_lines,
     _norm_item,
     _parse_spec,
     _points,
+    _render_role,
     _rings,
     _scene_items,
 )
@@ -66,13 +68,14 @@ def view3d_payload(
       scene's SHALLOWEST point (a geometry carries no z of its own; z is
       elevation, negative down → shallowest = the scene's max finite z; an
       all-flat scene parks it at ``ref_z``), edge rings at the same level
-    - trimesh passed BARE (``triangles()`` over ``xyz()``/``points()``
-      vertices, e.g. the petekio ``infer_geometry`` TriSurface fallback): a
+    - geometry-shell trimesh passed BARE (``kind == "mesh_shell"`` and
+      ``triangles()`` over ``xyz()``/``points()``/``nodes()`` vertices, e.g.
+      petekio's ``infer_geometry`` result): a
       FLAT WIREFRAME GRID — its unique triangle edges (or
       ``wireframe_edges()``) as lattice lines placed at the SHALLOWEST point
       of its own nodes (max finite vertex z), edge rings at that same level.
-      Only ``fill=`` renders it as a value-coloured surface — SOLID layers
-      never appear from a bare non-``surface`` item (owner ruling)
+      An explicit ``fill=`` remains available for any producer that also
+      offers ``value_layer()``
     - value fill (opt-in via ``fill=``): ``value_layer(attr=None)`` — the
       returned ``{"name", "nodes", "triangles", "values", "range"}`` layer IS
       the surface: it renders once, value-coloured. A node row may carry
@@ -89,18 +92,13 @@ def view3d_payload(
       z ELEVATION (negative down) — a 3-D bore path with a wellhead marker,
       identity-coloured; optional ``id``/``name`` labels it
     - outline: ``rings()`` of ``[x, y]`` rows — flat rings at ``ref_z``
-    - a TRUE regular surface passed BARE (``kind == "surface"``, e.g.
-      petekio's regular ``Surface`` — ``value_layer()`` + a 2-D
-      ``.geometry``): the ONLY item kind that may render a SOLID surface
-      layer bare — its STRUCTURE renders as a NEUTRAL elevation mesh from the
-      primary value layer (value-as-elevation; ``values`` stay null → neutral
-      shading + the wireframe toggle — never value-coloured without
-      ``fill=``). Every OTHER ``.geometry``-bearing / value-bearing item
-      passed bare renders FLAT: its ``.geometry`` lattice lines (or,
-      geometry-less, its primary value layer's triangle edges) placed at the
-      SHALLOWEST point of its own nodes (max finite node elevation; falling
-      back to the scene's shallowest point when it carries no z), with edge
-      rings at that same level
+    - a value-bearing surface passed BARE (``kind`` is ``"surface"``,
+      ``"structured_mesh"``, or ``"tri_surface"``): its STRUCTURE renders as
+      a NEUTRAL elevation mesh from the primary value layer
+      (value-as-elevation; ``values`` stay null → neutral shading + the
+      wireframe toggle — never value-coloured without ``fill=``). Unclassified
+      legacy ``.geometry``-bearing / value-bearing items passed bare retain the
+      flat lattice fallback at the shallowest point of their own nodes
 
     ``color=`` / ``fill=`` / ``contours=`` keep their exact view2d semantics
     and grammar: ``color=`` colours POINTS by z (default ON; ``color=False``
@@ -157,6 +155,7 @@ def view3d_payload(
         item, cspec, fspec, name, c_explicit, f_explicit = _norm_item(
             scene_entry, color_spec, fill_spec
         )
+        role = _render_role(item)
         contributed = False
         mesh_added = False
 
@@ -180,7 +179,37 @@ def view3d_payload(
                 layers.append({"kind": "contours", "name": name})
                 contributed = True
 
-        if _is_geometry(item):
+        # Role metadata wins over overlapping method ducks. All three
+        # value-bearing surface levels render as surfaces; their corresponding
+        # geometry-only shells continue through the lattice/wireframe paths.
+        if role == "surface":
+            edge = getattr(item, "edge", None)
+            edge_rings = _rings(edge) if edge is not None else []
+            if mesh_added:
+                outlines.extend(edge_rings)
+                continue
+            entry = _value_mesh(item, None)
+            if entry is None:
+                raise TypeError(
+                    f"{type(item).__name__} declares surface kind "
+                    f"{getattr(item, 'kind', None)!r} but offers no value_layer()"
+                )
+            entry["values"] = None
+            entry["range"] = None
+            entry["name"] = "mesh"
+            entry["display_name"] = name
+            meshes.append(entry)
+            n_triangles += len(entry["triangles"])
+            continue
+
+        if role == "geometry" and not (_is_geometry(item) or _is_trimesh(item)):
+            raise TypeError(
+                f"{type(item).__name__} declares geometry kind "
+                f"{getattr(item, 'kind', None)!r} but offers neither the structured "
+                "node_xy/ncol/nrow duck nor triangles with mesh vertices"
+            )
+
+        if _is_geometry(item) and role != "points":
             # a z-less geometry renders as a FLAT lattice at the SCENE's
             # shallowest point (z=None resolves after the loop), edge rings at
             # the same level (owner ruling: flat, never a solid layer).
@@ -196,7 +225,7 @@ def view3d_payload(
             layers.append({"kind": "lines", "name": name})
             continue
 
-        if _is_trimesh(item):
+        if _is_trimesh(item) and role != "points":
             edge = getattr(item, "edge", None)
             edge_rings = _rings(edge) if edge is not None else []
             if mesh_added:
@@ -204,16 +233,14 @@ def view3d_payload(
                 # its edge rings keep the ref_z plane (pre-ruling behaviour)
                 outlines.extend(edge_rings)
                 continue
-            # BARE trimesh (e.g. the infer_geometry TriSurface fallback):
+            # A bare geometry-shell trimesh (e.g. infer_geometry's MeshShell):
             # a FLAT WIREFRAME GRID at the item's own shallowest point
             # (max finite vertex elevation), edge rings at the same level —
-            # solid layers are for kind == "surface" only (owner ruling).
+            # value-bearing surface roles were handled above.
             lines, n_tris, edge_stride = _mesh_lines(
                 item, max_mesh_edges, max_line_points
             )
-            z_flat = _verts_shallowest(
-                item.xyz() if hasattr(item, "xyz") else item.points()
-            )
+            z_flat = _verts_shallowest(_mesh_vertices(item))
             lattices.append({"name": name, "lines": lines, "z": z_flat})
             for ring in edge_rings:
                 flat_rings.append({"points": ring, "z": z_flat})
@@ -223,12 +250,14 @@ def view3d_payload(
             layers.append({"kind": "lines", "name": name})
             continue
 
-        if _is_well(item):
+        if _is_well(item) and role != "points":
             wells.append(_well_entry(item, name, len(wells)))
             layers.append({"kind": "wells", "name": wells[-1]["id"]})
             continue
 
-        rings = _rings(item)
+        # Stable point metadata is authoritative even if a producer also
+        # exposes topology helpers such as edge/rings for other workflows.
+        rings = _rings(item) if role != "points" else []
         if rings:
             outlines.extend(rings)
             continue
@@ -264,25 +293,14 @@ def view3d_payload(
         if contributed:
             continue  # a fill/contour-only item carries no further geometry
 
-        # STRUCTURE fallback for value-bearing items passed bare. SOLID
-        # surface layers are for kind == "surface" ONLY (owner ruling): a
-        # TRUE regular surface renders its primary value layer as a NEUTRAL
-        # elevation mesh (``values``/``range`` null → the neutral material +
-        # wireframe toggle; colouring stays a ``fill=`` opt-in). Every OTHER
-        # geometry-ish item renders FLAT: its ``.geometry`` lattice lines
+        # STRUCTURE fallback for unclassified value-bearing items passed bare.
+        # Recognized surfaces were handled above; legacy geometry-ish items
+        # render FLAT through their ``.geometry`` lattice lines
         # (or, geometry-less, the primary layer's triangle edges) at the
         # SHALLOWEST point of its own nodes — max finite elevation, the
         # scene's shallowest point when it carries no z — with edge rings at
         # that same level.
         entry = _value_mesh(item, None)
-        if getattr(item, "kind", None) == "surface" and entry is not None:
-            entry["values"] = None
-            entry["range"] = None
-            entry["name"] = "mesh"
-            entry["display_name"] = name
-            meshes.append(entry)
-            n_triangles += len(entry["triangles"])
-            continue
         z_flat = _verts_shallowest(entry["nodes"]) if entry is not None else None
         geom = getattr(item, "geometry", None)
         if geom is not None and _is_geometry(geom):

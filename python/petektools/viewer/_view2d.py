@@ -3,8 +3,10 @@
 This module is deliberately domain-agnostic. It accepts plain coordinate
 sequences plus duck-typed objects from producer libraries: a point object may
 offer ``xyz()``/``xy()``, a geometry may offer ``node_xy(i, j)`` with ``ncol`` and
-``nrow``, a triangulated mesh may offer ``triangles()`` with ``xyz()``/``points()``,
-and an outline may offer ``rings()``. Optional value conventions extend
+``nrow``, a triangulated mesh may offer ``triangles()`` with
+``xyz()``/``points()``/``nodes()``, and an outline may offer ``rings()``. Stable
+``kind`` metadata separates point, geometry-shell, and value-surface roles before
+overlapping method ducks are considered. Optional value conventions extend
 these: ``value_layer(attr=None)`` returns a per-node value-coloured trimesh
 (``{"name", "nodes", "triangles", "values", "range"}``; opted in via
 ``fill=``), ``attr_names()`` advertises selectable named value layers, and
@@ -52,7 +54,8 @@ def view2d_payload(
 
     - points: ``xyz()``/``xy()`` or a sequence of ``[x, y]``/``[x, y, z]`` rows
     - geometry: ``node_xy(i, j)``, ``ncol``, ``nrow`` and optional ``edge``
-    - trimesh: ``triangles()`` index triples over ``xyz()``/``points()`` vertices,
+    - trimesh: ``triangles()`` index triples over
+      ``xyz()``/``points()``/``nodes()`` vertices,
       with optional ``edge`` — the unique triangle edges render as grid lines; an
       optional ``wireframe_edges()`` (index pairs) overrides the drawn edge set,
       e.g. a quad-dominant wireframe with cell diagonals removed
@@ -60,9 +63,14 @@ def view2d_payload(
     - value fill: ``value_layer(attr=None)`` returning
       ``{"name", "nodes", "triangles", "values", "range"}`` — a per-node
       value-coloured trimesh rendered UNDER the grid lines
-    - selectable attributes: an item offering callable ``attr_names()`` and
-      ``value_layer()`` automatically emits its primary layer followed by every
-      named attribute when ``fill`` is omitted; ``fill=False`` explicitly opts out
+    - selectable surface attributes: a value-surface role (``kind`` is
+      ``"surface"``, ``"structured_mesh"``, or ``"tri_surface"``) offering
+      callable ``attr_names()`` and ``value_layer()`` automatically emits its
+      primary layer followed by every named attribute when ``fill`` is omitted;
+      ``fill=False`` explicitly opts out
+    - role dispatch: ``"point_set"``/``"points"`` render as points;
+      ``"grid_geometry"``/``"structured_shell"``/``"mesh_shell"`` render as
+      wireframes and never trigger omitted-fill discovery
     - contour lines (opt-in via ``contours=``): ``iso_lines(interval=...,
       levels=..., attr=None)`` returning ``[(level, [polyline, ...]), ...]``
     - structured surface (value-bearing, e.g. petekio's regular ``Surface``):
@@ -75,10 +83,11 @@ def view2d_payload(
     ``color=`` colours POINTS (and selects the colormap for whatever is
     value-coloured); it never triggers fills. It defaults ON — pass
     ``color=False`` for monochrome points. Omitted ``fill`` auto-discovers the
-    primary + named layers only on items offering callable ``attr_names()`` and
-    ``value_layer()``; ``fill=False`` disables fills, ``fill=True`` requests only
-    the primary layer, and a string requests exactly that attribute. Contours keep
-    their own ``contours=`` parameter.
+    primary + named layers only on value-surface roles offering callable
+    ``attr_names()`` and ``value_layer()``; ``fill=False`` disables fills,
+    ``fill=True`` requests only the primary layer, and a string requests exactly
+    that attribute. Explicit fill remains method-driven for any producer offering
+    ``value_layer()``. Contours keep their own ``contours=`` parameter.
     Both accept ``bool`` or a string spec parsed by REGISTRY MATCH: the string
     splits on ``"_"``; if a token matches a known colormap name (``viridis`` /
     ``magma`` / ``grays`` / ``inferno``), everything before it is the attribute
@@ -189,8 +198,13 @@ def view2d_payload(
         item, cspec, fspec, name, c_explicit, f_explicit = _norm_item(
             scene_entry, color_spec, fill_spec
         )
+        role = _render_role(item)
         contributed = False
-        auto_attrs = _auto_fill_attrs(item) if auto_fill and not f_explicit else None
+        auto_attrs = (
+            _auto_fill_attrs(item)
+            if auto_fill and not f_explicit and role == "surface"
+            else None
+        )
         requested_attrs: list[str | None] = []
         if auto_attrs is not None:
             requested_attrs = [None, *auto_attrs]
@@ -241,7 +255,14 @@ def view2d_payload(
                 layers.append({"kind": "contours", "name": name})
                 contributed = True
 
-        if _is_geometry(item):
+        if role == "geometry" and not (_is_geometry(item) or _is_trimesh(item)):
+            raise TypeError(
+                f"{type(item).__name__} declares geometry kind "
+                f"{getattr(item, 'kind', None)!r} but offers neither the structured "
+                "node_xy/ncol/nrow duck nor triangles with mesh vertices"
+            )
+
+        if _is_geometry(item) and role != "points":
             edge = getattr(item, "edge", None)
             edge_rings = _rings(edge) if edge is not None else []
             grid_lines.extend(
@@ -263,7 +284,7 @@ def view2d_payload(
             layers.append({"kind": "lines", "name": name})
             continue
 
-        if _is_trimesh(item):
+        if _is_trimesh(item) and role != "points":
             edge = getattr(item, "edge", None)
             edge_rings = _rings(edge) if edge is not None else []
             mesh_lines, n_triangles, edge_stride = _mesh_lines(
@@ -283,7 +304,9 @@ def view2d_payload(
             layers.append({"kind": "lines", "name": name})
             continue
 
-        rings = _rings(item)
+        # Stable point metadata is authoritative even if a producer also
+        # exposes topology helpers such as edge/rings for other workflows.
+        rings = _rings(item) if role != "points" else []
         if rings:
             outlines.extend(rings)
             continue
@@ -612,6 +635,30 @@ def _scene_items(items: Any) -> list[Any]:
     return [items]
 
 
+_POINT_KINDS = frozenset(("point_set", "points"))
+_GEOMETRY_KINDS = frozenset(("grid_geometry", "structured_shell", "mesh_shell"))
+_SURFACE_KINDS = frozenset(("surface", "structured_mesh", "tri_surface"))
+
+
+def _render_role(obj: Any) -> str | None:
+    """Normalize stable producer ``kind`` metadata to a viewer render role.
+
+    Producers declare whether an item is point data, a geometry-only shell, or
+    a value-bearing surface. This string seam stays domain-agnostic; an unknown
+    or absent kind retains the historical method-duck classification.
+    """
+    kind = getattr(obj, "kind", None)
+    if not isinstance(kind, str):
+        return None
+    if kind in _POINT_KINDS:
+        return "points"
+    if kind in _GEOMETRY_KINDS:
+        return "geometry"
+    if kind in _SURFACE_KINDS:
+        return "surface"
+    return None
+
+
 def _is_geometry(obj: Any) -> bool:
     return hasattr(obj, "node_xy") and hasattr(obj, "ncol") and hasattr(obj, "nrow")
 
@@ -880,7 +927,21 @@ def _major_step(interval: float) -> float:
 
 
 def _is_trimesh(obj: Any) -> bool:
-    return hasattr(obj, "triangles") and (hasattr(obj, "xyz") or hasattr(obj, "points"))
+    return hasattr(obj, "triangles") and any(
+        hasattr(obj, name) for name in ("xyz", "points", "nodes")
+    )
+
+
+def _mesh_vertices(mesh: Any) -> Any:
+    """Return a trimesh's vertex rows through the supported producer ducks."""
+    for name in ("xyz", "points", "nodes"):
+        fn = getattr(mesh, name, None)
+        if callable(fn):
+            return fn()
+    raise TypeError(
+        f"{type(mesh).__name__} offers triangles() but no callable "
+        "xyz(), points(), or nodes() vertex source"
+    )
 
 
 def _primary_value_layer(item: Any) -> dict[str, Any] | None:
@@ -922,7 +983,7 @@ def _mesh_lines(
     typically the quad-dominant wireframe with cell diagonals removed;
     otherwise the unique triangle edges are derived from ``triangles()``.
     """
-    verts = mesh.xyz() if hasattr(mesh, "xyz") else mesh.points()
+    verts = _mesh_vertices(mesh)
     tris = list(mesh.triangles())
     n_triangles = len(tris)
     edges: set[tuple[int, int]] = set()
@@ -963,7 +1024,7 @@ def _mesh_lines_lod(
         pairs = wireframe(stride=stride)
     except TypeError:
         return None
-    verts = mesh.xyz() if hasattr(mesh, "xyz") else mesh.points()
+    verts = _mesh_vertices(mesh)
     edges: set[tuple[int, int]] = set()
     for pair in pairs:
         u, v = int(pair[0]), int(pair[1])

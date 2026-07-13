@@ -101,15 +101,19 @@ decimated. Payload shapes for both are in `SCHEMA.md` (MapBundle →
 For the `view2d` QA path, `color=` and `fill=` are **separate semantics**
 (owner rulings 2026-07-10 / 2026-07-13): `color=` colours **points** (and picks
 the colormap for whatever is value-coloured) — it never triggers fills, and it
-defaults ON (`color=False` for monochrome points). When `fill` is omitted, an
-item offering callable `attr_names()` **and** `value_layer()` contributes its
-primary layer followed by every named attribute in producer order; the Fill
-picker switches among them and labels each `source · layer` (for example,
-`Top Agat · values` / `Top Agat · thickness`). This is metadata discovery only:
-an existing producer without both ducks retains the structure-only omitted-fill
-behaviour. Explicit `fill=False` disables all fills, `fill=True` requests the
-primary only, and a string requests exactly that named lane; per-object dict
-overrides still win. Contour lines remain opt-in through `contours=`. Both
+defaults ON (`color=False` for monochrome points). Stable producer `kind`
+metadata separates points (`point_set`), geometry-only shells (`grid_geometry`,
+`structured_shell`, `mesh_shell`), and value surfaces (`surface`,
+`structured_mesh`, `tri_surface`) before overlapping method ducks. When `fill`
+is omitted, only a value-surface role offering callable `attr_names()` **and**
+`value_layer()` contributes its primary layer followed by every named attribute
+in producer order; the Fill picker switches among them and labels each
+`source · layer` (for example, `Top Agat · values` / `Top Agat · thickness`).
+Point sets stay points, and geometry shells stay wireframes even if they expose
+overlapping helper methods. Explicit `fill=False` disables all fills,
+`fill=True` requests the primary only, and a string requests exactly that named
+lane from any producer offering `value_layer()`; per-object dict overrides still
+win. Contour lines remain opt-in through `contours=`. Both
 `color=` and `fill=` accept `True` or a string spec parsed by **registry
 match**: `"[<attr>_]<cmap>[_<min>_<max>]"`, where `<cmap>` is one of
 `viridis` / `magma` / `grays` / `inferno` and the two trailing floats are an
@@ -123,8 +127,8 @@ exactly coloured points + geometry lines — no surprise trimesh fill. A
 value-bearing item passed bare without callable `attr_names()` (for example a
 single-layer producer exposing only `value_layer()` + a 2-D `.geometry`) renders
 its STRUCTURE — the geometry lattice lines (or, geometry-less, its primary value
-layer's triangle edges). A producer that participates in the two-duck attribute
-handshake gets the selectable omitted-fill behaviour above.
+layer's triangle edges). A value-surface producer that participates in the
+two-duck attribute handshake gets the selectable omitted-fill behaviour above.
 
 **Per-object colour — the dict item form (owner ruling 2026-07-11, view2d AND
 view3d).** A scene item may be a dict `{"object": obj, "color": bool|spec,
@@ -226,18 +230,17 @@ family convention) and renders them in **one Three.js scene** (payload
 `contours=` keep their exact view2d semantics and registry-match spec grammar:
 points render as a **single-draw-call colour-coded cloud** (compact base64 f32
 blocks on the wire, decoded on the volume tab's kernel; smooth at the 200k
-cap), and **solid surface layers are for surfaces only** (owner ruling
-2026-07-11): only a TRUE regular surface (`kind == "surface"`, the petekio
-`Surface` duck) passed bare renders a solid layer — the neutral elevation
-mesh from its primary value layer (value-coloured under `fill=`; triangles
-touching a z-less node are holes, never guessed). Every other geometry-ish
-item passed bare — a trimesh (e.g. the petekio `infer_geometry` TriSurface
-fallback), a GridGeometry lattice, a `.geometry`-bearing value item — renders
-as a **flat wireframe grid** placed at the **shallowest point** of its own
-nodes (z is elevation, negative down → max finite node z; a z-less geometry
-falls back to the scene's shallowest point), with its edge rings at that same
-level; `fill=` still opts any value-bearing item into the value-coloured
-mesh. Contour polylines draw at their level, and wells
+cap), and **solid surface layers are for surfaces only**: all three value-surface
+roles (`surface`, `structured_mesh`, `tri_surface`) passed bare render a neutral
+elevation mesh from their primary value layer (value-coloured under `fill=`;
+triangles touching a z-less node are holes, never guessed). Their geometry-only
+counterparts (`grid_geometry`, `structured_shell`, `mesh_shell`) render as a
+**flat wireframe grid** placed at the **shallowest point** of their own nodes
+(z is elevation, negative down → max finite node z; a z-less geometry falls
+back to the scene's shallowest point), with edge rings at that same level.
+Unclassified legacy geometry/value ducks retain the flat fallback; `fill=` still
+opts any value-bearing producer into the value-coloured mesh. Contour polylines
+draw at their level, and wells
 draw identity-coloured with a screen-sized wellhead marker. The panel carries
 the colormap selector and the volume tab's **z-exaggeration** control (slider +
 "fit z ×N", display-only scale with a `z ×N` badge and true depths in the

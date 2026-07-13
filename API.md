@@ -864,9 +864,10 @@ onto the schema and hands it here (home ruling `decision_viewer_home_petektools`
 ```python
 from petektools import viewer
 
-# Generic 2-D adapter. Omitted fill auto-enumerates primary + named lanes only
-# for objects offering callable attr_names() and value_layer(). Explicit fill
-# remains exact: False=off, True=primary only, str=that one named lane.
+# Generic 2-D adapter. Stable kind metadata separates point sets, geometry-only
+# shells, and value surfaces. Omitted fill auto-enumerates primary + named lanes
+# only for surface roles offering callable attr_names() and value_layer().
+# Explicit fill remains exact: False=off, True=primary, str=one named lane.
 viewer.view2d(items, *, title="2D view", color=True, fill=None, contours=None,
               save=None, port=0, block=False, open_browser=True,
               max_grid_lines=800, max_line_points=1000, point_limit=200_000,
