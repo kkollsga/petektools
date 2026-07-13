@@ -216,12 +216,15 @@ const result = await page.evaluate(async (opts) => {
       const select = fillSelect();
       if (!select) throw new Error("surface gesture requires at least two selectable fills");
       select.selectedIndex = index;
+      const dispatchStarted = performance.now();
       select.dispatchEvent(new Event("change", { bubbles: true }));
+      const dispatchMs = performance.now() - dispatchStarted;
       const deadline = Date.now() + 3000;
       while ((window.__PETEK_MAP_BLOCK_STATUS?.activeFill ?? index) !== index && Date.now() < deadline) {
         await raf(); await sleep(10);
       }
       await raf(); await sleep(20);
+      return dispatchMs;
     };
 
     const initialBlocks = window.__PETEK_MAP_BLOCK_STATUS ? { ...window.__PETEK_MAP_BLOCK_STATUS } : null;
@@ -262,7 +265,8 @@ const result = await page.evaluate(async (opts) => {
     await captureRaf();
 
     const hotAfter = snap();
-    const endScale = window.__PETEK_MAP_VIEW && window.__PETEK_MAP_VIEW.scale;
+    const endCamera = window.__PETEK_MAP_VIEW && { ...window.__PETEK_MAP_VIEW };
+    const endScale = endCamera && endCamera.scale;
     const hotDelta = delta(hotBefore, hotAfter, counterNames);
     samples.sort((a, b) => a - b);
     const frameStats = {
@@ -275,6 +279,7 @@ const result = await page.evaluate(async (opts) => {
     // The single trailing debounce owns all reconstruction and any LOD flip.
     await sleep(230); await raf(); await raf();
     const settled = snap();
+    const settledCamera = window.__PETEK_MAP_VIEW && { ...window.__PETEK_MAP_VIEW };
     const settleDelta = delta(hotAfter, settled, counterNames);
 
     // Fill A was cached by the settle render; build B, then return to A. The
@@ -284,7 +289,7 @@ const result = await page.evaluate(async (opts) => {
     const bState = fillSnapshot();
     const bBlocks = window.__PETEK_MAP_BLOCK_STATUS ? { ...window.__PETEK_MAP_BLOCK_STATUS } : null;
     const returnBefore = snap();
-    await selectFill(0);
+    const returnDispatchMs = await selectFill(0);
     const returnAfter = snap();
     const aAfter = fillSnapshot();
     const aBlocks = window.__PETEK_MAP_BLOCK_STATUS ? { ...window.__PETEK_MAP_BLOCK_STATUS } : null;
@@ -321,7 +326,8 @@ const result = await page.evaluate(async (opts) => {
     gesture = {
       wheelEvents: opts.wheelEvents, panEvents: opts.panEvents,
       startScale, endScale,
-      panPixels: opts.panEvents * 12, rafTurns,
+      endCamera, settledCamera, returnDispatchMs,
+      viewportWidth: rect.width, panPixels: opts.panEvents * 12, rafTurns,
       hotDelta, settleDelta, frameStats,
       aBefore, bState, aAfter, returnDelta, stableA,
       initialBlocks, bBlocks, aBlocks,
@@ -380,6 +386,7 @@ if (result.dragEvents) {
 if (result.surfaceGesture) {
   const g = result.surfaceGesture;
   if (g.wheelEvents <= 2) fail(10, "surface gesture must exercise more than two wheel ticks");
+  if (!(g.panPixels > g.viewportWidth)) fail(10, "surface gesture must pan more than one viewport");
   if (!(g.startScale >= 0.05 && g.endScale < 0.05))
     fail(10, `surface gesture did not cross point-radius threshold: ${g.startScale} -> ${g.endScale}`);
   const forbidden = ["pointPathBuilds", "triFillBuilds", "canvasBackingWrites",
@@ -396,9 +403,12 @@ if (result.surfaceGesture) {
   if (g.settleDelta.settlePaints !== 1 || g.settleDelta.pointPathBuilds !== 1 ||
       g.settleDelta.triFillBuilds !== 1)
     fail(15, "gesture did not perform exactly one point/fill rebuild on settle");
+  if (JSON.stringify(g.endCamera) !== JSON.stringify(g.settledCamera))
+    fail(15, "settle paint changed the user-adjusted map camera");
   if (g.returnDelta.pointPathBuilds !== 0 || g.returnDelta.triFillBuilds !== 0 ||
       g.returnDelta.fillCacheHits < 1 || !g.stableA)
     fail(16, "A→B→A did not reuse the stable fill cache");
+  if (!(g.returnDispatchMs < 8)) fail(16, `cached A return dispatch ${g.returnDispatchMs} ms >= 8 ms`);
   if (!g.aAfter.cache || g.aAfter.cache.size > g.aAfter.cache.limit)
     fail(17, "fill bitmap cache exceeded its explicit bound");
   if (!g.initialBlocks || !(g.initialBlocks.decoded < g.initialBlocks.total) ||

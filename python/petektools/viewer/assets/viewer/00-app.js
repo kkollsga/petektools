@@ -254,7 +254,14 @@
     S.colormap = pinned && COLORMAPS[pinned] ? pinned : "viridis";
     S.showOutline = true;
     S.clipRaster = true; // clip the areal raster to the outline polygon (QC toggle)
-    S.showGridLines = true;
+    // Filled surfaces read cleanly without the dense geometry lattice. Geometry-
+    // only payloads keep their lines on so they are not rendered as an empty map.
+    // Workspace resources apply this once when their first real map is composed;
+    // subsequent resource/lane changes preserve the user's manual toggle.
+    S.showGridLines = !(m.fills && m.fills.length) || (m.layers || []).some(function (layer) {
+      return layer.kind === "lines" && layer.standalone === true;
+    });
+    S.mapGridDefaultApplied = !!p.map;
     S.showPoints = true;
     // value-coloured trimesh fills + contour iso-lines (2-D QA payloads):
     // one active fill at a time (selectable), each toggleable like the other
@@ -287,7 +294,10 @@
     // new chrome).
     var s3 = p.scene3d || {};
     S.s3dExag = s3.z_exaggeration || 5;
-    S.s3dShow = { points: true, meshes: true, lattice: true, contours: true, wells: true, outlines: true };
+    S.s3dShow = { points: true, meshes: true, lattice: !(s3.meshes && s3.meshes.length) || (s3.layers || []).some(function (layer) {
+      return layer.kind === "lines" && layer.standalone === true;
+    }), contours: true, wells: true, outlines: true };
+    S.s3dLatticeDefaultApplied = !!p.scene3d;
     S.s3dWireframe = false;
     var tab3d = document.querySelector('.tab[data-tab="scene3d"]');
     if (tab3d) tab3d.hidden = !p.scene3d && !workspaceHasView("scene3d");

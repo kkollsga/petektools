@@ -15,6 +15,7 @@
  *   --total-cap-ms=N    assert tab-click -> status ok wall time < N (exit 4)
  *   --tri-budget=N      inject window.PETEK_TRI_BUDGET before load (degrade path)
  *   --expect-degraded   assert the decimated-preview banner + 1:stride badge (exit 5)
+ *   --disable-webgl     force canvas WebGL context creation to fail
  *   --screenshot=PATH   full-page PNG at the end (light theme restored)
  *
  * Prints one JSON line. Exit 0 = all assertions passed.
@@ -39,9 +40,12 @@ const buildCapMs = flag("build-cap-ms", null);
 const totalCapMs = flag("total-cap-ms", null);
 const triBudget = flag("tri-budget", null);
 const expectDegraded = !!flag("expect-degraded", false);
+const disableWebgl = !!flag("disable-webgl", false);
 const screenshot = flag("screenshot", null);
 
-const browser = await chromium.launch();
+const browser = await chromium.launch(disableWebgl
+  ? { args: ["--disable-webgl", "--disable-gpu"] }
+  : {});
 const page = await browser.newPage({ viewport: { width: 1280, height: 860 } });
 const consoleErrors = [];
 page.on("console", (m) => { if (m.type() === "error") consoleErrors.push(m.text()); });
@@ -49,6 +53,15 @@ page.on("pageerror", (e) => consoleErrors.push(String(e)));
 
 if (triBudget != null && triBudget !== true) {
   await page.addInitScript((n) => { window.PETEK_TRI_BUDGET = n; }, parseInt(triBudget, 10));
+}
+if (disableWebgl) {
+  await page.addInitScript(() => {
+    const original = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = function (kind, ...args) {
+      if (/^webgl/i.test(String(kind))) return null;
+      return original.call(this, kind, ...args);
+    };
+  });
 }
 
 await page.goto(pathToFileURL(file).href);
@@ -152,6 +165,7 @@ const result = await page.evaluate(async () => {
     badge: badge0, badgeAfterExag, degradedBanner,
     colormapInitial, hoverReadout, click,
     lightLegend, darkLegend,
+    emptyText: document.getElementById("empty").textContent,
   };
 });
 
@@ -163,6 +177,13 @@ result.consoleErrors = consoleErrors;
 await browser.close();
 
 const fail = (code, msg) => { console.log(JSON.stringify({ ...result, failure: msg })); process.exit(code); };
+if (disableWebgl) {
+  if (!result.status || result.status.state !== "webgl" || !/WebGL/i.test(result.emptyText || ""))
+    fail(8, "WebGL-disabled state was not classified truthfully: " + JSON.stringify(result.status));
+  console.log(JSON.stringify(result));
+  await browser.close?.();
+  process.exit(0);
+}
 if (consoleErrors.length) fail(6, "console errors: " + consoleErrors.slice(0, 3).join(" | "));
 if (!result.tabVisible) fail(7, "the 3D tab is hidden for a scene3d payload");
 if (!result.status || result.status.state !== "ok") fail(8, "scene never built: " + JSON.stringify(result.status));

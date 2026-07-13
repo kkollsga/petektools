@@ -35,6 +35,56 @@ const result = await page.evaluate(async () => {
     accessibleNames: ["navigator-toggle", "inspector-toggle", "help-toggle"].map((id) =>
       document.getElementById(id).getAttribute("aria-label")),
   };
+  const initialGrid = Array.from(document.querySelectorAll("#panel-body .toggle")).find((row) => /Grid lines/.test(row.textContent || ""));
+  const surfaceDefaults = {
+    mapGridOn: !!(initialGrid && initialGrid.querySelector("input")?.checked),
+    horizontalSpan: window.__PETEK_MAP_VIEW?.horizontalSpan,
+  };
+  const mapCanvas = document.getElementById("map-canvas");
+  const mapRect = mapCanvas.getBoundingClientRect();
+  mapCanvas.dispatchEvent(new WheelEvent("wheel", {
+    bubbles: true, cancelable: true, deltaY: -120,
+    clientX: mapRect.left + mapRect.width / 2, clientY: mapRect.top + mapRect.height / 2,
+  }));
+  await sleep(30);
+  const userCamera = { ...window.__PETEK_MAP_VIEW };
+  document.dispatchEvent(new KeyboardEvent("keydown", { key: "f", bubbles: true }));
+  await sleep(20);
+  const explicitCamera = { ...window.__PETEK_MAP_VIEW };
+  surfaceDefaults.userCameraState = userCamera.state;
+  surfaceDefaults.explicitCameraState = explicitCamera.state;
+  surfaceDefaults.explicitSpan = explicitCamera.horizontalSpan;
+
+  // Disclosure is a pure catalogue operation: manual collapse/re-expand is
+  // retained by state and must never materialize a deferred resource.
+  const twist = document.querySelector(".workspace-twist");
+  const disclosureBefore = JSON.parse(JSON.stringify(window.__PETEK_WORKSPACE_STATE));
+  twist?.click(); await sleep(20);
+  const collapsed = JSON.parse(JSON.stringify(window.__PETEK_WORKSPACE_STATE));
+  twist?.click(); await sleep(20);
+  const reexpanded = JSON.parse(JSON.stringify(window.__PETEK_WORKSPACE_STATE));
+  const disclosure = {
+    autoExpanded: Object.values(disclosureBefore.expanded || {}).every(Boolean),
+    manuallyRecorded: Object.keys(collapsed.expansionManual || {}).length > 0,
+    fetchesUnchanged: disclosureBefore.fetches === collapsed.fetches && collapsed.fetches === reexpanded.fetches,
+  };
+
+  // Every button uses the centralized tooltip channel on pointer and keyboard;
+  // native title bubbles are removed. Data inspection is tested separately by
+  // the map/scene gesture fixtures and remains click-driven.
+  const tooltipButton = document.getElementById("theme-toggle");
+  tooltipButton.dispatchEvent(new PointerEvent("pointerover", { bubbles: true }));
+  await sleep(300);
+  const tip = document.getElementById("button-tooltip");
+  const tooltip = {
+    allButtonsCovered: Array.from(document.querySelectorAll("button")).every((button) =>
+      !!button.dataset.tooltip && !button.hasAttribute("title")),
+    hoverVisible: !tip.hidden && !!tip.textContent,
+    hoverDescribed: tooltipButton.getAttribute("aria-describedby") === tip.id,
+  };
+  tooltipButton.dispatchEvent(new PointerEvent("pointerout", { bubbles: true }));
+  tooltipButton.focus(); await sleep(10);
+  tooltip.focusVisible = !tip.hidden && tooltipButton.getAttribute("aria-describedby") === tip.id;
 
   // Keyboard access: help traps focus and Escape restores it; / targets search;
   // the separator is keyboard-resizable and panel toggles expose state.
@@ -92,6 +142,8 @@ const result = await page.evaluate(async () => {
   // Scene visibility is independent: the Map group change must not alter it.
   document.querySelector('.tab[data-tab="scene3d"]').click(); await sleep(160);
   const scene = JSON.parse(JSON.stringify(window.__PETEK_WORKSPACE_STATE));
+  const sceneGrid = Array.from(document.querySelectorAll("#panel-body .toggle")).find((row) => /Grid lines/.test(row.textContent || ""));
+  surfaceDefaults.sceneLatticeOn = !!(sceneGrid && sceneGrid.querySelector("input")?.checked);
   const sceneChecks = Array.from(document.querySelectorAll(".workspace-row:not(.workspace-group) input[type=checkbox]"));
   if (sceneChecks[0]) sceneChecks[0].click();
   await sleep(80);
@@ -113,7 +165,8 @@ const result = await page.evaluate(async () => {
       return true;
     })(),
   };
-  return { initial, triStateInitial, shell, help, resize: { widthBefore, widthAfter }, inspectorClosed, inspectorReopened,
+  return { initial, triStateInitial, shell, surfaceDefaults, disclosure, tooltip,
+    help, resize: { widthBefore, widthAfter }, inspectorClosed, inspectorReopened,
     visibleLabels, afterMapGroup, fillOptions, activeFillLegend, scene,
     afterSceneToggle, returned, hiddenMap, hasTree: !!project };
 });
@@ -152,6 +205,14 @@ if (!result.shell.enabled || !result.shell.treeInNavigator || result.shell.treeI
 if (result.shell.visibleTabs.join(",") !== "map,scene3d") fail("tabs are not capability-derived");
 if (result.shell.accessibleNames.join("|") !== "Toggle Project navigator|Toggle Inspector|Keyboard shortcuts") fail("app controls lack descriptive accessible names");
 if (!result.shell.statusVisible) fail("workspace status bar missing");
+if (result.surfaceDefaults.mapGridOn || result.surfaceDefaults.sceneLatticeOn
+    || result.surfaceDefaults.horizontalSpan < 10000 || result.surfaceDefaults.userCameraState !== "user"
+    || result.surfaceDefaults.explicitCameraState !== "explicit" || result.surfaceDefaults.explicitSpan < 10000)
+  fail("surface-first defaults/fit lifecycle failed");
+if (!result.disclosure.autoExpanded || !result.disclosure.manuallyRecorded || !result.disclosure.fetchesUnchanged)
+  fail("navigator disclosure fetched data or lost manual state");
+if (!result.tooltip.allButtonsCovered || !result.tooltip.hoverVisible
+    || !result.tooltip.hoverDescribed || !result.tooltip.focusVisible) fail("central button tooltip contract failed");
 if (!result.help.open || !result.help.focusedInside || !result.help.closed || !result.help.restored || !result.help.searchFocused) fail("shortcut/focus contract failed");
 if (!(result.resize.widthAfter > result.resize.widthBefore) || !result.inspectorClosed || !result.inspectorReopened) fail("panel controls failed");
 if (result.narrow.viewWidth < 700 || result.narrow.navigatorPosition !== "absolute" || result.narrow.inspectorPosition !== "absolute"

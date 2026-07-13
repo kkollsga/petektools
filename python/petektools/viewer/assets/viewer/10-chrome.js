@@ -238,7 +238,7 @@
     help._setOpen = setOpen;
   }
   function fitActiveWorkspaceView() {
-    if (App.tab === "map") { mapView.fitted = false; renderMap(); }
+    if (App.tab === "map") { requestMapFit("explicit"); renderMap(); }
     else if (App.tab === "scene3d" && s3d) { frameScene3d(); s3d.render(); }
     else if (App.tab === "volume" && three) { three.framed = false; renderVolume(); }
     else renderActive();
@@ -281,6 +281,7 @@
       : App.mode === "server" ? "live" : "offline · static";
   }
   function wireChrome() {
+    wireButtonTooltips();
     Array.prototype.forEach.call(document.querySelectorAll(".tab"), function (btn) {
       btn.addEventListener("click", function () { selectTab(btn.getAttribute("data-tab")); });
       btn.addEventListener("keydown", function (event) {
@@ -318,10 +319,12 @@
       pane.hidden = pane.getAttribute("data-pane") !== tab;
     });
     hideReadout();
+    // Start (or synchronously compose embedded) resources before painting so a
+    // lazy tab never flashes a generic empty-state ahead of its truthful state.
+    ensureWorkspaceTab(tab);
     buildWorkspaceNavigator();
     buildPanel();
     renderActive();
-    ensureWorkspaceTab(tab);
     updateWorkspaceChrome(); saveUiPrefs();
   }
   function renderActive() {

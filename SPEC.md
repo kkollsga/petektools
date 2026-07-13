@@ -71,6 +71,11 @@ tree, or a producer's `view_catalog()` / `view_resource()` duck, supplies stable
 render-item IDs and typed resources. petekTools never traverses a project,
 interprets an asset role, or computes a section; managed libraries own those
 catalog and resource adapters.
+The shell treats navigation and rendering state explicitly: small actionable
+branches disclose without materialization, user expansion never fetches, lazy
+views report loading/empty/malformed/runtime states locally, and deferred/LOD
+work cannot reset a user-owned camera. Control buttons share one accessible
+tooltip channel while data inspection in Map/3-D remains click-to-toggle.
 cross-sections come from a consumer-supplied `section_provider` callback (live)
 or are pre-computed into the
 payload (file). petekTools defines the **generic render schema** (its contract,

@@ -337,7 +337,18 @@ def view2d_payload(
                 summary["rotation_deg"] = float(rot)
             if not edge_rings:
                 frame = _frame_from_geometry(item)
-            layers.append({"kind": "lines", "name": name, **({"item_id": item_id} if item_id is not None else {})})
+            layers.append(
+                {
+                    "kind": "lines",
+                    "name": name,
+                    "standalone": role == "geometry"
+                    or (
+                        role != "surface"
+                        and not callable(getattr(item, "value_layer", None))
+                    ),
+                    **({"item_id": item_id} if item_id is not None else {}),
+                }
+            )
             finish_binding()
             continue
 
@@ -358,7 +369,18 @@ def view2d_payload(
             summary["triangles"] = n_triangles
             if edge_stride > 1:
                 summary["mesh_edge_stride"] = edge_stride
-            layers.append({"kind": "lines", "name": name, **({"item_id": item_id} if item_id is not None else {})})
+            layers.append(
+                {
+                    "kind": "lines",
+                    "name": name,
+                    "standalone": role == "geometry"
+                    or (
+                        role != "surface"
+                        and not callable(getattr(item, "value_layer", None))
+                    ),
+                    **({"item_id": item_id} if item_id is not None else {}),
+                }
+            )
             finish_binding()
             continue
 
@@ -423,7 +445,14 @@ def view2d_payload(
             summary["grid"] = f"{int(getattr(geom, 'ncol'))} x {int(getattr(geom, 'nrow'))}"
             if not edge_rings:
                 frame = _frame_from_geometry(geom)
-            layers.append({"kind": "lines", "name": name, **({"item_id": item_id} if item_id is not None else {})})
+            layers.append(
+                {
+                    "kind": "lines",
+                    "name": name,
+                    "standalone": not callable(getattr(item, "value_layer", None)),
+                    **({"item_id": item_id} if item_id is not None else {}),
+                }
+            )
             finish_binding()
             continue
         layer = _primary_value_layer(item)
@@ -442,7 +471,14 @@ def view2d_payload(
             summary["triangles"] = n_triangles
             if edge_stride > 1:
                 summary["mesh_edge_stride"] = edge_stride
-            layers.append({"kind": "lines", "name": name, **({"item_id": item_id} if item_id is not None else {})})
+            layers.append(
+                {
+                    "kind": "lines",
+                    "name": name,
+                    "standalone": False,
+                    **({"item_id": item_id} if item_id is not None else {}),
+                }
+            )
             finish_binding()
             continue
 
@@ -458,10 +494,14 @@ def view2d_payload(
             if well.get("trajectory")
         ]
         frame = _frame_from_extent(
-            _extent(points, [*grid_lines, *well_lines], outlines)
+            _extent(
+                points,
+                grid_lines,
+                outlines,
+                fills=fills,
+                extra_lines=well_lines,
+            )
         )
-    if not outlines:
-        outlines = _rect_outline_from_frame(frame)
 
     # The GLOBAL fallback for older payload consumers (the JS reads the
     # per-layer fields first): present only when at least one layer actually
@@ -1419,13 +1459,16 @@ def _extent(
     points: list[list[float]],
     grid_lines: list[list[list[float]]],
     outlines: list[list[list[float]]],
+    *,
+    fills: list[dict[str, Any]] | None = None,
+    extra_lines: list[list[list[float]]] | None = None,
 ) -> tuple[float, float, float, float]:
     xs: list[float] = []
     ys: list[float] = []
     for p in points:
         xs.append(p[0])
         ys.append(p[1])
-    for line in grid_lines:
+    for line in [*grid_lines, *(extra_lines or [])]:
         for p in line:
             xs.append(p[0])
             ys.append(p[1])
@@ -1433,14 +1476,10 @@ def _extent(
         for p in ring:
             xs.append(p[0])
             ys.append(p[1])
+    for fill in fills or []:
+        for p in fill.get("nodes", []):
+            xs.append(float(p[0]))
+            ys.append(float(p[1]))
     if not xs:
         return (0.0, 0.0, 1.0, 1.0)
     return (min(xs), min(ys), max(xs), max(ys))
-
-
-def _rect_outline_from_frame(frame: dict[str, float | int]) -> list[list[list[float]]]:
-    x0 = float(frame["origin_x"])
-    y0 = float(frame["origin_y"])
-    x1 = x0 + float(frame["spacing_x"]) * (int(frame["ncol"]) - 1)
-    y1 = y0 + float(frame["spacing_y"]) * (int(frame["nrow"]) - 1)
-    return [[[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]]]

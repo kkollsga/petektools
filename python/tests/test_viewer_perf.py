@@ -25,6 +25,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -38,6 +39,7 @@ _WELL_RENDER_JS = Path(__file__).parent / "viewer_perf" / "well_render_bench.mjs
 _WORKSPACE_JS = Path(__file__).parent / "viewer_perf" / "workspace_bench.mjs"
 _WORKSPACE_SCALE_JS = Path(__file__).parent / "viewer_perf" / "workspace_scale_bench.mjs"
 _WORKSPACE_LANE_JS = Path(__file__).parent / "viewer_perf" / "workspace_lane_bench.mjs"
+_WORKSPACE_STATE_JS = Path(__file__).parent / "viewer_perf" / "workspace_state_bench.mjs"
 _NODE = shutil.which("node")
 
 
@@ -348,6 +350,106 @@ def test_workspace_provider_lanes_fetch_once_cache_and_switch_offline(tmp_path, 
     if mode != "static_visible":
         expected_calls.append(("surface:top", "map", "thickness"))
     assert provider.calls == expected_calls
+
+
+@pytest.mark.skipif(not _HAVE_PW, reason="playwright/chromium not installed")
+@pytest.mark.parametrize(
+    "view,resource_payload,expected",
+    [
+        ("scene3d", {"scene3d": {}}, "empty"),
+        ("scene3d", {}, "malformed"),
+        ("wells", {"wells_logs": {"wells": []}}, "empty"),
+        ("wells", {}, "malformed"),
+    ],
+)
+def test_workspace_lazy_views_localize_empty_and_malformed_states(
+    tmp_path, view, resource_payload, expected
+):
+    item_id = "item:state"
+    resource = {
+        "schema_version": 1,
+        "kind": "workspace_resource",
+        "item_id": item_id,
+        "view": view,
+        "lane": None,
+        "payload": resource_payload,
+    }
+    payload = {
+        "schema_version": 4,
+        "kind": "workspace",
+        "property": "state fixture",
+        "map": None,
+        "scene3d": None,
+        "volume": None,
+        "sections": [],
+        "section_labels": [],
+        "wells": [],
+        "wells_logs": None,
+        "charts": [],
+        "workspace": {
+            "schema_version": 1,
+            "title": "State fixture",
+            "available_views": [view],
+            "tree": [{
+                "id": "group:state", "label": "State", "children": [{
+                    "id": item_id, "label": "State item", "views": [view],
+                    "visible": {view: True},
+                    "resources": {view: {"href": "./unused", "deferred": True}},
+                }],
+            }],
+            "resources": {item_id: {view: resource}},
+            "snapshot": {"include": "selected", "message": "State fixture"},
+        },
+    }
+    target = tmp_path / f"workspace-{view}-{expected}.html"
+    save_view(payload, target)
+    out = subprocess.run(
+        [_NODE, str(_WORKSPACE_STATE_JS), str(target)],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert out.returncode == 0, out.stdout + out.stderr
+    result = json.loads(out.stdout.strip().splitlines()[-1])
+    status = result["final"][view]
+    assert status["state"] == expected
+    assert status.get("reason") == result["final"]["empty"]
+    assert status.get("reason")
+
+
+@pytest.mark.skipif(not _HAVE_PW, reason="playwright/chromium not installed")
+def test_workspace_slow_scene_reports_loading_then_ready(tmp_path):
+    import petektools as pto
+    from petektools import viewer
+
+    class SlowSceneProvider:
+        def view_catalog(self):
+            return [{
+                "id": "point:slow", "label": "Slow points",
+                "views": ["scene3d"], "visible": {"scene3d": True},
+            }]
+
+        def view_resource(self, *, item_id, view, lane=None):
+            time.sleep(0.5)
+            return viewer.view3d_payload([{
+                "object": type("Point", (), {
+                    "name": "Slow", "kind": "point_set",
+                    "xyz": lambda self: [[0.0, 0.0, -1.0]],
+                })(),
+                "id": item_id,
+            }])
+
+    session = pto.view(SlowSceneProvider(), serve=False)
+    session.serve(open_browser=False)
+    try:
+        out = subprocess.run(
+            [_NODE, str(_WORKSPACE_STATE_JS), str(session.url)],
+            capture_output=True, text=True, timeout=60,
+        )
+    finally:
+        session._server.shutdown(); session._server.server_close()
+    assert out.returncode == 0, out.stdout + out.stderr
+    result = json.loads(out.stdout.strip().splitlines()[-1])
+    assert result["first"]["scene3d"]["state"] == "loading"
+    assert result["final"]["scene3d"]["state"] == "ok"
 
 
 def _build_scale_view(scale: str, tmp_path: Path) -> Path:
@@ -1438,6 +1540,15 @@ def test_scene3d_smoke_renders_all_layer_kinds(tmp_path):
 
 
 @pytest.mark.skipif(not _HAVE_PW, reason="playwright + chromium not available (browser leg)")
+def test_scene3d_webgl_disabled_is_a_specific_runtime_state(tmp_path):
+    view, _payload = _build_scene3d_view(tmp_path, "scene3d_no_webgl.html", 20)
+    r = _run_scene3d(view, "--disable-webgl")
+    assert r["rc"] == 0, r.get("failure") or r.get("stderr")
+    assert r["status"]["state"] == "webgl"
+    assert "WebGL" in r["emptyText"]
+
+
+@pytest.mark.skipif(not _HAVE_PW, reason="playwright + chromium not available (browser leg)")
 def test_scene3d_bare_trimesh_flat_wireframe_at_shallowest_z(tmp_path):
     # OWNER RULING (geometry-renders-flat): a bare trimesh never renders a
     # solid surface — it renders as a FLAT WIREFRAME GRID at the shallowest
@@ -1694,7 +1805,7 @@ def test_surface_navigation_hot_frames_are_compositing_only(tmp_path):
     )
     assert r["rc"] == 0, r.get("failure") or r.get("stderr")
     assert not r.get("consoleErrors"), r.get("consoleErrors")
-    assert g["wheelEvents"] > 2 and g["panPixels"] > 1000
+    assert g["wheelEvents"] > 12 and g["panPixels"] > g["viewportWidth"]
     assert g["startScale"] >= 0.05 > g["endScale"]
     assert stats["p95"] < 8.0 and stats["max"] < 16.7
     assert g["hotDelta"]["pointPathBuilds"] == 0
@@ -1709,11 +1820,13 @@ def test_surface_navigation_hot_frames_are_compositing_only(tmp_path):
     assert g["hotDelta"]["overlayBitmapBuilds"] == 0
     assert g["hotDelta"]["overlayHotBlits"] > 0
     assert g["settleDelta"]["settlePaints"] == 1
-    assert g["settleDelta"]["overlayBitmapBuilds"] == 2
-    assert g["settleDelta"]["gridPathBuilds"] == 1
+    assert g["settleDelta"]["overlayBitmapBuilds"] == 2  # contour-under + contact-over
+    assert g["settleDelta"]["gridPathBuilds"] == 0  # filled-surface lattice defaults off
     assert g["settleDelta"]["contactMaskBuilds"] == 1
     assert g["returnDelta"]["triFillBuilds"] == 0
     assert g["returnDelta"]["fillCacheHits"] >= 1
+    assert g["returnDispatchMs"] < 8.0
+    assert g["endCamera"] == g["settledCamera"]
     assert g["stableA"] is True
     assert g["aAfter"]["cache"]["size"] <= g["aAfter"]["cache"]["limit"] == 4
     assert g["initialBlocks"]["decoded"] < g["initialBlocks"]["total"]
@@ -1737,6 +1850,8 @@ def test_surface_navigation_500_grid_hot_frames_are_compositing_only(tmp_path):
     assert r["rc"] == 0, r.get("failure") or r.get("stderr")
     assert not r.get("consoleErrors"), r.get("consoleErrors")
     assert stats["p95"] < 8.0 and stats["max"] < 16.7
+    assert g["wheelEvents"] > 12 and g["panPixels"] > g["viewportWidth"]
+    assert g["endCamera"] == g["settledCamera"]
     for counter in (
         "pointPathBuilds", "triFillBuilds", "canvasBackingWrites",
         "legendMutations", "styleReads", "gridPathBuilds",

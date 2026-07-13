@@ -1,5 +1,21 @@
   // ======================================================================= MAP
-  var mapView = { scale: 1, ox: 0, oy: 0, fitted: false };
+  // Camera lifecycle is explicit. `initial` survives an empty workspace boot
+  // until the first drawable Map arrives; a user gesture cancels every implicit
+  // fit; only the F shortcut creates an `explicit` request after that. Late
+  // resources and LOD settles therefore repaint without moving the camera.
+  var mapView = {
+    scale: 1, ox: 0, oy: 0, fitted: false,
+    fitRequest: "initial", state: "pending",
+  };
+  function requestMapFit(reason) {
+    mapView.fitRequest = reason || "explicit";
+    mapView.fitted = false;
+  }
+  function markMapCameraAdjusted() {
+    mapView.fitRequest = null;
+    mapView.fitted = true;
+    mapView.state = "user";
+  }
   function mapFrame() { return App.payload.map.frame; }
   function worldExtent() {
     var f = mapFrame();
@@ -9,40 +25,63 @@
       y1: f.origin_y + (f.nrow - 1) * f.spacing_y,
     };
   }
-  // Fit the full drawn CONTENT — the frame lattice unioned with the outline rings
-  // and the well markers — so nothing sits off-canvas and the content is centred
-  // (a small outline inside a larger frame no longer leaves dead space to one side).
+  // Fit visible drawable content only. A frame is drawable when it backs a
+  // raster/contact field; a fill-only resource contributes its actual nodes,
+  // not a manufactured frame rectangle. The active fill alone participates,
+  // and invisible layer kinds never distort an explicit fit.
   function contentExtent() {
-    var e = worldExtent();
-    var xlo = Math.min(e.x0, e.x1), xhi = Math.max(e.x0, e.x1);
-    var ylo = Math.min(e.y0, e.y1), yhi = Math.max(e.y0, e.y1);
-    function ext(x, y) { if (x < xlo) xlo = x; if (x > xhi) xhi = x; if (y < ylo) ylo = y; if (y > yhi) yhi = y; }
+    var m = App.payload.map;
+    var xlo = Infinity, xhi = -Infinity, ylo = Infinity, yhi = -Infinity;
+    function ext(x, y) {
+      if (!isFinite(x) || !isFinite(y)) return;
+      if (x < xlo) xlo = x; if (x > xhi) xhi = x;
+      if (y < ylo) ylo = y; if (y > yhi) yhi = y;
+    }
     function extLineSet(L) { for (var k = 0; k < lsN(L); k++) { var n = lineLen(L, k); for (var i = 0; i < n; i++) ext(lineX(L, k, i), lineY(L, k, i)); } }
-    (App.payload.map.outline || []).forEach(function (ring) { ring.forEach(function (pt) { ext(pt[0], pt[1]); }); });
-    extLineSet(App.payload.map.grid_lines);
-    if (App.payload.map.points && App.payload.map.points.length) {
-      var bb = pointBBox(App.payload.map.points); // cached — never rescan the cloud
+    var hasFrameField = !!(S.mapLayers && S.mapLayers[S.mapLayerIdx]) ||
+      (m.contacts || []).some(function (_, i) { return S.contactVis[i]; });
+    if (hasFrameField) {
+      var e = worldExtent(); ext(e.x0, e.y0); ext(e.x1, e.y1);
+    }
+    if (S.showOutline) (m.outline || []).forEach(function (ring) { ring.forEach(function (pt) { ext(pt[0], pt[1]); }); });
+    if (S.showGridLines) extLineSet(lineSetRing(m.grid_lines, m.grid_lines_lod));
+    if (S.showPoints && m.points && m.points.length) {
+      var bb = pointBBox(m.points); // cached — never rescan the cloud
       ext(bb.x0, bb.y0); ext(bb.x1, bb.y1);
     }
-    (App.payload.map.fills || []).forEach(function (f) { var N = f.nodes; for (var q = 0; q < (N ? N.length : 0); q++) ext(ndX(N, q), ndY(N, q)); });
-    (App.payload.map.contours || []).forEach(function (c) { extLineSet(c.lines); });
-    (App.payload.wells || []).forEach(function (w) {
+    var activeFill = S.showFills && (m.fills || [])[S.mapFillIdx];
+    if (activeFill) {
+      var N = fillRingFor(activeFill).nodes;
+      for (var q = 0; q < (N ? N.length : 0); q++) ext(ndX(N, q), ndY(N, q));
+    }
+    if (S.showContours) (m.contours || []).forEach(function (c) { extLineSet(lineSetRing(c.lines, c.lines_lod)); });
+    (App.payload.wells || []).forEach(function (w, wi) {
+      if (!S.wellVis[wi]) return;
       ext(w.x, w.y);
       (w.trajectory || []).forEach(function (p) { ext(p[0], p[1]); });
     });
+    if (!isFinite(xlo)) return null;
     return { x0: xlo, y0: ylo, x1: xhi, y1: yhi };
   }
-  function fitMap(cv) {
-    var e = contentExtent(), w = Math.abs(e.x1 - e.x0) || 1, h = Math.abs(e.y1 - e.y0) || 1;
+  function fitMap(cv, reason) {
+    var e = contentExtent();
+    if (!e) return false;
+    var w = Math.abs(e.x1 - e.x0) || 1, h = Math.abs(e.y1 - e.y0) || 1;
     var pad = 48;
-    var s = Math.min((cv.width - 2 * pad) / w, (cv.height - 2 * pad) / h);
+    var s = Math.min(Math.max(1, cv.width - 2 * pad) / w, Math.max(1, cv.height - 2 * pad) / h);
+    // Never zoom closer than a 10 km horizontal field of view. Small objects
+    // remain centred with breathing room; larger objects still fit completely.
+    s = Math.min(s, cv.width / 10000);
     mapView.scale = s;
     mapView.ox = (cv.width - w * s) / 2 - Math.min(e.x0, e.x1) * s;
     mapView.oy = (cv.height - h * s) / 2 - Math.min(e.y0, e.y1) * s;
     mapView.fitted = true;
+    mapView.fitRequest = null;
+    mapView.state = reason === "explicit" ? "explicit" : "auto";
     // Seed the LOD ring for the fitted zoom (a very fine mesh fitted whole may
     // already want the coarse ring); later zooms flip it on settle.
     if (typeof S !== "undefined") S.lodActive = computeLodActive();
+    return true;
   }
   function w2s(x, y) { return [x * mapView.scale + mapView.ox, y * mapView.scale + mapView.oy]; }
   function s2w(px, py) { return [(px - mapView.ox) / mapView.scale, (py - mapView.oy) / mapView.scale]; }
@@ -556,7 +595,7 @@
     if (App.payload.map.__blocksPending) { showEmpty("Decoding map…"); return; }
     hideEmpty();
     sizeCanvas(cv);
-    if (!mapView.fitted) fitMap(cv);
+    if (mapView.fitRequest) fitMap(cv, mapView.fitRequest);
     var ctx = cv.getContext("2d");
     ctx.clearRect(0, 0, cv.width, cv.height);
     ctx.fillStyle = token("--surface-1"); ctx.fillRect(0, 0, cv.width, cv.height);
@@ -689,7 +728,11 @@
     }
 
     // world→screen transform + LOD state, exposed for the browser test harness
-    window.__PETEK_MAP_VIEW = { scale: mapView.scale, ox: mapView.ox, oy: mapView.oy };
+    window.__PETEK_MAP_VIEW = {
+      scale: mapView.scale, ox: mapView.ox, oy: mapView.oy,
+      state: mapView.state,
+      horizontalSpan: cv.width / mapView.scale,
+    };
     window.__PETEK_LOD_ACTIVE = !!S.lodActive;
   }
 
@@ -1154,6 +1197,7 @@
       mapView.scale *= k;
       mapView.ox = mx - w[0] * mapView.scale;
       mapView.oy = my - w[1] * mapView.scale;
+      markMapCameraAdjusted();
       scheduleRenderMap();
       scheduleSettle(); // flip the LOD ring + re-bake once the zoom settles
     };
@@ -1168,6 +1212,7 @@
       if (!dragging) return;
       mapView.ox += (ev.clientX - last[0]) * (cv.width / cv.getBoundingClientRect().width);
       mapView.oy += (ev.clientY - last[1]) * (cv.height / cv.getBoundingClientRect().height);
+      markMapCameraAdjusted();
       last = [ev.clientX, ev.clientY]; scheduleRenderMap(); scheduleSettle();
     };
     cv.ondblclick = function () { if (S.fence.drawing) finishFence(); };

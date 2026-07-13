@@ -241,7 +241,18 @@ def view3d_payload(
             for ring in edge_rings:
                 flat_rings.append({"points": ring, "z": None, **({"item_id": item_id} if item_id is not None else {})})
             summary["grid"] = f"{int(getattr(item, 'ncol'))} x {int(getattr(item, 'nrow'))}"
-            layers.append({"kind": "lines", "name": name, **({"item_id": item_id} if item_id is not None else {})})
+            layers.append(
+                {
+                    "kind": "lines",
+                    "name": name,
+                    "standalone": role == "geometry"
+                    or (
+                        role != "surface"
+                        and not callable(getattr(item, "value_layer", None))
+                    ),
+                    **({"item_id": item_id} if item_id is not None else {}),
+                }
+            )
             continue
 
         if _is_trimesh(item) and role != "points":
@@ -266,7 +277,18 @@ def view3d_payload(
             summary["triangles"] = summary.get("triangles", 0) + n_tris
             if edge_stride > 1:
                 summary["mesh_edge_stride"] = edge_stride
-            layers.append({"kind": "lines", "name": name, **({"item_id": item_id} if item_id is not None else {})})
+            layers.append(
+                {
+                    "kind": "lines",
+                    "name": name,
+                    "standalone": role == "geometry"
+                    or (
+                        role != "surface"
+                        and not callable(getattr(item, "value_layer", None))
+                    ),
+                    **({"item_id": item_id} if item_id is not None else {}),
+                }
+            )
             continue
 
         if _is_well(item) and role != "points":
@@ -355,7 +377,14 @@ def view3d_payload(
             lattices.append({"name": name, "lines": lines, "z": z_flat, **({"item_id": item_id} if item_id is not None else {})})
             for ring in edge_rings:
                 flat_rings.append({"points": ring, "z": z_flat, **({"item_id": item_id} if item_id is not None else {})})
-            layers.append({"kind": "lines", "name": name, **({"item_id": item_id} if item_id is not None else {})})
+            layers.append(
+                {
+                    "kind": "lines",
+                    "name": name,
+                    "standalone": not callable(getattr(item, "value_layer", None)),
+                    **({"item_id": item_id} if item_id is not None else {}),
+                }
+            )
             continue
         if entry is not None:
             lines, n_tris, edge_stride = _mesh_lines(
@@ -365,7 +394,14 @@ def view3d_payload(
             summary["triangles"] = summary.get("triangles", 0) + n_tris
             if edge_stride > 1:
                 summary["mesh_edge_stride"] = edge_stride
-            layers.append({"kind": "lines", "name": name, **({"item_id": item_id} if item_id is not None else {})})
+            layers.append(
+                {
+                    "kind": "lines",
+                    "name": name,
+                    "standalone": False,
+                    **({"item_id": item_id} if item_id is not None else {}),
+                }
+            )
             continue
 
         raise TypeError(

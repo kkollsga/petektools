@@ -56,6 +56,18 @@ All notable changes to petekTools are recorded here. Format follows
   well arguments retain their exact wire shape and click-only inspection.
 
 ### Fixed
+- **Viewer application correctness and interaction state.** Map fit now derives
+  from visible drawable content (no synthetic extent outlines), never zooms
+  closer than a 10 km horizontal span, and survives deferred decode, LOD, idle,
+  and resize paints after the user takes control; `F` is the explicit refit.
+  Filled surfaces default their 2-D grid and 3-D lattice off while geometry-only
+  views default on, with manual choices retained. Lazy 3-D/Wells views distinguish
+  loading, empty, malformed, runtime, WebGL, and build failures. The Project
+  navigator uses bounded auto-disclosure, singleton breadcrumbs, hierarchy/type/
+  selection states and fetch-free persistent manual expansion. All buttons use
+  one accessible hover/focus tooltip channel; Map and 3-D data remain
+  click-to-toggle inspection. Dense 198²/500² gesture gates additionally pin the
+  settled camera, >12 wheel ticks, >1 viewport pan, and cached A→B→A return.
 - **Large multi-attribute surfaces now share and load lazily.** Automatic
   primary/attribute fills retain one normalized full+LOD mesh, pack/hash that
   geometry once, and reference one content-addressed block. The browser decodes

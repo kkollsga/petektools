@@ -312,7 +312,7 @@ def test_view2d_role_dispatch_exact_points_plus_mesh_shell_shape():
     assert sum(len(line) - 1 for line in m["grid_lines"]) == 4
     assert m["outline"] == [_Mesh().edge.rings()[0]]
     assert m["layers"] == [
-        {"kind": "lines", "name": "Top Dome geometry"},
+        {"kind": "lines", "name": "Top Dome geometry", "standalone": True},
         {
             "kind": "points",
             "name": "Top Dome",
@@ -406,7 +406,7 @@ def test_view2d_payload_strides_trimesh_edges_over_budget():
     assert p["summary"]["mesh_edge_stride"] == 3
 
 
-def test_view2d_payload_trimesh_without_edge_falls_back_to_frame_rect():
+def test_view2d_payload_trimesh_without_edge_uses_content_frame_without_fake_outline():
     class BareMesh:
         def points(self):
             return [(0.0, 0.0, 1.0), (10.0, 0.0, 2.0), (0.0, 10.0, 3.0)]
@@ -418,7 +418,40 @@ def test_view2d_payload_trimesh_without_edge_falls_back_to_frame_rect():
 
     assert p["summary"]["triangles"] == 1
     assert sum(len(line) - 1 for line in p["map"]["grid_lines"]) == 3
-    assert p["map"]["outline"]  # frame-rect fallback still supplies an outline
+    assert p["map"]["frame"] == {
+        "origin_x": 0.0,
+        "origin_y": 0.0,
+        "spacing_x": 10.0,
+        "spacing_y": 10.0,
+        "ncol": 2,
+        "nrow": 2,
+    }
+    assert p["map"]["outline"] == []
+
+
+def test_view2d_frame_includes_real_fill_and_well_without_fake_outline():
+    surface = _AttributedSurfaceDuck()
+    well = {
+        "id": "far",
+        "x": 10_000.0,
+        "y": 12_000.0,
+        "trajectory": [[10_000.0, 12_000.0, 0.0], [16_000.0, 18_000.0, 100.0]],
+    }
+
+    p = viewer.view2d_payload(surface, wells=[well], lod=False, encoding="json")
+
+    # The frame is metadata for raster/index conversion, not a manufactured
+    # boundary. It encloses all actual drawable content, including the fill and
+    # the distant well, while the outline remains absent unless supplied.
+    assert p["map"]["frame"] == {
+        "origin_x": 0.0,
+        "origin_y": 0.0,
+        "spacing_x": 16_000.0,
+        "spacing_y": 18_000.0,
+        "ncol": 2,
+        "nrow": 2,
+    }
+    assert p["map"]["outline"] == []
 
 
 # --- the color=/fill= spec grammar (registry match) ---------------------------
@@ -516,7 +549,7 @@ def test_view2d_layers_record_duck_typed_names():
     assert p["map"]["layers"] == [
         {"kind": "points", "name": "Top Dome", "start": 0, "n": 2,
          "range": [-20.0, -10.0]},
-        {"kind": "lines", "name": None},
+        {"kind": "lines", "name": None, "standalone": True},
     ]
 
 
@@ -1023,7 +1056,7 @@ def test_view2d_all_geometry_roles_are_wireframe_only_when_fill_is_omitted(shell
     assert p["map"]["fills"] == []
     assert p["map"]["points"] == []
     assert p["map"]["grid_lines"]
-    assert p["map"]["layers"] == [{"kind": "lines", "name": shell.name}]
+    assert p["map"]["layers"] == [{"kind": "lines", "name": shell.name, "standalone": True}]
 
 
 def test_view2d_geometry_role_suppresses_auto_fill_but_honours_explicit_fill():
@@ -1061,7 +1094,7 @@ def test_view2d_bare_surface_renders_structure_lines():
     assert "value_attr" not in surf.seen          # value_layer never consulted
     assert p["map"]["grid_lines"]                 # .geometry lattice drawn
     assert p["summary"]["grid"] == "3 x 3"
-    assert {"kind": "lines", "name": "Top Dome"} in p["map"]["layers"]
+    assert {"kind": "lines", "name": "Top Dome", "standalone": False} in p["map"]["layers"]
 
 
 def test_view2d_bare_attribute_surface_auto_enumerates_primary_then_attrs():
@@ -1231,7 +1264,7 @@ def test_view2d_bare_value_layer_only_item_draws_mesh_edges():
     assert p["map"]["fills"] == []
     assert sum(len(line) - 1 for line in p["map"]["grid_lines"]) == 5  # unique edges
     assert p["summary"]["triangles"] == 2
-    assert {"kind": "lines", "name": "Top Dome"} in p["map"]["layers"]
+    assert {"kind": "lines", "name": "Top Dome", "standalone": False} in p["map"]["layers"]
 
 
 def test_view2d_surface_with_fill_unchanged():
@@ -1303,7 +1336,7 @@ def test_view3d_payload_points_and_geometry_classification():
     # SAME duck-typed legend names view2d records
     assert sc["layers"] == [
         {"kind": "points", "name": "Top Dome"},
-        {"kind": "lines", "name": "Dome grid"},
+        {"kind": "lines", "name": "Dome grid", "standalone": True},
     ]
     assert len(sc["lattices"]) == 1 and sc["lattices"][0]["lines"]
     assert p["summary"]["grid"] == "3 x 3" and p["summary"]["points"] == 3
@@ -1387,7 +1420,7 @@ def test_view3d_bare_trimesh_renders_flat_wireframe():
         "points": [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0], [0.0, 0.0]],
         "z": 4.0,
     }]
-    assert {"kind": "lines", "name": None} in sc["layers"]
+    assert {"kind": "lines", "name": None, "standalone": False} in sc["layers"]
     # fill=: the value_layer IS the surface — one value-coloured mesh, no
     # wireframe duplicate (explicit opt-in unchanged)
     p2 = viewer.view3d_payload([_ValueMesh()], fill=True)
@@ -1574,7 +1607,7 @@ def test_view3d_geometry_only_item_falls_back_to_lattice():
     p = viewer.view3d_payload([GeomHolder()])
     sc = p["scene3d"]
     assert sc["meshes"] == [] and len(sc["lattices"]) == 1 and sc["lattices"][0]["lines"]
-    assert {"kind": "lines", "name": "holder"} in sc["layers"]
+    assert {"kind": "lines", "name": "holder", "standalone": True} in sc["layers"]
     assert sc["lattices"][0]["z"] is None  # all-flat scene → the JS ref_z plane
 
 
@@ -1650,7 +1683,7 @@ def test_view3d_bare_value_layer_only_item_draws_flat_wireframe():
     lat = sc["lattices"][0]
     assert lat["z"] == -2600.0
     assert sum(len(line) - 1 for line in lat["lines"]) == 5  # unique tri edges
-    assert {"kind": "lines", "name": "Top Dome"} in sc["layers"]
+    assert {"kind": "lines", "name": "Top Dome", "standalone": False} in sc["layers"]
 
 
 def test_view3d_rejects_unknown_items():

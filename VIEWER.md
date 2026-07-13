@@ -131,6 +131,16 @@ explanation. Map surface fills retain the normal attribute selector and lazy
 block decoding after composition. Non-workspace payloads keep their historic
 two-region chrome and rendering behavior.
 
+Initial disclosure is deterministic: the selected path is revealed, otherwise
+only branches with one or two actionable leaves auto-expand. Larger branches
+start folded; user expansion/collapse survives panel and tab rebuilds and never
+fetches a resource. Safe singleton folder chains render as one breadcrumb row.
+Folders are compact, object rows carry their generic role and loading/error/
+selection state, and hierarchy guides remain visible through deep catalogs.
+Every button uses the same delayed pointer/immediate keyboard-focus tooltip with
+`role="tooltip"`; native button `title` bubbles are removed. These control hints
+are independent of the click-to-toggle data readouts in Map and 3-D.
+
 The workspace never traverses a project or interprets domain roles. Generic
 objects use the existing `view2d_payload` / `view3d_payload` ducks. Sections,
 volume, charts, and other producer-computed bundles enter through `payload=` or
@@ -162,7 +172,12 @@ the **outline** ring(s), per-`kind` **contact subcrop masks** (translucent fill 
 45°/135° hatch + 2px identity outline), and **well markers** — co-located
 sidetracks collapse to one shared wellhead marker with a **bore-count badge** and
 radially fanned, leader-lined labels. The canvas fits and centres the full drawn
-content. The raster is **windowed + resolution-capped** — only the grid cells in
+content, never a generated frame/empty-resource rectangle, and the first fit
+shows at least 10 km horizontally. After that first fit, resize, deferred decode,
+LOD and idle paints preserve the camera; pan/wheel owns it until an explicit `F`
+refit. Filled surfaces start with grid/lattice lines off; a standalone geometry
+starts with them on, and either manual choice persists. The raster is
+**windowed + resolution-capped** — only the grid cells in
 the current viewport are sampled, and never more than one sample per screen pixel
 (subsampled beyond that) — so a repaint costs a screenful regardless of ncol×nrow
 (a 2000×2000 field repaints in ~2 ms), while the click-to-inspect readout still
@@ -361,7 +376,10 @@ layers). The volume tab's render discipline carries over: past the primitive
 budget the scene **auto-degrades** to a 1-in-stride decimated preview with a
 loud banner + `1:stride` badge, a malformed bundle surfaces a banner instead of
 a blank canvas, and the build outcome is exposed for tests as
-`window.__PETEK_SCENE3D_STATUS`. **Inspection is click-driven** here too
+`window.__PETEK_SCENE3D_STATUS`. Lazy workspace tabs distinguish loading, empty,
+malformed resource, runtime-load, WebGL-context, and scene-build failure states.
+A solid surface starts without its lattice overlay; geometry-only scenes keep
+the lattice visible, and a manual toggle persists. **Inspection is click-driven** here too
 (owner ruling 2026-07-11): hover shows nothing — a still **click** on/near an
 object (`THREE.Raycaster` picking over points/meshes/lines, the pick radius
 sized to the on-screen marker) anchors a readout at the clicked location

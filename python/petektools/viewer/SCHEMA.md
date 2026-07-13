@@ -55,7 +55,9 @@ single-payload boot/state/render path. Version 1 is:
 resources?, snapshot?}`.
 
 `tree` is an ordered list of groups and items. A group is
-`{id, label, expanded, children}`. An item is `{id, label, role?, views,
+`{id, label, expanded?, children}`. Omitted `expanded` delegates initial
+disclosure to the renderer (selected path, else at most two actionable leaves);
+an explicit bool is authoritative until the user changes it. An item is `{id, label, role?, views,
 visible, resources, disabled?, reason?, diagnostic?}` where `views` is a list
 of compatible view names and `visible` is an independent `view → bool` initial
 state. A normal resource spec is `{href, deferred}`. A provider may add ordered
@@ -104,7 +106,7 @@ carry it. Payloads without bindings retain category-level visibility.
 | `grid_lines_lod` | list[Line] \| absent | **additive (LOD):** the coarse (strided) `grid_lines` ring — present only when a mesh producer supplied one; see **Stride-ladder LOD** |
 | `point_color` | PointColor \| null | **additive:** `{by: "z", range: [min, max]}` — the GLOBAL fallback for point colouring (per-layer fields on `layers` win; see below). Present when at least one points layer colours: the user's explicit call-level `color=` clamp range, else the union of the coloured layers' data. Points with a finite third component colour through the colormap (non-finite z falls back to the accent); values outside the range clamp to the ramp ends |
 | `colormap` | str \| null | **additive:** the initial colormap for this payload (`viridis`\|`magma`\|`grays`\|`inferno`) — the parsed `<cmap>` of a `view2d` `color=`/`fill=` spec (`color`'s wins over `fill`'s; falling back to the first per-object dict-item pin). The panel selector can still change it for layers without a per-layer pin; an unknown/absent name keeps the viridis default |
-| `layers` | list[LayerName] | **additive:** per-emitted-layer legend names, in emission order — `{kind: "points"\|"lines"\|"contours", name: str \| null}` with `name` duck-typed from the producer object (e.g. a dataset name like `"Top Dome"`); the legend falls back to the layer kind when `null`. Fills self-describe via their own `display_name`. **Per-layer colour (additive, the per-object color ruling):** a points layer additionally carries its slice of the shared `points` array (`start`, `n`) plus its OWN resolved `range` (`[min, max]` — the explicit spec range, else the layer's finite-z data range), an optional pinned `colormap` (a per-object dict-item spec; the panel selector does not override a pin), and `colored: false` for an explicit per-object `color=False`. The renderer and the legend read these per-layer fields FIRST and fall back to the global `point_color`/`colormap`; an older payload without them renders exactly as before through one legacy segment |
+| `layers` | list[LayerName] | **additive:** per-emitted-layer legend names, in emission order — `{kind: "points"\|"lines"\|"contours", name: str \| null}` with `name` duck-typed from the producer object (e.g. a dataset name like `"Top Dome"`); the legend falls back to the layer kind when `null`. A line layer carries `standalone: bool`: explicit geometry/wireframe is `true`, a value surface's structural fallback is `false`; this initializes grid visibility without interpreting a domain role. Fills self-describe via their own `display_name`. **Per-layer colour (additive, the per-object color ruling):** a points layer additionally carries its slice of the shared `points` array (`start`, `n`) plus its OWN resolved `range` (`[min, max]` — the explicit spec range, else the layer's finite-z data range), an optional pinned `colormap` (a per-object dict-item spec; the panel selector does not override a pin), and `colored: false` for an explicit per-object `color=False`. The renderer and the legend read these per-layer fields FIRST and fall back to the global `point_color`/`colormap`; an older payload without them renders exactly as before through one legacy segment |
 | `horizons` | list[ScalarLayer] | selectable depth/field layers |
 | `zone_averages` | list[ScalarLayer] | selectable property layers |
 | `k_slices` | list[ScalarLayer] | optional per-k property slices |
@@ -425,7 +427,7 @@ names + ramp/clamped range) drives the 3D tab's legend.
 | `contours` | list[ContourSet] | the SAME shape as `map.contours`; each polyline renders at `z = level` (major levels stroke stronger) |
 | `wells` | list[Well3D] | identity-coloured bore paths + a screen-sized wellhead marker |
 | `outlines` | list[Ring \| FlatRing] | edge rings — a plain `Ring` (`[[x, y], …]`) renders flat at `ref_z`; an object-form `FlatRing` `{points: Ring, z: float \| null}` renders at its flat item's level (additive) |
-| `layers` | list[LayerName] | per-layer legend entries, emission order — `{kind: "points"\|"lines"\|"contours"\|"wells", name: str \| null}` (duck-typed producer names; fallback: the kind). Value meshes self-describe via `display_name`, like 2-D fills |
+| `layers` | list[LayerName] | per-layer legend entries, emission order — `{kind: "points"\|"lines"\|"contours"\|"wells", name: str \| null}` (duck-typed producer names; fallback: the kind). Line layers carry the same additive `standalone` geometry flag as Map. Value meshes self-describe via `display_name`, like 2-D fills |
 | `point_color` | PointColor \| null | as `map.point_color`: the GLOBAL fallback (per-cloud `range`/`colormap`/`colored` fields win) — the explicit call-level `color=` clamp range, else the union of the coloured clouds' data |
 | `colormap` | str \| null | the payload-pinned initial colormap (the parsed `color=`/`fill=` `<cmap>`, falling back to the first per-object dict-item pin) |
 | `z_exaggeration` | float | the z-exaggeration slider seed (display-only group scale, `z ×N` badge, true depths in the readout — the volume tab's control; default 5) |
@@ -487,8 +489,10 @@ same primitive budget (`window.PETEK_TRI_BUDGET`, default 5M, points +
 triangles): past it the build **auto-degrades** to a 1-in-stride decimated
 preview with a loud "Decimated preview" banner and a `1:stride` badge — never
 a refusal, crash, or silent blank. A malformed bundle surfaces a banner + an
-`error` status instead of a blank canvas. The build outcome is exposed for
-tests as `window.__PETEK_SCENE3D_STATUS` (`{state: "ok"|"error", points,
+`error` status instead of a blank canvas. A lazy workspace also exposes
+`loading`, `empty`, and `malformed`; missing runtime and graphics-context paths
+use `runtime` and `webgl`. The build outcome is exposed for tests as
+`window.__PETEK_SCENE3D_STATUS` (`{state: "ok"|"loading"|"empty"|"malformed"|"runtime"|"webgl"|"error", points?,
 triangles, meshes, wells, lattices, latticeZ, buildMs}` — `latticeZ` is the
 per-lattice rendered flat level, read back from the built geometry).
 z-exaggeration is a display-only group scale; the theme flip re-reads the

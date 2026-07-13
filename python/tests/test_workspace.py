@@ -54,6 +54,24 @@ def test_nested_tree_normalizes_without_materializing():
     manifest = session.manifest()["workspace"]
     assert manifest["schema_version"] == 1
     assert manifest["available_views"] == ["map", "scene3d"]
+    assert "expanded" not in manifest["tree"][0]
+    assert "expanded" not in manifest["tree"][0]["children"][0]
+
+
+def test_group_expansion_is_an_optional_explicit_override():
+    tree = [
+        {"id": "open", "label": "Open", "expanded": True, "children": [
+            {"id": "a", "object": Points()},
+        ]},
+        {"id": "closed", "label": "Closed", "expanded": False, "children": [
+            {"id": "b", "object": Points()},
+        ]},
+    ]
+    normalized = WorkspaceSession(tree).tree()
+    assert normalized[0]["expanded"] is True
+    assert normalized[1]["expanded"] is False
+    with pytest.raises(TypeError, match="expanded must be a bool"):
+        WorkspaceSession([{"id": "bad", "expanded": "yes", "children": []}])
 
 
 def test_explicit_nodes_ids_views_and_visible_override():
@@ -516,3 +534,7 @@ def test_workspace_shell_declares_keyboard_and_accessibility_contract():
     assert 'narrowPanel:' in source
     assert 'if (open && isNarrowWorkspace())' in source
     assert 'applyResponsivePanelState()' in source
+    assert 'id="button-tooltip"' in html and 'role="tooltip"' in html
+    assert 'function wireButtonTooltips()' in source
+    assert 'button.removeAttribute("title")' in source
+    assert 'W.expansionManual[group.id] = true' in source

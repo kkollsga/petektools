@@ -235,7 +235,12 @@
   }
 
   // wire canvas interactions once
-  window.addEventListener("resize", function () { mapView.fitted = false; three && (three.framed = true); renderActive(); });
+  window.addEventListener("resize", function () {
+    // Resize preserves every completed camera. Only an initial fit that is still
+    // waiting for deferred content remains eligible to run on a later paint.
+    if (mapView.fitRequest) requestMapFit(mapView.fitRequest);
+    three && (three.framed = true); renderActive();
+  });
   function wireCanvasHovers() {
     mapPanZoomHover(document.getElementById("map-canvas"));
     var sc = document.getElementById("section-canvas");

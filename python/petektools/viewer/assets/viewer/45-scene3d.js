@@ -24,7 +24,18 @@
   function renderScene3d() {
     var host = document.getElementById("scene3d-host");
     var sc = App.payload.scene3d;
-    if (!sc || !window.THREE) { showEmpty("No 3-D scene bundle / WebGL unavailable."); return; }
+    var feedback = workspaceViewFeedback("scene3d");
+    if (feedback && feedback.state !== "ready") {
+      setScene3dStatus(feedback.state, { reason: feedback.message }); showEmpty(feedback.message); return;
+    }
+    if (!sc) {
+      var state = { state: "empty", message: "No 3-D scene bundle in this payload." };
+      setScene3dStatus(state.state, { reason: state.message }); showEmpty(state.message); return;
+    }
+    if (!window.THREE) {
+      setScene3dStatus("runtime", { reason: "Three.js did not load" });
+      showEmpty("The 3-D runtime is unavailable. Reload the viewer or re-export this file."); return;
+    }
     hideEmpty();
     // LOUD, never silent: a malformed bundle (bad block, inconsistent arrays)
     // surfaces a banner + an error status hook, not a blank canvas.
@@ -46,11 +57,13 @@
       if (s3dBuilt._degraded) showScene3dDegradeBanner(s3dBuilt._degraded); else hideBanner();
       s3d.render();
     } catch (e) {
-      setScene3dStatus("error", { reason: String((e && e.message) || e) });
-      showEmpty("3-D scene failed to build — " + String((e && e.message) || e));
-      showBanner("3-D scene failed",
-        String((e && e.message) || e),
-        "The scene3d payload is malformed or exceeds this browser's limits. Re-export the view.");
+      var reason = String((e && e.message) || e);
+      var webgl = /webgl|graphics context|context (?:lost|creation|create)/i.test(reason);
+      setScene3dStatus(webgl ? "webgl" : "error", { reason: reason });
+      showEmpty(webgl ? "WebGL is unavailable or disabled in this browser." : "3-D scene failed to build — " + reason);
+      showBanner(webgl ? "WebGL unavailable" : "3-D scene failed",
+        reason, webgl ? "Enable hardware acceleration/WebGL and reload the viewer."
+          : "The scene3d payload is malformed or exceeds this browser's limits. Re-export the view.");
     }
   }
 

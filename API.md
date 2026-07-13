@@ -870,6 +870,8 @@ from petektools import viewer
 # Workspace payloads get Project | viewport | Inspector application chrome;
 # tabs are derived from actual payload/catalog capabilities. Browser-local
 # persistence is bounded to theme/layout/selected-tab UI preferences only.
+# Group records may set expanded=True|False; omission enables deterministic
+# selected-path / <=2-actionable-leaf auto-disclosure in the viewer.
 # Omitted leaf visibility selects all enabled views; pass visible={} for a
 # catalog-only opening, or emit explicit per-view visibility from a provider.
 session = viewer.view({
@@ -905,7 +907,10 @@ viewer.view(tree_or_source, *, title="Project workspace", visible=None,
 # values decode on first selection and remain cached (A -> B -> A is stable).
 # During wheel/drag the renderer affine-composites point/fill plus split
 # grid/contour/outline/contact bitmaps (one paint/rAF); data-sized paths rebuild
-# at most once after settle. Plain JSON and saved single-file views are unchanged.
+# at most once after settle without moving the user camera. First fit uses only
+# drawable content, caps horizontal zoom at a 10 km span, and F explicitly refits.
+# Filled surfaces default grid/lattice lines off; geometry-only views default on.
+# Plain JSON and saved single-file views are unchanged.
 viewer.view2d(items, *, title="2D view", color=True, fill=None, contours=None,
               wells=None, well_labels=False, well_style=None,
               save=None, port=0, block=False, open_browser=True,

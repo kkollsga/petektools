@@ -57,15 +57,19 @@ class WorkspaceGroup:
     id: str
     label: str
     children: tuple["WorkspaceNode", ...]
-    expanded: bool = True
+    # None delegates the initial expansion policy to the viewer (selected path
+    # plus small, actionable branches). A bool is an explicit author override.
+    expanded: bool | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        value = {
             "id": self.id,
             "label": self.label,
-            "expanded": self.expanded,
             "children": [child.to_dict() for child in self.children],
         }
+        if self.expanded is not None:
+            value["expanded"] = self.expanded
+        return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -377,7 +381,10 @@ class _Normalizer:
                         children = self._sequence(children_value, (*path, node_id))
                     else:
                         raise TypeError("workspace group children must be a mapping or list")
-                    out.append(WorkspaceGroup(node_id, label, children, bool(child.get("expanded", True))))
+                    expanded = child.get("expanded")
+                    if expanded is not None and not isinstance(expanded, bool):
+                        raise TypeError("workspace group expanded must be a bool")
+                    out.append(WorkspaceGroup(node_id, label, children, expanded))
                 else:
                     if "id" not in child:
                         raise ValueError("list workspace leaves require an explicit stable id")

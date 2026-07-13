@@ -56,7 +56,17 @@
 
   function renderWells() {
     var cv = document.getElementById("wells-canvas");
-    if (!S.wl) { showEmpty("No well-log bundle (wells_logs) in this payload."); return; }
+    var feedback = workspaceViewFeedback("wells");
+    if (feedback && feedback.state !== "ready") {
+      window.__PETEK_WELLS_STATUS = { state: feedback.state, reason: feedback.message };
+      showEmpty(feedback.message); return;
+    }
+    if (!S.wl) {
+      var state = { state: "empty", message: "No well-log bundle (wells_logs) in this payload." };
+      window.__PETEK_WELLS_STATUS = { state: state.state, reason: state.message };
+      showEmpty(state.message); return;
+    }
+    window.__PETEK_WELLS_STATUS = { state: "ready", wells: S.wl.wells.length };
     hideEmpty(); sizeCanvas(cv);
     var ctx = cv.getContext("2d");
     ctx.clearRect(0, 0, cv.width, cv.height);
@@ -375,8 +385,10 @@
       row.appendChild(left);
       var btns = el("div", "row");
       var up = el("button", "btn secondary", "↑"); up.style.cssText = "width:26px;padding:2px 0";
+      up.setAttribute("aria-label", "Move " + w.display_name + " left");
       up.disabled = pos === 0; up.onclick = function () { var o = S.wlOrder; var t = o[pos - 1]; o[pos - 1] = o[pos]; o[pos] = t; buildPanel(); renderWells(); };
       var dn = el("button", "btn secondary", "↓"); dn.style.cssText = "width:26px;padding:2px 0";
+      dn.setAttribute("aria-label", "Move " + w.display_name + " right");
       dn.disabled = pos === S.wlOrder.length - 1; dn.onclick = function () { var o = S.wlOrder; var t = o[pos + 1]; o[pos + 1] = o[pos]; o[pos] = t; buildPanel(); renderWells(); };
       btns.appendChild(up); btns.appendChild(dn);
       row.appendChild(btns);
