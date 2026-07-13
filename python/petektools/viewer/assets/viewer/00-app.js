@@ -24,7 +24,10 @@
   ["pointPathBuilds", "triFillBuilds", "canvasBackingWrites",
    "legendMutations", "styleReads", "rafRequests", "hotPaints",
    "settlePaints", "fillCacheHits", "fillCacheMisses",
-   "fillCacheEvictions"].forEach(function (name) {
+   "fillCacheEvictions", "blockDecodeRequests", "blockDecodeDigests",
+   "lazyFillDecodes", "gridPathBuilds", "contourPathBuilds",
+   "outlinePathBuilds", "contactMaskBuilds", "overlayBitmapBuilds",
+   "overlayHotBlits"].forEach(function (name) {
     if (_viewerPerf[name] == null) _viewerPerf[name] = 0;
   });
   function perfCount(name) { _viewerPerf[name] = (_viewerPerf[name] || 0) + 1; }

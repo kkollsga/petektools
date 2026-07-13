@@ -24,7 +24,7 @@
     if (fills.length) {
       var fg = group("Fill");
       if (fills.length > 1) {
-        fg.appendChild(selectRow("Layer", fills.map(fillLabel), S.mapFillIdx, function (i) { S.mapFillIdx = i; renderMap(); }));
+        fg.appendChild(selectRow("Layer", fills.map(fillLabel), S.mapFillIdx, selectMapFill));
       } else {
         fg.appendChild(el("div", "hint", fillLabel(fills[0])));
       }

@@ -1184,6 +1184,38 @@ def test_view2d_attribute_surface_blocks_dedup_shared_geometry():
     assert len({f["values"]["__block__"] for f in fills}) == 3
 
 
+def test_view2d_attribute_surface_json_keeps_legacy_shape_with_shared_memory():
+    p = viewer.view2d_payload(_AttributedSurfaceDuck(), lod=False, encoding="json")
+    fills = p["map"]["fills"]
+    assert all(isinstance(fill["nodes"], list) for fill in fills)
+    assert all(isinstance(fill["triangles"], list) for fill in fills)
+    assert fills[0]["nodes"] is fills[1]["nodes"] is fills[2]["nodes"]
+    assert fills[0]["triangles"] is fills[1]["triangles"] is fills[2]["triangles"]
+    # JSON has no references: the serialized compatibility shape stays arrays.
+    roundtrip = json.loads(json.dumps(p))
+    assert roundtrip["map"]["fills"][1]["nodes"] == fills[0]["nodes"]
+
+
+def test_view2d_attribute_surface_packs_shared_geometry_once(monkeypatch):
+    from petektools.viewer import _blocks
+
+    calls = []
+    original = _blocks._le_bytes
+
+    def counted(values, dtype):
+        calls.append((dtype, len(values)))
+        return original(values, dtype)
+
+    monkeypatch.setattr(_blocks, "_le_bytes", counted)
+    viewer.view2d_payload(
+        _AttributedSurfaceDuck(), lod=False, encoding="blocks", block_threshold_bytes=0
+    )
+    # nodes + triangles are packed once, followed by one values block per lane.
+    assert len(calls) == 5
+    assert [dtype for dtype, _ in calls].count("u32") == 1
+    assert [dtype for dtype, _ in calls].count("f32") == 4
+
+
 def test_view2d_bare_value_layer_only_item_draws_mesh_edges():
     # geometry-less value-bearing item: the primary layer's triangle edges
     # become the drawn structure (no attr_names handshake, so still no fill)

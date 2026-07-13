@@ -78,44 +78,101 @@
       if (isCsrMarker(c.lines)) c.lines = prepCsr(c.lines, t);
       if (isCsrMarker(c.lines_lod)) c.lines_lod = prepCsr(c.lines_lod, t);
     });
+    (m.contacts || []).forEach(function (c) {
+      if (isBlockMarker(c.crossing)) c.crossing = prepBlock(c.crossing, t);
+    });
   }
   function fillOne(o, cache) {
     if (o && o.__d != null) o.a = cache[o.__d];
     else if (o && o.__dc != null) { o.coords = cache[o.__dc]; o.offsets = cache[o.__do]; }
   }
-  function fillMap2d(m, cache) {
+  function fillMap2dBase(m, cache) {
     fillOne(m.points, cache);
     (m.fills || []).forEach(function (f) {
-      fillOne(f.nodes, cache); fillOne(f.triangles, cache); fillOne(f.values, cache);
-      if (f.lod) { fillOne(f.lod.nodes, cache); fillOne(f.lod.triangles, cache); fillOne(f.lod.values, cache); }
+      fillOne(f.nodes, cache); fillOne(f.triangles, cache);
+      if (f.lod) { fillOne(f.lod.nodes, cache); fillOne(f.lod.triangles, cache); }
     });
     fillOne(m.grid_lines, cache);
     fillOne(m.grid_lines_lod, cache);
     (m.contours || []).forEach(function (c) { fillOne(c.lines, cache); fillOne(c.lines_lod, cache); });
+    (m.contacts || []).forEach(function (c) { fillOne(c.crossing, cache); });
+  }
+  function fillMap2dValues(fill, cache) {
+    if (!fill) return;
+    fillOne(fill.values, cache);
+    if (fill.lod) fillOne(fill.lod.values, cache);
   }
   function typedFromBuffer(buf, dtype) {
-    return new (dtype === "f32" ? Float32Array : dtype === "u32" ? Uint32Array : Uint16Array)(buf);
+    return new (dtype === "f32" ? Float32Array : dtype === "u32" ? Uint32Array :
+      dtype === "u8" ? Uint8Array : Uint16Array)(buf);
   }
   function blockCache() { return window.__PETEK_BLOCK_CACHE || (window.__PETEK_BLOCK_CACHE = {}); }
-  var _map2dPending = null; // { m } while a worker decode is in flight
+  var _map2dPending = {}; // request id -> completion while worker decodes
+  var _map2dRequestId = 0;
+  var _mapFillWanted = 0;
+  function addDigest(out, o) {
+    if (!o) return;
+    if (o.__d != null) out[o.__d] = true;
+    if (o.__dc != null) { out[o.__dc] = true; out[o.__do] = true; }
+  }
+  function baseDigests(m) {
+    var out = {};
+    addDigest(out, m.points);
+    (m.fills || []).forEach(function (f) {
+      addDigest(out, f.nodes); addDigest(out, f.triangles);
+      if (f.lod) { addDigest(out, f.lod.nodes); addDigest(out, f.lod.triangles); }
+    });
+    addDigest(out, m.grid_lines); addDigest(out, m.grid_lines_lod);
+    (m.contours || []).forEach(function (c) { addDigest(out, c.lines); addDigest(out, c.lines_lod); });
+    (m.contacts || []).forEach(function (c) { addDigest(out, c.crossing); });
+    return out;
+  }
+  function valueDigests(fill) {
+    var out = {}; if (!fill) return out;
+    addDigest(out, fill.values); if (fill.lod) addDigest(out, fill.lod.values);
+    return out;
+  }
+  function mergeDigests(dst, src) { for (var d in src) if (Object.prototype.hasOwnProperty.call(src, d)) dst[d] = true; }
+  function updateBlockStatus(m) {
+    var decoded = 0, cache = blockCache(), total = Object.keys(m.blocks || {}).length;
+    for (var d in m.blocks) if (cache[d] != null) decoded++;
+    window.__PETEK_MAP_BLOCK_STATUS = {
+      total: total, decoded: decoded, pending: Object.keys(_map2dPending).length,
+      activeFill: (typeof S !== "undefined" ? S.mapFillIdx : 0)
+    };
+  }
+  function decodeMapDigests(m, requested, done) {
+    var cache = blockCache(), table = m.blocks, needed = {}, n = 0;
+    for (var d in requested) {
+      if (!Object.prototype.hasOwnProperty.call(requested, d) || cache[d] != null) continue;
+      needed[d] = table[d]; n++;
+    }
+    if (!n) { done(); updateBlockStatus(m); return; }
+    perfCount("blockDecodeRequests");
+    _viewerPerf.blockDecodeDigests += n;
+    var w = typeof ensureWorker === "function" ? ensureWorker() : null;
+    if (w) {
+      var id = ++_map2dRequestId;
+      _map2dPending[id] = { m: m, done: done };
+      updateBlockStatus(m);
+      w.postMessage({ cmd: "decode2d", requestId: id, table: needed });
+    } else {
+      if (window.PETEK_DECODE) window.PETEK_DECODE.decodeBlockTable(needed, cache);
+      done(); updateBlockStatus(m);
+    }
+  }
   // Boot hook (called from boot() before initState): resolve the map's blocks.
   function decodeMap2d(payload) {
     var m = payload && payload.map;
     if (!m || !m.blocks || m.__blocksReady) return;
     prepMap2d(m);
-    var cache = blockCache(), table = m.blocks, needed = {}, anyNeeded = false;
-    for (var d in table) {
-      if (!Object.prototype.hasOwnProperty.call(table, d)) continue;
-      if (cache[d] == null) { needed[d] = table[d]; anyNeeded = true; }
-    }
-    var finish = function () { fillMap2d(m, cache); m.__blocksReady = true; m.__blocksPending = false; };
-    if (!anyNeeded) { finish(); return; } // every block already decoded this session
-    var w = typeof ensureWorker === "function" ? ensureWorker() : null;
-    if (w) { m.__blocksPending = true; _map2dPending = { m: m }; w.postMessage({ cmd: "decode2d", table: needed }); }
-    else { // synchronous fallback: same kernel, on this thread
-      if (window.PETEK_DECODE) window.PETEK_DECODE.decodeBlockTable(needed, cache);
-      finish();
-    }
+    var requested = baseDigests(m), initialFill = (m.fills || [])[0];
+    mergeDigests(requested, valueDigests(initialFill));
+    m.__blocksPending = true;
+    decodeMapDigests(m, requested, function () {
+      var cache = blockCache(); fillMap2dBase(m, cache); fillMap2dValues(initialFill, cache);
+      m.__blocksReady = true; m.__blocksPending = false; updateBlockStatus(m);
+    });
   }
   // Worker `decoded2d` reply → cache the transferred buffers by digest, fill the
   // normalized objects, and repaint. Routed from the shared worker's onmessage.
@@ -125,12 +182,31 @@
       if (!Object.prototype.hasOwnProperty.call(data.blocks, dg)) continue;
       cache[dg] = typedFromBuffer(data.blocks[dg], data.dtypes[dg]);
     }
-    if (_map2dPending) {
-      var m = _map2dPending.m; _map2dPending = null;
-      fillMap2d(m, cache); m.__blocksReady = true; m.__blocksPending = false;
+    var pending = _map2dPending[data.requestId];
+    if (pending) {
+      delete _map2dPending[data.requestId];
+      pending.done(); updateBlockStatus(pending.m);
       if (App.tab === "map") { renderMap(); }
       if (typeof buildPanel === "function") buildPanel();
     }
+  }
+  function selectMapFill(index) {
+    var m = App.payload.map, fill = (m.fills || [])[index];
+    if (!fill) return;
+    // Re-selecting the still-visible lane cancels a pending different choice.
+    // Its worker reply may populate the digest cache but must not activate it.
+    if (index === S.mapFillIdx) { _mapFillWanted = index; return; }
+    if (index === _mapFillWanted) return;
+    _mapFillWanted = index;
+    var needs = valueDigests(fill), cache = blockCache(), lazy = false;
+    for (var d in needs) if (cache[d] == null) { lazy = true; break; }
+    if (lazy) perfCount("lazyFillDecodes");
+    decodeMapDigests(m, needs, function () {
+      fillMap2dValues(fill, cache);
+      if (_mapFillWanted !== index) { updateBlockStatus(m); return; }
+      S.mapFillIdx = index;
+      updateBlockStatus(m); renderMap(); if (typeof buildPanel === "function") buildPanel();
+    });
   }
 
   // Bulk-array accessors: `.a` (typed) present → index the typed array; else the
@@ -146,16 +222,36 @@
   function trN(T) { return T ? T.length : 0; }
   function trAt(T, t, c) { return T.a ? T.a[t * 3 + c] : T[t][c]; }
   function vlAt(V, i) { return V ? (V.a ? V.a[i] : V[i]) : null; }
+  function maskAt(V, i) { return V ? (V.a ? V.a[i] : V[i]) : 0; }
   function lsN(L) { return L ? L.length : 0; }
   function lineLen(L, k) { return L.offsets ? (L.offsets[k + 1] - L.offsets[k]) : L[k].length; }
   function lineX(L, k, i) { return L.offsets ? L.coords[(L.offsets[k] + i) * 2] : L[k][i][0]; }
   function lineY(L, k, i) { return L.offsets ? L.coords[(L.offsets[k] + i) * 2 + 1] : L[k][i][1]; }
   // Stroke one line set (typed or plain) into the current path.
-  function strokeLineSet(ctx, L) {
+  function strokeLineSet(ctx, L, sc, ox, oy) {
+    if (sc == null) { sc = mapView.scale; ox = mapView.ox; oy = mapView.oy; }
     for (var k = 0; k < lsN(L); k++) {
       var n = lineLen(L, k);
-      for (var i = 0; i < n; i++) { var s = w2s(lineX(L, k, i), lineY(L, k, i)); if (i === 0) ctx.moveTo(s[0], s[1]); else ctx.lineTo(s[0], s[1]); }
+      for (var i = 0; i < n; i++) {
+        var x = lineX(L, k, i) * sc + ox, y = lineY(L, k, i) * sc + oy;
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
     }
+  }
+
+  // The outline is immutable payload geometry. Compile it once in WORLD
+  // coordinates; transforms then serve both raster clipping and settled paint.
+  var _outlinePath = { ref: null, path: null };
+  function outlineWorldPath() {
+    var rings = App.payload.map.outline;
+    if (!rings || !rings.length) return null;
+    if (_outlinePath.ref === rings) return _outlinePath.path;
+    var path = new Path2D();
+    rings.forEach(function (ring) {
+      ring.forEach(function (pt, i) { if (i === 0) path.moveTo(pt[0], pt[1]); else path.lineTo(pt[0], pt[1]); });
+    });
+    _outlinePath = { ref: rings, path: path }; perfCount("outlinePathBuilds");
+    return path;
   }
 
   // The map raster is WINDOWED + resolution-capped: only the grid cells inside the
@@ -236,14 +332,11 @@
     ctx.save();
     // Clip to the outline polygon so the field paints only inside the mapped
     // footprint (the "Unclipped raster" QC toggle disables this).
-    var clipRings = App.payload.map.outline;
-    if (S.clipRaster && clipRings && clipRings.length) {
-      ctx.beginPath();
-      clipRings.forEach(function (ring) {
-        ring.forEach(function (pt, i) { var s = w2s(pt[0], pt[1]); if (i === 0) ctx.moveTo(s[0], s[1]); else ctx.lineTo(s[0], s[1]); });
-        ctx.closePath();
-      });
-      ctx.clip();
+    var clipPath = outlineWorldPath();
+    if (S.clipRaster && clipPath) {
+      ctx.setTransform(mapView.scale, 0, 0, mapView.scale, mapView.ox, mapView.oy);
+      ctx.clip(clipPath);
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
     }
     ctx.translate(p[0], p[1]);
     ctx.scale(mapView.scale * sx * stI, mapView.scale * sy * stJ);
@@ -342,6 +435,101 @@
     }, 150);
   }
 
+  // ---- immutable overlay baking -------------------------------------------
+  // Grid/contour/outline sit below points; contacts sit above them. Keep two
+  // caches so this ordering remains byte-for-byte the same at settle. A hot
+  // wheel/drag only transforms these bitmaps; all line/cell path construction
+  // occurs in the initial or settled non-hot paint.
+  var _displayIds = typeof WeakMap !== "undefined" ? new WeakMap() : null;
+  var _displayIdNext = 1;
+  function displayId(o) {
+    if (!o) return 0;
+    if (_displayIds) { var id = _displayIds.get(o); if (!id) { id = _displayIdNext++; _displayIds.set(o, id); } return id; }
+    if (!o.__petekDisplayId) o.__petekDisplayId = _displayIdNext++;
+    return o.__petekDisplayId;
+  }
+  var _overlayUnder = { canvas: null, key: "", scale: 0, cox: 0, coy: 0 };
+  var _overlayOver = { canvas: null, key: "", scale: 0, cox: 0, coy: 0 };
+  function overlayKey(kind) {
+    var m = App.payload.map;
+    if (kind === "under") return [displayId(lineSetRing(m.grid_lines, m.grid_lines_lod)),
+      displayId(m.contours), displayId(m.outline), S.showGridLines, S.showContours,
+      S.showOutline, S.lodActive, token("--muted"), token("--text-secondary")].join("|");
+    return [displayId(m.contacts), (S.contactVis || []).join(","), S.lodActive,
+      document.documentElement.getAttribute("data-theme") || "",
+      mapFrame().spacing_x, mapFrame().spacing_y].join("|");
+  }
+  function paintUnderlays(ctx, sc, ox, oy) {
+    var m = App.payload.map;
+    var gridLines = lineSetRing(m.grid_lines, m.grid_lines_lod);
+    if (S.showGridLines && gridLines) {
+      perfCount("gridPathBuilds"); ctx.strokeStyle = token("--muted"); ctx.globalAlpha = 0.32;
+      ctx.lineWidth = 1; ctx.beginPath(); strokeLineSet(ctx, gridLines, sc, ox, oy); ctx.stroke(); ctx.globalAlpha = 1;
+    }
+    if (S.showContours && m.contours && m.contours.length) {
+      var strokeContours = function (sets, alpha, width) {
+        if (!sets.length) return; perfCount("contourPathBuilds");
+        ctx.strokeStyle = token("--text-secondary"); ctx.globalAlpha = alpha; ctx.lineWidth = width; ctx.beginPath();
+        sets.forEach(function (c) { strokeLineSet(ctx, lineSetRing(c.lines, c.lines_lod), sc, ox, oy); });
+        ctx.stroke(); ctx.globalAlpha = 1;
+      };
+      strokeContours(m.contours.filter(function (c) { return !c.major; }), 0.6, 1);
+      strokeContours(m.contours.filter(function (c) { return c.major; }), 0.85, 2.25);
+    }
+    var outline = outlineWorldPath();
+    if (S.showOutline && outline) {
+      ctx.save(); ctx.setTransform(sc, 0, 0, sc, ox, oy); ctx.strokeStyle = token("--text-secondary");
+      ctx.lineWidth = 2 / sc; ctx.lineJoin = "round"; ctx.stroke(outline); ctx.restore();
+    }
+  }
+  function paintContacts(ctx, sc, ox, oy) {
+    var f = mapFrame();
+    (App.payload.map.contacts || []).forEach(function (c, ci) {
+      if (!S.contactVis[ci]) return;
+      perfCount("contactMaskBuilds");
+      var col = idColor("ct:" + c.kind), ss = Math.max(2, sc * Math.min(f.spacing_x, f.spacing_y));
+      var region = new Path2D(), minx = Infinity, miny = Infinity, maxx = -Infinity, maxy = -Infinity, any = false;
+      for (var j = 0; j < f.nrow; j++) for (var i = 0; i < f.ncol; i++) {
+        if (!maskAt(c.crossing, j * f.ncol + i)) continue;
+        any = true; var sx = (f.origin_x + i * f.spacing_x) * sc + ox;
+        var sy = (f.origin_y + j * f.spacing_y) * sc + oy;
+        var x0 = sx - ss / 2, y0 = sy - ss / 2; region.rect(x0, y0, ss, ss);
+        if (x0 < minx) minx = x0; if (y0 < miny) miny = y0;
+        if (x0 + ss > maxx) maxx = x0 + ss; if (y0 + ss > maxy) maxy = y0 + ss;
+      }
+      if (!any) return;
+      ctx.save(); ctx.globalAlpha = 0.22; ctx.fillStyle = col; ctx.fill(region);
+      ctx.save(); ctx.clip(region); ctx.globalAlpha = 0.55; ctx.strokeStyle = col; ctx.lineWidth = 1;
+      var back = ci % 2 === 1;
+      for (var d = minx - (maxy - miny); d <= maxx; d += 6) {
+        ctx.beginPath();
+        if (back) { ctx.moveTo(d, maxy); ctx.lineTo(d + (maxy - miny), miny); }
+        else { ctx.moveTo(d, miny); ctx.lineTo(d + (maxy - miny), maxy); }
+        ctx.stroke();
+      }
+      ctx.restore(); ctx.globalAlpha = 0.9; ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.stroke(region); ctx.restore();
+    });
+  }
+  function drawOverlayCache(ctx, cv, kind) {
+    var C = kind === "under" ? _overlayUnder : _overlayOver, key = overlayKey(kind);
+    var exact = C.canvas && C.key === key && C.scale === mapView.scale && C.cox === mapView.ox + cv.width * PT_MARGIN && C.coy === mapView.oy + cv.height * PT_MARGIN;
+    if (!exact && !_mapHotFrame) {
+      var mx = cv.width * PT_MARGIN, my = cv.height * PT_MARGIN;
+      if (!C.canvas) C.canvas = document.createElement("canvas");
+      C.canvas.width = Math.ceil(cv.width + 2 * mx); C.canvas.height = Math.ceil(cv.height + 2 * my);
+      C.scale = mapView.scale; C.cox = mapView.ox + mx; C.coy = mapView.oy + my; C.key = key;
+      var cc = C.canvas.getContext("2d");
+      if (kind === "under") paintUnderlays(cc, C.scale, C.cox, C.coy); else paintContacts(cc, C.scale, C.cox, C.coy);
+      perfCount("overlayBitmapBuilds"); exact = true;
+    }
+    if (C.canvas && C.key === key) {
+      var k = mapView.scale / C.scale;
+      ctx.drawImage(C.canvas, mapView.ox - C.cox * k, mapView.oy - C.coy * k,
+        C.canvas.width * k, C.canvas.height * k);
+      if (_mapHotFrame) perfCount("overlayHotBlits");
+    } else if (_mapHotFrame) scheduleSettle();
+  }
+
   function renderMap() {
     var cv = document.getElementById("map-canvas");
     if (!App.payload.map) { showEmpty("No map bundle in this payload."); return; }
@@ -362,47 +550,8 @@
     var activeFill = (App.payload.map.fills || [])[S.mapFillIdx] || null;
     if (S.showFills && activeFill) drawMapFill(ctx, cv, fillRingFor(activeFill));
 
-    // regular-geometry / trimesh gridlines (2-D QA payloads); one batched
-    // stroke — per-line strokes crawl on dense meshes. Draws the coarse ring
-    // (grid_lines_lod) when S.lodActive, else full resolution.
-    var gridLines = lineSetRing(App.payload.map.grid_lines, App.payload.map.grid_lines_lod);
-    if (S.showGridLines && gridLines) {
-      ctx.strokeStyle = token("--muted");
-      ctx.globalAlpha = 0.32;
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      strokeLineSet(ctx, gridLines);
-      ctx.stroke();
-      ctx.globalAlpha = 1;
-    }
-
-    // contour iso-lines: two batched paths (the grid-lines trick) — minor
-    // levels a bit stronger than grid lines, major/index levels bolder still.
-    if (S.showContours && App.payload.map.contours && App.payload.map.contours.length) {
-      var strokeContours = function (sets, alpha, width) {
-        if (!sets.length) return;
-        ctx.strokeStyle = token("--text-secondary");
-        ctx.globalAlpha = alpha;
-        ctx.lineWidth = width;
-        ctx.beginPath();
-        sets.forEach(function (c) { strokeLineSet(ctx, lineSetRing(c.lines, c.lines_lod)); });
-        ctx.stroke();
-        ctx.globalAlpha = 1;
-      };
-      var allSets = App.payload.map.contours;
-      strokeContours(allSets.filter(function (c) { return !c.major; }), 0.6, 1);
-      strokeContours(allSets.filter(function (c) { return c.major; }), 0.85, 2.25);
-    }
-
-    // outline rings
-    if (S.showOutline && App.payload.map.outline) {
-      ctx.strokeStyle = token("--text-secondary"); ctx.lineWidth = 2; ctx.lineJoin = "round";
-      App.payload.map.outline.forEach(function (ring) {
-        ctx.beginPath();
-        ring.forEach(function (pt, i) { var s = w2s(pt[0], pt[1]); if (i === 0) ctx.moveTo(s[0], s[1]); else ctx.lineTo(s[0], s[1]); });
-        ctx.stroke();
-      });
-    }
+    // Cached structural overlays retain their historical position below points.
+    drawOverlayCache(ctx, cv, "under");
 
     // point cloud overlay — batched colour-bin paths + an offscreen bake
     // (see drawMapPoints; a 200k-point cloud must pan/zoom at frame rate)
@@ -410,44 +559,8 @@
       drawMapPoints(ctx, cv);
     }
 
-    // contact subcrop masks (crossed columns): a translucent identity fill,
-    // reinforced with a diagonal hatch (45° / 135° alternating per contact per the
-    // design texture rule) clipped to the crossing region and a 2px identity
-    // outline around each crossing cell — legible over the field yet see-through.
-    (App.payload.map.contacts || []).forEach(function (c, ci) {
-      if (!S.contactVis[ci]) return;
-      var col = idColor("ct:" + c.kind);
-      var ss = Math.max(2, mapView.scale * Math.min(f.spacing_x, f.spacing_y));
-      // Build one Path2D of all crossing cells (fill + clip + outline share it).
-      var region = new Path2D();
-      var minx = Infinity, miny = Infinity, maxx = -Infinity, maxy = -Infinity, any = false;
-      for (var j = 0; j < f.nrow; j++) for (var i = 0; i < f.ncol; i++) {
-        if (!c.crossing[j * f.ncol + i]) continue;
-        any = true;
-        var s = w2s(f.origin_x + i * f.spacing_x, f.origin_y + j * f.spacing_y);
-        var x0 = s[0] - ss / 2, y0 = s[1] - ss / 2;
-        region.rect(x0, y0, ss, ss);
-        if (x0 < minx) minx = x0; if (y0 < miny) miny = y0;
-        if (x0 + ss > maxx) maxx = x0 + ss; if (y0 + ss > maxy) maxy = y0 + ss;
-      }
-      if (!any) return;
-      ctx.save();
-      ctx.globalAlpha = 0.22; ctx.fillStyle = col; ctx.fill(region);
-      // hatch inside the region
-      ctx.save(); ctx.clip(region);
-      ctx.globalAlpha = 0.55; ctx.strokeStyle = col; ctx.lineWidth = 1;
-      var back = (ci % 2 === 1); // alternate 45°/135° per contact identity
-      for (var d = minx - (maxy - miny); d <= maxx; d += 6) {
-        ctx.beginPath();
-        if (back) { ctx.moveTo(d, maxy); ctx.lineTo(d + (maxy - miny), miny); }
-        else { ctx.moveTo(d, miny); ctx.lineTo(d + (maxy - miny), maxy); }
-        ctx.stroke();
-      }
-      ctx.restore();
-      // 2px identity outline around the crossing cells
-      ctx.globalAlpha = 0.9; ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.stroke(region);
-      ctx.restore();
-    });
+    // Cached contact overlays retain their historical position above points.
+    drawOverlayCache(ctx, cv, "over");
 
     // wells (markers + click-to-section). Co-located bores that share a wellhead
     // (sidetracks) collapse to ONE shared marker with a bore-count badge; their

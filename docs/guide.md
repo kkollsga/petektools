@@ -249,7 +249,10 @@ petektools.view2d([
 Two more `view2d` kwargs tune the wire and the feel, not the picture.
 `encoding="blocks"` (the default) ships the map's bulk arrays as compact
 typed binary blocks — roughly 3× smaller than JSON floats on a large payload,
-decoded off the main thread; pass `encoding="json"` for a plain-JSON payload
+decoded off the main thread. Automatic attributes share their mesh, and only
+the active attribute's values decode initially; selecting another attribute
+decodes it once. The complete table is still inside a saved HTML view, so this
+works offline. Pass `encoding="json"` for a plain-JSON payload
 (small payloads are unaffected either way). `lod=True` (the default) adds a
 coarse display-only ring beside each fill / mesh grid / contour set from
 producers that support striding; the viewer switches to it when zoomed far
@@ -259,7 +262,7 @@ as you zoom in — **the data itself is never decimated**. `lod=(stride,)` /
 doc's MapBundle notes for the exact payload shapes.
 
 Wheel and drag frames are composition-only: the viewer affine-transforms the
-last valid point/fill bitmaps at most once per animation frame, even after the
+last valid point/fill and structural/contact-overlay bitmaps at most once per animation frame, even after the
 view leaves their original bake margin or zoom band. One trailing settle then
 selects the LOD ring and rebuilds invalid bitmaps. A bounded four-entry fill LRU
 keeps two selectable fields at both full and coarse LOD, so switching

@@ -3,7 +3,8 @@
 The 2-D map bundle (:mod:`_view2d`) historically ships its bulk arrays as JSON
 floats: a single 78k-triangle fill is ~5-6 MB of JSON parsed on the browser's
 main thread. This module encodes those arrays with the **same wire format the v3
-``VolumeBundle`` uses** (:mod:`_v3`): tightly-packed little-endian ``f32``/``u32``
+``VolumeBundle`` uses** (:mod:`_v3`): tightly-packed little-endian ``f32``/``u32``/
+``u8``
 blocks, ``base64`` in ``data``, NaN = the canonical ``0x7FC00000``. The viewer's
 decode kernel (``assets/decode.js``) reads both shapes.
 
@@ -11,7 +12,8 @@ Two additive marker forms replace a JSON array in place, so a decoder that does
 not understand blocks still sees a plain object it can skip:
 
 - ``{"__block__": "<digest>"}`` — a single block (fill ``nodes``/``triangles``/
-  ``values``, ``points``). The digest indexes the payload's block table.
+  ``values``, ``points``, contact ``crossing`` masks). The digest indexes the
+  payload's block table.
 - ``{"__csr__": {"coords": "<digest>", "offsets": "<digest>"}}`` — a
   CSR-encoded *set* of variable-length polylines (``grid_lines`` and each
   ``contours[i].lines``): ``coords`` is an ``f32 [total_points, 2]`` block of all
@@ -32,7 +34,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
-from typing import Any, Dict, List, Sequence
+from typing import Any, Callable, Dict, List, Sequence
 
 from ._v3 import NAN_F32, _le_bytes
 
@@ -57,6 +59,10 @@ class BlockTable:
 
     def __init__(self) -> None:
         self.table: Dict[str, Dict[str, Any]] = {}
+        # Automatic surface attributes deliberately retain one Python geometry
+        # object.  Remember markers by that source identity too, so packing and
+        # hashing the shared nodes/triangles is also a once-per-payload cost.
+        self._source: Dict[tuple[int, str, tuple[int, ...]], tuple[Any, str]] = {}
 
     def add(self, values: Sequence[float], dtype: str, shape: Sequence[int]) -> str:
         raw = _le_bytes(values, dtype)
@@ -71,6 +77,22 @@ class BlockTable:
 
     def block_marker(self, values: Sequence[float], dtype: str, shape: Sequence[int]) -> Dict[str, str]:
         return {"__block__": self.add(values, dtype, shape)}
+
+    def source_marker(
+        self,
+        source: Sequence[Any],
+        dtype: str,
+        shape: Sequence[int],
+        build_values: Callable[[], Sequence[float]],
+    ) -> Dict[str, str]:
+        """Marker for a normalized source array, packed once by identity."""
+        key = (id(source), dtype, tuple(int(s) for s in shape))
+        prior = self._source.get(key)
+        if prior is not None and prior[0] is source:
+            return {"__block__": prior[1]}
+        digest = self.add(build_values(), dtype, shape)
+        self._source[key] = (source, digest)
+        return {"__block__": digest}
 
     def csr_marker(self, polylines: Sequence[Sequence[Sequence[float]]]) -> Dict[str, Any]:
         """A ``__csr__`` marker for a set of variable-length ``[x, y]`` polylines."""
@@ -122,7 +144,10 @@ def _map_bulk_bytes(m: Dict[str, Any]) -> int:
             total += len(line) * 2
         for line in c.get("lines_lod") or []:
             total += len(line) * 2
-    return total * 4
+    byte_total = total * 4
+    for contact in m.get("contacts") or []:
+        byte_total += len(contact.get("crossing") or [])
+    return byte_total
 
 
 def encode_map(m: Dict[str, Any], *, threshold_bytes: int = DEFAULT_THRESHOLD_BYTES) -> bool:
@@ -134,7 +159,8 @@ def encode_map(m: Dict[str, Any], *, threshold_bytes: int = DEFAULT_THRESHOLD_BY
     The encoded fields: ``points`` (``f32 [n, 3]``, NaN z allowed), each
     ``fills[i]`` ``nodes`` (``f32 [n, 2]``) / ``triangles`` (``u32 [n, 3]``) /
     ``values`` (``f32 [n]``, null -> NaN), ``grid_lines`` (CSR), and each
-    ``contours[i].lines`` (CSR). The additive stride-ladder LOD rings encode the
+    ``contours[i].lines`` (CSR), and contact ``crossing`` masks (``u8 [n]``).
+    The additive stride-ladder LOD rings encode the
     same way — each ``fills[i].lod`` ``nodes``/``triangles``/``values``,
     ``grid_lines_lod`` (CSR), and each ``contours[i].lines_lod`` (CSR).
     """
@@ -175,6 +201,17 @@ def encode_map(m: Dict[str, Any], *, threshold_bytes: int = DEFAULT_THRESHOLD_BY
         if lines_lod:
             c["lines_lod"] = tbl.csr_marker(lines_lod)
 
+    # Large contact masks are byte-valued truth tables.  u8 keeps a 1M-cell
+    # mask compact and worker-decodable while the forced-JSON path remains the
+    # historical bool array.
+    for contact in m.get("contacts") or []:
+        crossing = contact.get("crossing") or []
+        if crossing:
+            contact["crossing"] = tbl.source_marker(
+                crossing, "u8", [len(crossing)],
+                lambda crossing=crossing: [1 if value else 0 for value in crossing],
+            )
+
     m["blocks"] = tbl.table
     return True
 
@@ -184,17 +221,25 @@ def _encode_fill_arrays(tbl: "BlockTable", f: Dict[str, Any]) -> None:
     ``values`` in place — the shared shape of a full and a coarse ring."""
     nodes = f.get("nodes") or []
     if nodes:
-        nf: List[float] = []
-        for nd in nodes:
-            nf.append(float(nd[0]))
-            nf.append(float(nd[1]))
-        f["nodes"] = tbl.block_marker(nf, "f32", [len(nodes), 2])
+        def node_values() -> List[float]:
+            nf: List[float] = []
+            for nd in nodes:
+                nf.append(float(nd[0]))
+                nf.append(float(nd[1]))
+            return nf
+        f["nodes"] = tbl.source_marker(nodes, "f32", [len(nodes), 2], node_values)
     tris = f.get("triangles") or []
     if tris:
-        tf: List[int] = []
-        for t in tris:
-            tf.extend((int(t[0]), int(t[1]), int(t[2])))
-        f["triangles"] = tbl.block_marker(tf, "u32", [len(tris), 3])
+        def triangle_values() -> List[int]:
+            tf: List[int] = []
+            for t in tris:
+                tf.extend((int(t[0]), int(t[1]), int(t[2])))
+            return tf
+        f["triangles"] = tbl.source_marker(
+            tris, "u32", [len(tris), 3], triangle_values
+        )
     vals = f.get("values")
     if vals:
-        f["values"] = tbl.block_marker([_nan_if_none(v) for v in vals], "f32", [len(vals)])
+        f["values"] = tbl.source_marker(
+            vals, "f32", [len(vals)], lambda vals=vals: [_nan_if_none(v) for v in vals]
+        )

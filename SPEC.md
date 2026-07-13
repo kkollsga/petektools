@@ -62,6 +62,10 @@ producer `kind` strings classify points (`point_set`), geometry-only shells
 (`grid_geometry`, `structured_shell`, `mesh_shell`), and value surfaces
 (`surface`, `structured_mesh`, `tri_surface`) before overlapping method ducks;
 only the value-surface role participates in omitted-fill lane discovery. New
+attribute lanes over identical topology share one normalized full/LOD mesh in
+memory and one content-addressed geometry block on the wire. The viewer decodes
+only the active lane's values initially and resolves inactive value blocks on
+first selection; the complete table remains embedded in offline saved views.
 cross-sections come from a consumer-supplied `section_provider` callback (live)
 or are pre-computed into the
 payload (file). petekTools defines the **generic render schema** (its contract,

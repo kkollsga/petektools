@@ -1325,37 +1325,60 @@ def _surface_navigation_ring(grid: int, stride: int, offset: float) -> dict:
     }
 
 
-def _build_surface_navigation_view(tmp_path: Path) -> Path:
-    """198² two-fill+LOD mesh and 200k points for the Phase 4 hot gesture."""
+def _build_surface_navigation_view(
+    tmp_path: Path, *, grid: int = MAP_FILL_GRID, contact_mask: bool = True
+) -> Path:
+    """Eight-fill dense-overlay gesture fixture; optional 1M-cell contact."""
     from petektools.viewer import _blocks
 
-    m = _synthetic_2d_map()
+    m = _synthetic_2d_map(grid=grid)
     base = m["fills"][0]
-    lod_a = _surface_navigation_ring(MAP_FILL_GRID, 4, 0.0)
-    fill_a = {
-        **base,
-        "name": "values",
-        "display_name": "Top A",
-        "colormap": "inferno",
-        "lod": lod_a,
-    }
-    fill_b = {
-        **base,
-        "name": "thickness",
-        "display_name": "Top A",
-        "values": [v + 100.0 for v in base["values"]],
-        "range": [100.0, 100.4],
-        "colormap": "magma",
-        "lod": _surface_navigation_ring(MAP_FILL_GRID, 4, 100.0),
-    }
-    m["fills"] = [fill_a, fill_b]
+    lod_base = _surface_navigation_ring(grid, 4, 0.0)
+    fills = []
+    for lane in range(8):
+        offset = lane * 100.0
+        fills.append({
+            **base,
+            "name": "values" if lane == 0 else f"attribute_{lane}",
+            "display_name": "Top A",
+            "values": [v + offset for v in base["values"]],
+            "range": [offset, offset + 0.4],
+            "colormap": "inferno" if lane % 2 == 0 else "magma",
+            "lod": {
+                **lod_base,
+                "values": [v + offset for v in lod_base["values"]],
+                "range": [offset, offset + 0.4],
+            },
+        })
+    m["fills"] = fills
+    extent = (grid - 1) * 25.0
+    m["grid_lines"] = [
+        [[i * 25.0, j * 25.0] for i in range(grid)]
+        for j in range(grid)
+    ] + [
+        [[i * 25.0, j * 25.0] for j in range(grid)]
+        for i in range(grid)
+    ]
+    m["contours"] = [
+        {"level": float(k), "major": k % 4 == 0,
+         "lines": [[[0.0, k * extent / 8], [extent, (8 - k) * extent / 8]]]}
+        for k in range(1, 8)
+    ]
+    if contact_mask:
+        side = 1000
+        m["frame"] = {"origin_x": 0, "origin_y": 0, "spacing_x": extent / (side - 1),
+                      "spacing_y": extent / (side - 1), "ncol": side, "nrow": side}
+        crossing = [False] * (side * side)
+        for j in range(498, 501):
+            crossing[j * side:(j + 1) * side] = [True] * side
+        m["contacts"] = [{"kind": "OWC", "depth_m": -2500.0, "crossing": crossing}]
     _blocks.encode_map(m, threshold_bytes=0)
     env, _bin = _v3.build_v3_volume(50, 50, 4)
     payload = {
         "schema_version": 4,
         "kind": "surface-navigation-perf",
         "property": "z",
-        "properties": ["z", "thickness"],
+        "properties": ["z", *[f"attribute_{i}" for i in range(1, 8)]],
         "summary": {"points": MAP_POINTS_N, "triangles": len(base["triangles"])},
         "volume": env,
         "map": m,
@@ -1364,7 +1387,7 @@ def _build_surface_navigation_view(tmp_path: Path) -> Path:
         "wells": [],
         "charts": [],
     }
-    out = tmp_path / "surface_navigation.html"
+    out = tmp_path / f"surface_navigation_{grid}.html"
     save_view(payload, out)
     return out
 
@@ -1398,11 +1421,51 @@ def test_surface_navigation_hot_frames_are_compositing_only(tmp_path):
     assert g["hotDelta"]["canvasBackingWrites"] == 0
     assert g["hotDelta"]["legendMutations"] == 0
     assert g["hotDelta"]["styleReads"] == 0
+    assert g["hotDelta"]["gridPathBuilds"] == 0
+    assert g["hotDelta"]["contourPathBuilds"] == 0
+    assert g["hotDelta"]["outlinePathBuilds"] == 0
+    assert g["hotDelta"]["contactMaskBuilds"] == 0
+    assert g["hotDelta"]["overlayBitmapBuilds"] == 0
+    assert g["hotDelta"]["overlayHotBlits"] > 0
     assert g["settleDelta"]["settlePaints"] == 1
+    assert g["settleDelta"]["overlayBitmapBuilds"] == 2
+    assert g["settleDelta"]["gridPathBuilds"] == 1
+    assert g["settleDelta"]["contactMaskBuilds"] == 1
     assert g["returnDelta"]["triFillBuilds"] == 0
     assert g["returnDelta"]["fillCacheHits"] >= 1
     assert g["stableA"] is True
     assert g["aAfter"]["cache"]["size"] <= g["aAfter"]["cache"]["limit"] == 4
+    assert g["initialBlocks"]["decoded"] < g["initialBlocks"]["total"]
+    assert g["bBlocks"]["decoded"] > g["initialBlocks"]["decoded"]
+    assert g["aBlocks"]["decoded"] == g["bBlocks"]["decoded"]
+    assert g["rapidActive"] == 3
+    assert g["cancelledActive"] == 0
+
+
+@pytest.mark.skipif(not _HAVE_PW, reason="playwright + chromium not available (browser leg)")
+def test_surface_navigation_500_grid_hot_frames_are_compositing_only(tmp_path):
+    view = _build_surface_navigation_view(tmp_path, grid=500, contact_mask=False)
+    r = _run_render(
+        view, "--surface-gesture", "--wheel-events=16", "--pan-events=100",
+        "--gesture-p95-cap-ms=8", "--gesture-max-cap-ms=16.7", timeout=300,
+    )
+    g = r.get("surfaceGesture") or {}
+    stats = g.get("frameStats") or {}
+    print(f"\n[surface-nav-500] {stats.get('n')} frames: p95 {stats.get('p95')} ms | "
+          f"max {stats.get('max')} ms | hot {g.get('hotDelta')}")
+    assert r["rc"] == 0, r.get("failure") or r.get("stderr")
+    assert not r.get("consoleErrors"), r.get("consoleErrors")
+    assert stats["p95"] < 8.0 and stats["max"] < 16.7
+    for counter in (
+        "pointPathBuilds", "triFillBuilds", "canvasBackingWrites",
+        "legendMutations", "styleReads", "gridPathBuilds",
+        "contourPathBuilds", "outlinePathBuilds", "contactMaskBuilds",
+        "overlayBitmapBuilds",
+    ):
+        assert g["hotDelta"][counter] == 0, (counter, g["hotDelta"])
+    assert g["hotDelta"]["overlayHotBlits"] > 0
+    assert g["stableA"] is True and g["rapidActive"] == 3
+    assert g["cancelledActive"] == 0
 
 
 def test_map_blocks_wire_size_beats_json():
@@ -1476,6 +1539,22 @@ def test_map_blocks_dedup_shared_mesh_ships_once():
     assert len(table) == 4, sorted(table)
     print(f"\n[map-dedup] 2 fills / shared mesh -> {len(table)} blocks "
           f"(nodes+tris shared, 2 distinct value blocks)")
+
+
+def test_map_blocks_encode_contact_mask_as_u8_with_json_fallback():
+    from petektools.viewer import _blocks
+
+    plain = _synthetic_2d_map(npts=1, grid=4)
+    mask = [i % 3 == 0 for i in range(16)]
+    plain["contacts"] = [{"kind": "OWC", "crossing": mask.copy()}]
+    untouched = copy.deepcopy(plain)
+    assert _blocks.encode_map(plain, threshold_bytes=0)
+    marker = plain["contacts"][0]["crossing"]
+    desc = plain["blocks"][marker["__block__"]]
+    assert desc["dtype"] == "u8" and desc["shape"] == [16]
+    import base64
+    assert list(base64.b64decode(desc["data"])) == [int(value) for value in mask]
+    assert untouched["contacts"][0]["crossing"] == mask
 
 
 class _StridedMesh:

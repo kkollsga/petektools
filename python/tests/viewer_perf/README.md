@@ -144,7 +144,7 @@ vs the JSON floats it replaces: the map no longer parses megabytes of float text
 on the main thread — the base64 blocks decode off-thread into typed arrays,
 transferred zero-copy, and identical arrays decode once per session.
 
-## 5. Stride-ladder LOD + fill baking (P2b/P3/P4)
+## 5. Stride-ladder LOD + cached composition (P2b/P3/P4/P5)
 
 **LOD rings (`view2d(lod=…)`).** A payload may carry ONE coarse display ring
 beside each full-resolution field — `fills[i].lod`, `map.grid_lines_lod`,
@@ -184,13 +184,31 @@ bake key is `(colormap, range)` + ring object identity. Four entries are kept
 with explicit LRU eviction, enough for A/B at full+LOD; returning A→B→A hits A.
 
 `test_surface_navigation_hot_frames_are_compositing_only` builds a realistic
-200k-point + 78k-triangle two-field surface, with a stride-4 ring for each field,
+200k-point + 78k-triangle eight-field surface, with a stride-4 ring for each field,
+full 198² wireframe, contours, and a block-encoded 1M-cell contact mask,
 then drives 16 outward wheel events (crossing both the bitmap band and the
 scale-derived point-radius threshold) and a >1000 px out-and-back pan. The browser harness
 asserts at most one paint per rAF; p95 <8 ms and max <16.7 ms; zero point-path,
 tri-fill, canvas-backing, legend-DOM, or theme-style work while hot; exactly one
 settle rebuild; bounded cache size; and zero heavy builders on the final A of
-A→B→A. The test skips cleanly when Playwright/Chromium is unavailable.
+A→B→A. It also asserts lazy initial values, one decode for B, no re-decode for
+A, latest-request-wins rapid selection, and zero grid/contour/outline/contact
+builders while hot. Current cached-Chromium run: 40 frames, p50 0.1 ms, p95
+0.3 ms, max 0.4 ms; settle performs two overlay bakes and one contact scan.
+The test skips cleanly when Playwright/Chromium is unavailable.
+
+`test_surface_navigation_500_grid_hot_frames_are_compositing_only` repeats the
+same eight-attribute/full-wireframe/contour gesture at 500×500 (the 198 case
+alone carries the separate 1M contact mask). Current cached-Chromium result:
+40 frames, p95 0.5 ms, max 0.6 ms, zero hot builders and 80 overlay blits.
+
+`surface_attribute_build_bench.py` reproduces payload construction for 198² and
+500² meshes at 1/2/4/8 lanes. Run `PYTHONPATH=python python
+python/tests/viewer_perf/surface_attribute_build_bench.py --grid 198`. Against
+the pre-P5 local 198² baseline, eight lanes without LOD improve from 2845 ms /
+167.1 MB to 1711 ms / 49.3 MB. With default LOD the comparison is 3175 ms /
+175.8 MB to 1785 ms / 51.1 MB. Both retain one full nodes digest and one full
+triangles digest (and one shared pair for the LOD ring).
 
 **Visibility-driven rendering (P3).** This viewer renders ON DEMAND — only the
 active tab's render fn runs (`renderActive`), scene3d/volume repaint on

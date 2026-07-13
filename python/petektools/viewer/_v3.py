@@ -30,8 +30,8 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 # canonical quiet-NaN f32 bit pattern (matches the engine's 0x7FC00000).
 NAN_F32 = struct.unpack("<f", struct.pack("<I", 0x7FC00000))[0]
 
-_DTYPE_CODE = {"f32": "f", "u32": "I", "u16": "H"}
-_DTYPE_SIZE = {"f32": 4, "u32": 4, "u16": 2}
+_DTYPE_CODE = {"f32": "f", "u32": "I", "u16": "H", "u8": "B"}
+_DTYPE_SIZE = {"f32": 4, "u32": 4, "u16": 2, "u8": 1}
 
 
 def _le_bytes(values: Sequence[float], dtype: str) -> bytes:

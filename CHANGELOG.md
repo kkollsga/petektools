@@ -7,6 +7,20 @@ All notable changes to petekTools are recorded here. Format follows
 ## [Unreleased]
 
 ### Fixed
+- **Large multi-attribute surfaces now share and load lazily.** Automatic
+  primary/attribute fills retain one normalized full+LOD mesh, pack/hash that
+  geometry once, and reference one content-addressed block. The browser decodes
+  only the active fill values at startup and lazily caches later selections;
+  rapid choices are latest-request-wins and saved HTML remains offline. Plain
+  JSON keeps its legacy array shape. A reproduced default-LOD 198²/8-lane build
+  drops peak retention from 175.8 MB to 51.1 MB and build time from 3175 to
+  1785 ms (71% less peak, 44% faster).
+- **Dense map overlays are composition-only during navigation.** Grid/contour/
+  outline paint is cached below points and contact paint above them; the outline
+  path is precompiled and 1M-cell contact masks travel as additive `u8` blocks.
+  Hot-frame overlay rebuild counters remain zero and the dense acceptance
+  198² fixture records p95 0.3 ms / max 0.4 ms; the separate 500² acceptance
+  records p95 0.5 ms / max 0.6 ms (40 frames each).
 - **Surface gesture frames are composition-only.** Wheel/drag now always
   affine-transform the last valid point and active-fill bitmaps, including
   outside their original bake band/margin; no point-path/fill reconstruction,

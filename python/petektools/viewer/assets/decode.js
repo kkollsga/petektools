@@ -41,7 +41,8 @@
   // fresh, element-aligned buffer so an unaligned sidecar slice is safe and the
   // result is detached from the source ArrayBuffer (transferable-friendly).
   function blockToTyped(bytes, dtype) {
-    var ctor = dtype === "f32" ? Float32Array : dtype === "u32" ? Uint32Array : Uint16Array;
+    var ctor = dtype === "f32" ? Float32Array : dtype === "u32" ? Uint32Array :
+      dtype === "u8" ? Uint8Array : Uint16Array;
     var buf = new ArrayBuffer(bytes.byteLength);
     new Uint8Array(buf).set(bytes);
     return new ctor(buf);
@@ -213,7 +214,7 @@
         if (!Object.prototype.hasOwnProperty.call(dec, dg)) continue;
         bufs[dg] = dec[dg].buffer; dtypes[dg] = m.table[dg].dtype; transfer.push(dec[dg].buffer);
       }
-      postMessage({ cmd: "decoded2d", blocks: bufs, dtypes: dtypes, decodeMs: Date.now() - t2 }, transfer);
+      postMessage({ cmd: "decoded2d", requestId: m.requestId, blocks: bufs, dtypes: dtypes, decodeMs: Date.now() - t2 }, transfer);
     }
   }
 

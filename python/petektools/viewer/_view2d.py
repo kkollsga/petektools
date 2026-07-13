@@ -211,8 +211,14 @@ def view2d_payload(
         elif fspec["enabled"]:
             requested_attrs = [fspec["attr"]]
         emitted_fill_names: set[str] = set()
+        canonical_mesh: tuple[list[list[float]], list[list[int]]] | None = None
+        canonical_lod_mesh: tuple[list[list[float]], list[list[int]]] | None = None
         for requested_attr in requested_attrs:
-            fill_entry = _value_fill(item, requested_attr)
+            fill_entry = _value_fill(
+                item,
+                requested_attr,
+                canonical_mesh if auto_attrs is not None else None,
+            )
             if fill_entry is not None:
                 if auto_attrs is not None and fill_entry["name"] in emitted_fill_names:
                     raise ValueError(
@@ -220,6 +226,9 @@ def view2d_payload(
                         f"layer name {fill_entry['name']!r} while enumerating attr_names()"
                     )
                 emitted_fill_names.add(fill_entry["name"])
+                if auto_attrs is not None:
+                    if canonical_mesh is None:
+                        canonical_mesh = (fill_entry["nodes"], fill_entry["triangles"])
                 fill_entry["display_name"] = name
                 if fspec["range"] is not None:
                     fill_entry["range"] = list(fspec["range"])
@@ -227,8 +236,16 @@ def view2d_payload(
                     fill_entry["colormap"] = fspec["cmap"]  # per-object pin
                     item_cmap = item_cmap or fspec["cmap"]
                 if lod_cfg["enabled"]:
-                    ring = _value_fill_lod(item, requested_attr, lod_cfg["stride"])
+                    ring = _value_fill_lod(
+                        item,
+                        requested_attr,
+                        lod_cfg["stride"],
+                        canonical_lod_mesh if auto_attrs is not None else None,
+                    )
                     if ring is not None:
+                        if auto_attrs is not None:
+                            if canonical_lod_mesh is None:
+                                canonical_lod_mesh = (ring["nodes"], ring["triangles"])
                         fill_entry["lod"] = {
                             "stride": lod_cfg["stride"],
                             "nodes": ring["nodes"],
@@ -663,7 +680,11 @@ def _is_geometry(obj: Any) -> bool:
     return hasattr(obj, "node_xy") and hasattr(obj, "ncol") and hasattr(obj, "nrow")
 
 
-def _value_fill(item: Any, attr: str | None) -> dict[str, Any] | None:
+def _value_fill(
+    item: Any,
+    attr: str | None,
+    shared_geometry: tuple[list[list[float]], list[list[int]]] | None = None,
+) -> dict[str, Any] | None:
     """One value-coloured trimesh fill from an item's ``value_layer()`` duck.
 
     ``attr=None`` asks for the primary layer; a string asks for that attribute.
@@ -676,7 +697,7 @@ def _value_fill(item: Any, attr: str | None) -> dict[str, Any] | None:
     layer = fn(attr=attr) if attr is not None else fn()
     if layer is None:
         return None
-    return _coerce_fill(layer, type(item).__name__)
+    return _coerce_fill(layer, type(item).__name__, shared_geometry)
 
 
 def _auto_fill_attrs(item: Any) -> list[str] | None:
@@ -718,7 +739,11 @@ def _auto_fill_attrs(item: Any) -> list[str] | None:
     return names
 
 
-def _coerce_fill(layer: Any, name: str) -> dict[str, Any]:
+def _coerce_fill(
+    layer: Any,
+    name: str,
+    shared_geometry: tuple[list[list[float]], list[list[int]]] | None = None,
+) -> dict[str, Any]:
     """Validate and normalize a ``value_layer()`` dict into a fill entry."""
     if not isinstance(layer, dict):
         raise TypeError(
@@ -727,7 +752,15 @@ def _coerce_fill(layer: Any, name: str) -> dict[str, Any]:
     missing = [k for k in ("name", "nodes", "triangles", "values", "range") if k not in layer]
     if missing:
         raise TypeError(f"value_layer() on {name} is missing key(s) {missing}")
-    nodes = [_xy(n) for n in layer["nodes"]]
+    raw_nodes = layer["nodes"]
+    raw_triangles = layer["triangles"]
+    if shared_geometry is not None and _same_fill_geometry(
+        raw_nodes, raw_triangles, shared_geometry
+    ):
+        nodes, triangles = shared_geometry
+    else:
+        nodes = [_xy(n) for n in raw_nodes]
+        triangles = [[int(t[0]), int(t[1]), int(t[2])] for t in raw_triangles]
     values = [
         float(v) if v is not None and math.isfinite(float(v)) else None
         for v in layer["values"]
@@ -736,7 +769,6 @@ def _coerce_fill(layer: Any, name: str) -> dict[str, Any]:
         raise TypeError(
             f"value_layer() on {name}: {len(values)} values for {len(nodes)} nodes"
         )
-    triangles = [[int(t[0]), int(t[1]), int(t[2])] for t in layer["triangles"]]
     rng = list(layer["range"])
     if len(rng) != 2:
         raise TypeError(f"value_layer() on {name}: range must be [min, max], got {rng!r}")
@@ -749,7 +781,33 @@ def _coerce_fill(layer: Any, name: str) -> dict[str, Any]:
     }
 
 
-def _value_fill_lod(item: Any, attr: str | None, stride: int) -> dict[str, Any] | None:
+def _same_fill_geometry(
+    nodes: Any,
+    triangles: Any,
+    canonical: tuple[list[list[float]], list[list[int]]],
+) -> bool:
+    """Compare a producer lane to normalized canonical geometry without copies."""
+    cnodes, ctris = canonical
+    try:
+        if len(nodes) != len(cnodes) or len(triangles) != len(ctris):
+            return False
+        if any(float(node[0]) != ref[0] or float(node[1]) != ref[1]
+               for node, ref in zip(nodes, cnodes)):
+            return False
+        return not any(
+            int(tri[0]) != ref[0] or int(tri[1]) != ref[1] or int(tri[2]) != ref[2]
+            for tri, ref in zip(triangles, ctris)
+        )
+    except (IndexError, TypeError, ValueError):
+        return False
+
+
+def _value_fill_lod(
+    item: Any,
+    attr: str | None,
+    stride: int,
+    shared_geometry: tuple[list[list[float]], list[list[int]]] | None = None,
+) -> dict[str, Any] | None:
     """A coarse value-fill ring via ``value_layer(stride=...)``.
 
     Feature-detects producer support: returns ``None`` when the item offers no
@@ -765,7 +823,7 @@ def _value_fill_lod(item: Any, attr: str | None, stride: int) -> dict[str, Any] 
         return None
     if layer is None:
         return None
-    return _coerce_fill(layer, type(item).__name__)
+    return _coerce_fill(layer, type(item).__name__, shared_geometry)
 
 
 def _parse_lod(lod: bool | tuple) -> dict[str, Any]:

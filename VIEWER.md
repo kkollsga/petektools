@@ -87,13 +87,22 @@ full and coarse LOD, so an A→B→A switch reuses A without rebuilding. Hot fra
 also leave canvas backing size, legend DOM, and theme-style reads untouched; a
 hidden tab cancels the settle timer (`visibilitychange`) and only the visible
 tab ever repaints.
+Grid, contour and outline paint is baked into a second bitmap below points;
+contact masks bake into a third bitmap above points. This split preserves exact
+layer order while making a hot gesture composition-only even for a full
+wireframe or a 1M-cell contact mask. The outline's world `Path2D` is compiled
+once and is reused for raster clipping.
 
 The `view2d` map's bulk arrays (points, fill nodes/triangles/values, grid
-lines, contour polylines) travel as **content-addressed typed binary blocks**
+lines, contour polylines, and contact crossing masks) travel as
+**content-addressed typed binary blocks**
 by default (`encoding="blocks"`; ~3× smaller than JSON floats at 200k points,
 identical arrays ship once) and are decoded off the main thread in the shared
-decode worker, cached by digest; `encoding="json"` opts out and a JSON-shaped
-map renders identically. With `lod=` on (the default), producers that accept
+decode worker, cached by digest. Shared automatic fill topology packs once;
+startup decodes every geometry/overlay block but only the active fill's values,
+then lazily decodes an inactive lane on first selection. `encoding="json"` opts
+out and a JSON-shaped map renders identically. The full block table stays in a
+saved HTML file, so lazy selection remains offline. With `lod=` on (the default), producers that accept
 striding contribute one coarse **display-only LOD ring** per fill / mesh grid
 / contour set; the viewer switches rings on zoom-settle (never per frame) when
 a full-resolution cell falls below ~4 px, shows a small "LOD" chip while

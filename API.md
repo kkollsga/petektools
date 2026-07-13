@@ -868,10 +868,12 @@ from petektools import viewer
 # shells, and value surfaces. Omitted fill auto-enumerates primary + named lanes
 # only for surface roles offering callable attr_names() and value_layer().
 # Explicit fill remains exact: False=off, True=primary, str=one named lane.
-# During wheel/drag the renderer only affine-composites the last point/fill
-# bitmaps (one paint/rAF); data-sized paths, backing size, legend DOM, and theme
-# styles rebuild at most once after settle. The bounded fill LRU preserves A/B
-# at full+LOD so switching A -> B -> A reuses A. Payload/API shape is unchanged.
+# Automatic lanes retain/pack their common full+LOD mesh once. Block payloads
+# initially decode shared geometry + the active values only; another lane's
+# values decode on first selection and remain cached (A -> B -> A is stable).
+# During wheel/drag the renderer affine-composites point/fill plus split
+# grid/contour/outline/contact bitmaps (one paint/rAF); data-sized paths rebuild
+# at most once after settle. Plain JSON and saved single-file views are unchanged.
 viewer.view2d(items, *, title="2D view", color=True, fill=None, contours=None,
               save=None, port=0, block=False, open_browser=True,
               max_grid_lines=800, max_line_points=1000, point_limit=200_000,

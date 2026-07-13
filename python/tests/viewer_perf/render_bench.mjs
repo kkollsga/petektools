@@ -195,7 +195,10 @@ const result = await page.evaluate(async (opts) => {
     const delta = (a, b, names) => Object.fromEntries(names.map((n) => [n, (b[n] || 0) - (a[n] || 0)]));
     const counterNames = ["pointPathBuilds", "triFillBuilds", "canvasBackingWrites",
       "legendMutations", "styleReads", "rafRequests", "hotPaints", "settlePaints",
-      "fillCacheHits", "fillCacheMisses", "fillCacheEvictions"];
+      "fillCacheHits", "fillCacheMisses", "fillCacheEvictions", "gridPathBuilds",
+      "contourPathBuilds", "outlinePathBuilds", "contactMaskBuilds",
+      "overlayBitmapBuilds", "overlayHotBlits", "blockDecodeRequests",
+      "blockDecodeDigests", "lazyFillDecodes"];
     const quantile = (xs, p) => xs.length ? xs[Math.min(xs.length - 1, Math.ceil(xs.length * p) - 1)] : null;
     const fillSnapshot = () => ({
       cache: window.__PETEK_FILL_CACHE_STATUS ? { ...window.__PETEK_FILL_CACHE_STATUS } : null,
@@ -214,8 +217,14 @@ const result = await page.evaluate(async (opts) => {
       if (!select) throw new Error("surface gesture requires at least two selectable fills");
       select.selectedIndex = index;
       select.dispatchEvent(new Event("change", { bubbles: true }));
+      const deadline = Date.now() + 3000;
+      while ((window.__PETEK_MAP_BLOCK_STATUS?.activeFill ?? index) !== index && Date.now() < deadline) {
+        await raf(); await sleep(10);
+      }
       await raf(); await sleep(20);
     };
+
+    const initialBlocks = window.__PETEK_MAP_BLOCK_STATUS ? { ...window.__PETEK_MAP_BLOCK_STATUS } : null;
 
     const startScale = window.__PETEK_MAP_VIEW && window.__PETEK_MAP_VIEW.scale;
     const hotBefore = snap();
@@ -273,11 +282,34 @@ const result = await page.evaluate(async (opts) => {
     const aBefore = fillSnapshot();
     await selectFill(1);
     const bState = fillSnapshot();
+    const bBlocks = window.__PETEK_MAP_BLOCK_STATUS ? { ...window.__PETEK_MAP_BLOCK_STATUS } : null;
     const returnBefore = snap();
     await selectFill(0);
     const returnAfter = snap();
     const aAfter = fillSnapshot();
+    const aBlocks = window.__PETEK_MAP_BLOCK_STATUS ? { ...window.__PETEK_MAP_BLOCK_STATUS } : null;
     const returnDelta = delta(returnBefore, returnAfter, counterNames);
+    // Start an uncached decode, then immediately re-select the visible A. The
+    // pending reply may warm cache but must not activate its stale lane.
+    const cancel = fillSelect();
+    cancel.selectedIndex = 4; cancel.dispatchEvent(new Event("change", { bubbles: true }));
+    cancel.selectedIndex = 0; cancel.dispatchEvent(new Event("change", { bubbles: true }));
+    const cancelDeadline = Date.now() + 3000;
+    while ((window.__PETEK_MAP_BLOCK_STATUS?.pending ?? 0) > 0 && Date.now() < cancelDeadline) {
+      await raf(); await sleep(10);
+    }
+    await sleep(30);
+    const cancelledActive = window.__PETEK_MAP_BLOCK_STATUS?.activeFill;
+    // Two changes in the same turn deliberately race worker replies. The latest
+    // requested lane must win even if the earlier decode completes afterward.
+    const rapid = fillSelect();
+    rapid.selectedIndex = 2; rapid.dispatchEvent(new Event("change", { bubbles: true }));
+    rapid.selectedIndex = 3; rapid.dispatchEvent(new Event("change", { bubbles: true }));
+    const rapidDeadline = Date.now() + 3000;
+    while ((window.__PETEK_MAP_BLOCK_STATUS?.activeFill ?? -1) !== 3 && Date.now() < rapidDeadline) {
+      await raf(); await sleep(10);
+    }
+    const rapidActive = window.__PETEK_MAP_BLOCK_STATUS?.activeFill;
     const stableFill = (s) => ({
       key: s.cache && s.cache.key,
       colormap: s.cache && s.cache.colormap,
@@ -292,6 +324,8 @@ const result = await page.evaluate(async (opts) => {
       panPixels: opts.panEvents * 12, rafTurns,
       hotDelta, settleDelta, frameStats,
       aBefore, bState, aAfter, returnDelta, stableA,
+      initialBlocks, bBlocks, aBlocks,
+      rapidActive, cancelledActive,
     };
   }
 
@@ -349,7 +383,8 @@ if (result.surfaceGesture) {
   if (!(g.startScale >= 0.05 && g.endScale < 0.05))
     fail(10, `surface gesture did not cross point-radius threshold: ${g.startScale} -> ${g.endScale}`);
   const forbidden = ["pointPathBuilds", "triFillBuilds", "canvasBackingWrites",
-    "legendMutations", "styleReads"];
+    "legendMutations", "styleReads", "gridPathBuilds", "contourPathBuilds",
+    "outlinePathBuilds", "contactMaskBuilds", "overlayBitmapBuilds"];
   const hotWork = forbidden.filter((n) => (g.hotDelta[n] || 0) !== 0);
   if (hotWork.length) fail(11, "hot gesture performed forbidden work: " + hotWork.join(", "));
   if (g.hotDelta.rafRequests !== g.hotDelta.hotPaints || g.hotDelta.hotPaints > g.rafTurns)
@@ -366,6 +401,12 @@ if (result.surfaceGesture) {
     fail(16, "A→B→A did not reuse the stable fill cache");
   if (!g.aAfter.cache || g.aAfter.cache.size > g.aAfter.cache.limit)
     fail(17, "fill bitmap cache exceeded its explicit bound");
+  if (!g.initialBlocks || !(g.initialBlocks.decoded < g.initialBlocks.total) ||
+      !(g.bBlocks.decoded > g.initialBlocks.decoded) ||
+      g.aBlocks.decoded !== g.bBlocks.decoded)
+    fail(18, "fill values were not lazy-decoded once across A→B→A");
+  if (g.rapidActive !== 3) fail(19, `rapid fill selection ended on stale lane ${g.rapidActive}`);
+  if (g.cancelledActive !== 0) fail(20, `pending fill selection overrode active A with ${g.cancelledActive}`);
 }
 
 console.log(JSON.stringify(result));

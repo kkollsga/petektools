@@ -156,7 +156,9 @@ below ~4 px on screen; fills, mesh grid lines and contours all switch together
 is active. During wheel/drag, point and active-fill bitmaps are strictly
 composition-only: every hot frame affine-blits the last valid bitmap even after
 leaving its bake margin/zoom band; it never rebuilds point paths, triangulates a
-fill, resizes the canvas backing, mutates the legend, or reads live theme styles.
+fill, reconstructs grid/contour/outline/contact paths, resizes the canvas backing,
+mutates the legend, or reads live theme styles. Structural overlays are one
+bitmap below points and contacts one bitmap above, preserving settled order.
 One trailing settle selects the ring and rebuilds each invalid bitmap once. Fill
 bitmaps live in an explicit four-entry LRU keyed by fill/ring object identity plus
 colormap/range — enough for two fields at full+LOD, so A→B→A reuses A while memory
@@ -165,7 +167,7 @@ remains bounded.
 **Binary blocks (additive; the `view2d` `encoding="blocks"` output — the
 default).** The map's bulk arrays optionally travel as **content-addressed typed
 binary blocks** — the same wire format the v3 `VolumeBundle` uses (little-endian,
-tightly-packed `f32`/`u32`, `base64` in `data`, NaN = the canonical `0x7FC00000`)
+tightly-packed `f32`/`u32`/`u8`, `base64` in `data`, NaN = the canonical `0x7FC00000`)
 — instead of JSON floats. A single 78k-triangle fill is ~5–6 MB of JSON parsed on
 the main thread; as blocks it is ~3× smaller on the wire and decodes off the main
 thread into typed arrays. It is fully additive: a JSON-shaped (blockless) map
@@ -174,7 +176,7 @@ stays JSON regardless (the block envelope is not worth it).
 
 - `blocks` | dict[digest → Block] — the per-payload block table (present only
   when at least one field is block-encoded). Each **Block** is
-  `{dtype: "f32"|"u32", shape: [..], data: base64}`, keyed by the **sha-256 hex
+  `{dtype: "f32"|"u32"|"u8", shape: [..], data: base64}`, keyed by the **sha-256 hex
   of its raw little-endian bytes**. Identical arrays (e.g. two fills over one
   mesh) hash to one digest and so ship **once**; the client caches decoded blocks
   by digest, deduping across views in a session.
@@ -188,15 +190,21 @@ stays JSON regardless (the block envelope is not worth it).
     `f32 [total_points, 2]` block of every point concatenated, `offsets` a
     `u32 [n_lines + 1]` block where line `k` is `coords[offsets[k]:offsets[k+1]]`.
     Used for `grid_lines` and each `contours[i].lines`.
+  - `contacts[i].crossing` uses `u8 [ncol*nrow]` (0/1), avoiding a million JSON
+    booleans for a 1M-cell mask.
   - The additive LOD rings encode identically — `fills[i].lod` `nodes`/`triangles`/
     `values` as `__block__`, `grid_lines_lod` and each `contours[i].lines_lod` as
     `__csr__` — all sharing the one `blocks` table (a coarse ring identical to any
     other block ships once).
 
 The viewer's decode kernel (`assets/decode.js`) reads both shapes; the renderer's
-accessors index the typed arrays or the plain nested arrays transparently.
+accessors index the typed arrays or the plain nested arrays transparently. At
+startup it resolves shared geometry/overlays plus fill 0's full+LOD values only.
+Inactive value markers resolve on selection and remain cached by digest; rapid
+selection is latest-request-wins. The complete table stays embedded in
+`save_view`, so this laziness does not require a network.
 
-**Contact:** `{kind: str, depth_m: float, crossing: bool[ncol·nrow],
+**Contact:** `{kind: str, depth_m: float, crossing: bool[ncol·nrow] | __block__,
 display_name?: str}` — `crossing` marks the columns the contact plane cuts
 (row-major). `kind` is a categorical identity (fixed colour slot). The map paints
 the crossing region with a translucent identity fill, a diagonal hatch (45°/135°
