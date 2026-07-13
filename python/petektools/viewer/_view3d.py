@@ -158,7 +158,7 @@ def view3d_payload(
     n_triangles = 0
 
     for scene_entry in scene_items:
-        item, cspec, fspec, name, c_explicit, f_explicit = _norm_item(
+        item, cspec, fspec, name, item_id, c_explicit, f_explicit = _norm_item(
             scene_entry, color_spec, fill_spec
         )
         role = _render_role(item)
@@ -169,6 +169,8 @@ def view3d_payload(
             entry = _value_mesh(item, fspec["attr"])
             if entry is not None:
                 entry["display_name"] = name
+                if item_id is not None:
+                    entry["item_id"] = item_id
                 if fspec["range"] is not None:
                     entry["range"] = list(fspec["range"])
                 if f_explicit and fspec["cmap"]:
@@ -181,8 +183,11 @@ def view3d_payload(
         if contours is not None:
             iso = _iso_contours(item, contours, cspec["attr"])
             if iso is not None:
+                if item_id is not None:
+                    for contour in iso:
+                        contour["item_id"] = item_id
                 contour_sets.extend(iso)
-                layers.append({"kind": "contours", "name": name})
+                layers.append({"kind": "contours", "name": name, **({"item_id": item_id} if item_id is not None else {})})
                 contributed = True
 
         # Role metadata wins over overlapping method ducks. All three
@@ -204,6 +209,8 @@ def view3d_payload(
             entry["range"] = None
             entry["name"] = "mesh"
             entry["display_name"] = name
+            if item_id is not None:
+                entry["item_id"] = item_id
             meshes.append(entry)
             n_triangles += len(entry["triangles"])
             continue
@@ -224,11 +231,11 @@ def view3d_payload(
             lines = _grid_lines(
                 item, max_grid_lines, max_line_points, clip_rings=edge_rings
             )
-            lattices.append({"name": name, "lines": lines, "z": None})
+            lattices.append({"name": name, "lines": lines, "z": None, **({"item_id": item_id} if item_id is not None else {})})
             for ring in edge_rings:
                 flat_rings.append({"points": ring, "z": None})
             summary["grid"] = f"{int(getattr(item, 'ncol'))} x {int(getattr(item, 'nrow'))}"
-            layers.append({"kind": "lines", "name": name})
+            layers.append({"kind": "lines", "name": name, **({"item_id": item_id} if item_id is not None else {})})
             continue
 
         if _is_trimesh(item) and role != "points":
@@ -247,13 +254,13 @@ def view3d_payload(
                 item, max_mesh_edges, max_line_points
             )
             z_flat = _verts_shallowest(_mesh_vertices(item))
-            lattices.append({"name": name, "lines": lines, "z": z_flat})
+            lattices.append({"name": name, "lines": lines, "z": z_flat, **({"item_id": item_id} if item_id is not None else {})})
             for ring in edge_rings:
                 flat_rings.append({"points": ring, "z": z_flat})
             summary["triangles"] = summary.get("triangles", 0) + n_tris
             if edge_stride > 1:
                 summary["mesh_edge_stride"] = edge_stride
-            layers.append({"kind": "lines", "name": name})
+            layers.append({"kind": "lines", "name": name, **({"item_id": item_id} if item_id is not None else {})})
             continue
 
         if _is_well(item) and role != "points":
@@ -268,6 +275,9 @@ def view3d_payload(
                     style=well_style,
                 )
             well_entries.extend(added)
+            if item_id is not None:
+                for well in added:
+                    well["item_id"] = item_id
             layers.extend({"kind": "wells", "name": w["id"]} for w in added)
             continue
 
@@ -291,6 +301,8 @@ def view3d_payload(
             # finite-z data range) and a per-object colormap pin; the global
             # scene3d.point_color/colormap stay the fallback.
             cloud: dict[str, Any] = {"name": name, "n": len(pts), "xyz": _xyz_block(pts)}
+            if item_id is not None:
+                cloud["item_id"] = item_id
             if cspec["enabled"]:
                 if zs:
                     rng = cspec["range"] or [min(zs), max(zs)]
@@ -303,7 +315,7 @@ def view3d_payload(
                 item_cmap = item_cmap or cspec["cmap"]
             clouds.append(cloud)
             n_points += len(pts)
-            layers.append({"kind": "points", "name": name})
+            layers.append({"kind": "points", "name": name, **({"item_id": item_id} if item_id is not None else {})})
             continue
 
         if contributed:
@@ -327,20 +339,20 @@ def view3d_payload(
             lines = _grid_lines(
                 geom, max_grid_lines, max_line_points, clip_rings=edge_rings
             )
-            lattices.append({"name": name, "lines": lines, "z": z_flat})
+            lattices.append({"name": name, "lines": lines, "z": z_flat, **({"item_id": item_id} if item_id is not None else {})})
             for ring in edge_rings:
                 flat_rings.append({"points": ring, "z": z_flat})
-            layers.append({"kind": "lines", "name": name})
+            layers.append({"kind": "lines", "name": name, **({"item_id": item_id} if item_id is not None else {})})
             continue
         if entry is not None:
             lines, n_tris, edge_stride = _mesh_lines(
                 _LayerMesh(entry), max_mesh_edges, max_line_points
             )
-            lattices.append({"name": name, "lines": lines, "z": z_flat})
+            lattices.append({"name": name, "lines": lines, "z": z_flat, **({"item_id": item_id} if item_id is not None else {})})
             summary["triangles"] = summary.get("triangles", 0) + n_tris
             if edge_stride > 1:
                 summary["mesh_edge_stride"] = edge_stride
-            layers.append({"kind": "lines", "name": name})
+            layers.append({"kind": "lines", "name": name, **({"item_id": item_id} if item_id is not None else {})})
             continue
 
         raise TypeError(

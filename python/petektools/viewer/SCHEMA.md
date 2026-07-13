@@ -41,9 +41,40 @@ otherwise beautifies the raw internal `name`: a scoped `"A::B"` name reads as
 | `wells` | list[WellTrack] | map markers + click-to-section targets |
 | `wells_logs` | WellLogBundle \| null | the **Wells** tab (multi-well log correlation; v4) |
 | `charts` | list[ChartBundle] | the **Charts** tab (analytics marks; see below) |
+| `workspace` | WorkspaceManifest \| absent | **additive:** lazy multi-view catalog and item/resource bindings; absent preserves the historic single-payload behavior |
 
 A tab renders only if its bundle is present; an empty payload shows an empty
 state. `sections` may be empty (live mode adds them via `/section`).
+
+## WorkspaceManifest — ordered multi-view catalog (additive v1)
+
+`workspace` is optional. An old payload without it follows the exact historic
+single-payload boot/state/render path. Version 1 is:
+
+`{schema_version: 1, title, tree, available_views, initial_tab, mode,
+resources?, snapshot?}`.
+
+`tree` is an ordered list of groups and items. A group is
+`{id, label, expanded, children}`. An item is `{id, label, role?, views,
+visible, resources}` where `views` is a list of compatible view names,
+`visible` is an independent `view → bool` initial state, and each resource is
+`{href, deferred}`. IDs are globally unique immutable identity keys; labels are
+display-only. Live mode fetches a resource link at most once per item/view/lane.
+Static mode embeds `resources[item_id][view]` and `snapshot` describes whether
+the file contains initially `visible` or all `selected` resources.
+
+A resource response is `{schema_version: 1, kind: "workspace_resource",
+item_id, view, lane?, payload}`. `payload` is an ordinary typed render envelope;
+bulk blocks keep their existing content-addressed representation and global
+browser digest cache. Resource failure is local to that item and retryable.
+
+**Item bindings (additive).** Workspace-produced primitives may carry
+`item_id`. `MapBundle.items` compactly binds one item to ranges in the existing
+shared arrays: `{id, point_range?, grid_line_range?, grid_line_lod_range?,
+outline_range?, fill_range?, contour_range?, layer_range?}`, with every range
+`[start, count]`. Scene3d point clouds, meshes, lattices, contours, wells and
+flat outlines carry `item_id` directly. `LogWell` and section entities may also
+carry it. Payloads without bindings retain category-level visibility.
 
 ## MapBundle — the areal raster (Map tab)
 
@@ -64,6 +95,7 @@ state. `sections` may be empty (live mode adds them via `/section`).
 | `k_slices` | list[ScalarLayer] | optional per-k property slices |
 | `contacts` | list[Contact] | translucent subcrop-mask overlays |
 | `blocks` | dict[digest → Block] | **additive:** the content-addressed typed-block table when `points`/fill arrays/`grid_lines`/`contours[i].lines` ship as binary blocks (see **Binary blocks** below); absent for a plain-JSON map |
+| `items` | list[ItemBinding] \| absent | **additive workspace binding:** compact item-to-range metadata described above; no geometry duplication |
 
 **Frame:** `{origin_x, origin_y, spacing_x, spacing_y, ncol, nrow}`. Node `(i, j)`
 sits at `(origin_x + i·spacing_x, origin_y + j·spacing_y)`.

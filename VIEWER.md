@@ -23,6 +23,19 @@ lives here, not in any one product.
 ```python
 from petektools import viewer
 
+# Multi-view workspace: normalization is metadata-only; Map/3-D/Wells resources
+# materialize on first enable and are cached once per item/view/lane.
+session = viewer.view({
+    "Interpretation": {
+        "Top Agat": {"object": top_agat, "visible": True},
+        "Base Agat": {"object": base_agat, "visible": False},
+    }
+}, title="Agat workspace")
+session.tree()                 # detached normalized catalog
+session.diagnostics           # resource failures, if any
+session.save("visible.html")   # initially visible resources only
+session.save("all.html", include="selected")
+
 # Live: a background local server; returns the URL. `section_provider` is the
 # pluggable /section endpoint by which a DOMAIN package answers fence/well
 # requests — the viewer unit itself computes nothing.
@@ -39,6 +52,33 @@ viewer.build_server(payload, port=0, section_provider=None)
 `payload` is a dict **or** a pre-serialized JSON string. A consumer typically
 wraps these: e.g. peteksim's `model.view()` calls `serve(payload,
 section_provider=lambda **kw: model._section_json(**kw))`.
+
+### Workspace input and lifecycle
+
+`view(tree_or_source, ...)` is additive and returns a `WorkspaceSession`.
+Pass `serve=False` for notebook construction/inspection without opening a local
+server; `.serve()` can start it later.
+`tree_or_source` is either an insertion-ordered nested mapping/list or an object
+with the domain-free provider duck `view_catalog()` plus
+`view_resource(*, item_id, view, lane=None)`. Mapping keys define ordered groups
+and canonical escaped path IDs; list leaves require an explicit `id`. Explicit
+leaves use `{"object": obj, "id"?, "label"?, "visible"?, "views"?}`.
+Duplicate IDs, cycles, ambiguous list leaves, unknown views, and unsupported
+generic adapter options fail before a server opens.
+
+The live `model.json` contains only workspace manifest v1 and any caller-supplied
+typed payload. `./workspace-resource?item=…&view=…&lane=…` constructs one
+resource on first request and caches it under a lock; failures are diagnostics
+and remain retryable. `WorkspaceSession.save(include="visible")` embeds only
+initially visible resources; `include="selected"` embeds every catalogued
+resource so the full chosen tree remains available offline. Both use the same
+zero-network, self-contained HTML export. `refresh()` is the explicit boundary
+for producer/tree mutation and clears the resource snapshot.
+
+The workspace never traverses a project or interprets domain roles. Generic
+objects use the existing `view2d_payload` / `view3d_payload` ducks. Sections,
+volume, charts, and other producer-computed bundles enter through `payload=` or
+the provider resource duck.
 
 ## The two modes — capability split
 

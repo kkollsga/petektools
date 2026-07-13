@@ -27,6 +27,7 @@ from ._correlation import CorrelationTemplate, CorrelationTrack
 from ._view2d import view2d, view2d_payload
 from ._view3d import view3d, view3d_payload
 from ._well_style import WellLabelStyle, WellMarkerStyle, WellPathStyle, WellStyle
+from ._workspace import WorkspaceGroup, WorkspaceItem, WorkspaceSession, view
 
 #: Directory of the packaged viewer assets (index.html + the three JS files).
 ASSETS = Path(__file__).parent / "assets"
@@ -45,5 +46,9 @@ __all__ = [
     "WellMarkerStyle",
     "WellLabelStyle",
     "WellStyle",
+    "WorkspaceGroup",
+    "WorkspaceItem",
+    "WorkspaceSession",
+    "view",
     "ASSETS",
 ]

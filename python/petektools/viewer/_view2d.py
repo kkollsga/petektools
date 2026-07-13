@@ -193,6 +193,7 @@ def view2d_payload(
     fills: list[dict[str, Any]] = []
     contour_sets: list[dict[str, Any]] = []
     layers: list[dict[str, Any]] = []
+    item_bindings: list[dict[str, Any]] = []
     frame = None
     summary: dict[str, Any] = {}
 
@@ -200,9 +201,37 @@ def view2d_payload(
     item_cmap: str | None = None  # first per-object colormap (global fallback)
 
     for scene_entry in scene_items:
-        item, cspec, fspec, name, c_explicit, f_explicit = _norm_item(
+        item, cspec, fspec, name, item_id, c_explicit, f_explicit = _norm_item(
             scene_entry, color_spec, fill_spec
         )
+        starts = {
+            "points": len(points),
+            "grid_lines": len(grid_lines),
+            "grid_lines_lod": len(grid_lines_lod),
+            "outline": len(outlines),
+            "fills": len(fills),
+            "contours": len(contour_sets),
+            "layers": len(layers),
+        }
+
+        def finish_binding() -> None:
+            if item_id is None:
+                return
+            binding: dict[str, Any] = {"id": item_id}
+            for key, source, values in (
+                ("point_range", "points", points),
+                ("grid_line_range", "grid_lines", grid_lines),
+                ("grid_line_lod_range", "grid_lines_lod", grid_lines_lod),
+                ("outline_range", "outline", outlines),
+                ("fill_range", "fills", fills),
+                ("contour_range", "contours", contour_sets),
+                ("layer_range", "layers", layers),
+            ):
+                start = starts[source]
+                count = len(values) - start
+                if count:
+                    binding[key] = [start, count]
+            item_bindings.append(binding)
         role = _render_role(item)
         contributed = False
         auto_attrs = (
@@ -235,6 +264,8 @@ def view2d_payload(
                     if canonical_mesh is None:
                         canonical_mesh = (fill_entry["nodes"], fill_entry["triangles"])
                 fill_entry["display_name"] = name
+                if item_id is not None:
+                    fill_entry["item_id"] = item_id
                 if fspec["range"] is not None:
                     fill_entry["range"] = list(fspec["range"])
                 if f_explicit and fspec["cmap"]:
@@ -273,8 +304,11 @@ def view2d_payload(
         if contours is not None:
             iso = _iso_contours(item, contours, cspec["attr"], lod_cfg)
             if iso is not None:
+                if item_id is not None:
+                    for contour in iso:
+                        contour["item_id"] = item_id
                 contour_sets.extend(iso)
-                layers.append({"kind": "contours", "name": name})
+                layers.append({"kind": "contours", "name": name, **({"item_id": item_id} if item_id is not None else {})})
                 contributed = True
 
         if role == "geometry" and not (_is_geometry(item) or _is_trimesh(item)):
@@ -303,7 +337,8 @@ def view2d_payload(
                 summary["rotation_deg"] = float(rot)
             if not edge_rings:
                 frame = _frame_from_geometry(item)
-            layers.append({"kind": "lines", "name": name})
+            layers.append({"kind": "lines", "name": name, **({"item_id": item_id} if item_id is not None else {})})
+            finish_binding()
             continue
 
         if _is_trimesh(item) and role != "points":
@@ -323,7 +358,8 @@ def view2d_payload(
             summary["triangles"] = n_triangles
             if edge_stride > 1:
                 summary["mesh_edge_stride"] = edge_stride
-            layers.append({"kind": "lines", "name": name})
+            layers.append({"kind": "lines", "name": name, **({"item_id": item_id} if item_id is not None else {})})
+            finish_binding()
             continue
 
         # Stable point metadata is authoritative even if a producer also
@@ -331,6 +367,7 @@ def view2d_payload(
         rings = _rings(item) if role != "points" else []
         if rings:
             outlines.extend(rings)
+            finish_binding()
             continue
 
         pts = _points(item)
@@ -346,6 +383,8 @@ def view2d_payload(
             # JS reads these per-layer fields first; the global
             # map.point_color/colormap stay emitted as the fallback.
             entry = {"kind": "points", "name": name, "start": len(points), "n": len(pts)}
+            if item_id is not None:
+                entry["item_id"] = item_id
             zs = [p[2] for p in pts if len(p) > 2 and math.isfinite(p[2])]
             if cspec["enabled"]:
                 if zs:
@@ -359,9 +398,11 @@ def view2d_payload(
                 item_cmap = item_cmap or cspec["cmap"]
             points.extend(pts)
             layers.append(entry)
+            finish_binding()
             continue
 
         if contributed:
+            finish_binding()
             continue  # a fill/contour-only item carries no further geometry
 
         # STRUCTURE fallback for value-bearing items passed bare (e.g. a
@@ -382,7 +423,8 @@ def view2d_payload(
             summary["grid"] = f"{int(getattr(geom, 'ncol'))} x {int(getattr(geom, 'nrow'))}"
             if not edge_rings:
                 frame = _frame_from_geometry(geom)
-            layers.append({"kind": "lines", "name": name})
+            layers.append({"kind": "lines", "name": name, **({"item_id": item_id} if item_id is not None else {})})
+            finish_binding()
             continue
         layer = _primary_value_layer(item)
         if layer is not None:
@@ -400,7 +442,8 @@ def view2d_payload(
             summary["triangles"] = n_triangles
             if edge_stride > 1:
                 summary["mesh_edge_stride"] = edge_stride
-            layers.append({"kind": "lines", "name": name})
+            layers.append({"kind": "lines", "name": name, **({"item_id": item_id} if item_id is not None else {})})
+            finish_binding()
             continue
 
         raise TypeError(
@@ -482,6 +525,8 @@ def view2d_payload(
     # shape (no empty `grid_lines_lod` key).
     if grid_lines_lod:
         payload["map"]["grid_lines_lod"] = grid_lines_lod
+    if item_bindings:
+        payload["map"]["items"] = item_bindings
     # Additive: encode the bulk arrays as content-addressed typed blocks (the v3
     # wire format) unless asked for plain JSON or the payload is below threshold.
     # A JSON-shaped payload still renders (the viewer decodes both).
@@ -614,14 +659,14 @@ def _item_name(item: Any) -> str | None:
 # bare object or ``{"object": obj, "color": bool|spec, "fill": bool|spec,
 # "name": display-name}``. Per-object settings take PRECEDENCE; the call-level
 # ``color=``/``fill=`` parameters stay the defaults for bare items.
-_ITEM_KEYS = {"object", "color", "fill", "name"}
+_ITEM_KEYS = {"object", "color", "fill", "name", "id"}
 
 
 def _norm_item(
     entry: Any,
     color_spec: dict[str, Any],
     fill_spec: dict[str, Any],
-) -> tuple[Any, dict[str, Any], dict[str, Any], str | None, bool, bool]:
+) -> tuple[Any, dict[str, Any], dict[str, Any], str | None, str | None, bool, bool]:
     """Normalize a scene entry (bare object or the dict item form).
 
     Returns ``(obj, color_spec, fill_spec, name, color_explicit,
@@ -649,8 +694,10 @@ def _norm_item(
         fs = _parse_spec(entry["fill"], "fill") if f_explicit else fill_spec
         nm = entry.get("name")
         name = str(nm) if nm is not None else _item_name(obj)
-        return obj, cs, fs, name, c_explicit, f_explicit
-    return entry, color_spec, fill_spec, _item_name(entry), False, False
+        raw_id = entry.get("id")
+        item_id = str(raw_id) if raw_id is not None else None
+        return obj, cs, fs, name, item_id, c_explicit, f_explicit
+    return entry, color_spec, fill_spec, _item_name(entry), None, False, False
 
 
 def _scene_items(items: Any) -> list[Any]:

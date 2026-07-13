@@ -32,6 +32,7 @@ SectionProvider = Callable[..., Union[str, bytes, Any]]
 #: threshold "true interior" toggle calls so the server re-cuts the exterior
 #: shell at a cutoff (exposing revealed interior faces). peteksim implements it.
 VolumeProvider = Callable[..., Union[str, bytes, Any]]
+WorkspaceProvider = Callable[..., Union[str, bytes, Any]]
 
 Payload = Union[str, dict]
 
@@ -47,6 +48,7 @@ def build_server(
     port: int = 0,
     section_provider: Optional[SectionProvider] = None,
     volume_provider: Optional[VolumeProvider] = None,
+    workspace_provider: Optional[WorkspaceProvider] = None,
     model_bin: Optional[bytes] = None,
 ):
     """Build (but do **not** start) the local viewer server.
@@ -85,6 +87,9 @@ def build_server(
                 return
             if path == "/volume":
                 self._volume()
+                return
+            if path == "/workspace-resource":
+                self._workspace_resource()
                 return
             super().do_GET()
 
@@ -148,10 +153,65 @@ def build_server(
             except Exception as exc:
                 self._send(400, str(exc).encode("utf-8"), "text/plain")
 
+        def _workspace_resource(self):
+            if workspace_provider is None:
+                self._send(404, b"no workspace resource provider", "text/plain")
+                return
+            q = parse_qs(urlparse(self.path).query)
+            item = q.get("item", [None])[0]
+            view = q.get("view", [None])[0]
+            lane = q.get("lane", [None])[0]
+            if not item or not view:
+                self._send(400, b"workspace resource requires item and view", "text/plain")
+                return
+            try:
+                body = workspace_provider(item_id=item, view=view, lane=lane)
+                if isinstance(body, bytes):
+                    data = body
+                elif isinstance(body, str):
+                    data = body.encode("utf-8")
+                else:
+                    data = json.dumps(body).encode("utf-8")
+                self._send(200, data, "application/json")
+            except (KeyError, ValueError) as exc:
+                self._send(404, str(exc).encode("utf-8"), "text/plain")
+            except Exception as exc:
+                self._send(500, str(exc).encode("utf-8"), "text/plain")
+
     httpd = socketserver.ThreadingTCPServer(("127.0.0.1", port), _Handler)
     httpd.daemon_threads = True
     url = f"http://127.0.0.1:{httpd.server_address[1]}"
     httpd._petek_tmp = tmp  # remembered for cleanup
+    return httpd, url
+
+
+def serve_workspace(
+    session,
+    *,
+    port: int = 0,
+    block: bool = False,
+    open_browser: bool = True,
+):
+    """Serve a :class:`WorkspaceSession`; return ``(httpd, url)``."""
+    httpd, url = build_server(
+        session.manifest(), port=port, workspace_provider=session.resource
+    )
+    if block:
+        print(f"petek workspace at {url}  (Ctrl-C to stop)", flush=True)
+        if open_browser:
+            webbrowser.open(url)
+        try:
+            httpd.serve_forever()
+        except KeyboardInterrupt:
+            print("\nstopped")
+        finally:
+            httpd.server_close()
+            shutil.rmtree(httpd._petek_tmp, ignore_errors=True)
+        return httpd, url
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    print(f"petek workspace at {url}  (background; pass block=True to hold)", flush=True)
+    if open_browser:
+        webbrowser.open(url)
     return httpd, url
 
 

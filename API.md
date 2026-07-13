@@ -864,6 +864,27 @@ onto the schema and hands it here (home ruling `decision_viewer_home_petektools`
 ```python
 from petektools import viewer
 
+# Generic lazy project workspace. Mapping keys form ordered groups/path IDs;
+# explicit list leaves require stable IDs. Construction catalogs only: resource
+# ducks are called once, on first enable. The returned session is inspectable.
+session = viewer.view({
+    "Interpretation": {
+        "Top Agat": {"object": top_agat, "visible": True},
+        "Base Agat": {"object": base_agat, "visible": False},
+    }
+}, title="Agat workspace", open_browser=False)
+session.tree(); session.diagnostics; session.url
+session.refresh()
+session.save("visible.html")
+session.save("selected.html", include="selected")
+
+# A producer may instead expose:
+#   view_catalog() -> ordered mapping/list of explicit group/item records
+#   view_resource(*, item_id, view, lane=None) -> typed JSON render mini-bundle
+viewer.view(tree_or_source, *, title="Project workspace", visible=None,
+            tab="auto", payload=None, save=None, serve=True, port=0, block=False,
+            open_browser=True) -> viewer.WorkspaceSession
+
 # Generic 2-D adapter. Stable kind metadata separates point sets, geometry-only
 # shells, and value surfaces. Omitted fill auto-enumerates primary + named lanes
 # only for surface roles offering callable attr_names() and value_layer().

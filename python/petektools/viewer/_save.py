@@ -83,3 +83,31 @@ def save_view(
     # viewer.js is assembled from its ordered concat parts (see `_bundle`).
     html = html.replace('<script src="./viewer.js"></script>', inline_code(viewer_js()))
     Path(path).write_text(html)
+
+
+def save_workspace(session, path: Union[str, Path], *, include: str = "visible") -> None:
+    """Freeze a workspace into the existing zero-network single-file export."""
+    if include not in ("visible", "selected"):
+        raise ValueError("workspace save include= must be 'visible' or 'selected'")
+    payload = session.manifest()
+    workspace = payload["workspace"]
+    workspace["mode"] = "static"
+    resources: dict[str, dict[str, Any]] = {}
+    embedded: list[str] = []
+    for item in session._items.values():
+        for view, _ in item.views:
+            if include == "visible" and not item.visible_in(view):
+                continue
+            resources.setdefault(item.id, {})[view] = session.resource(item.id, view)
+            embedded.append(f"{item.id}::{view}")
+    workspace["resources"] = resources
+    workspace["snapshot"] = {
+        "include": include,
+        "embedded": embedded,
+        "message": (
+            "This static snapshot embeds initially visible resources only."
+            if include == "visible"
+            else "This static snapshot embeds every selected workspace resource."
+        ),
+    }
+    save_view(payload, path)

@@ -66,6 +66,11 @@ attribute lanes over identical topology share one normalized full/LOD mesh in
 memory and one content-addressed geometry block on the wire. The viewer decodes
 only the active lane's values initially and resolves inactive value blocks on
 first selection; the complete table remains embedded in offline saved views.
+Its optional project-workspace shell is equally generic: an insertion-ordered
+tree, or a producer's `view_catalog()` / `view_resource()` duck, supplies stable
+render-item IDs and typed resources. petekTools never traverses a project,
+interprets an asset role, or computes a section; managed libraries own those
+catalog and resource adapters.
 cross-sections come from a consumer-supplied `section_provider` callback (live)
 or are pre-computed into the
 payload (file). petekTools defines the **generic render schema** (its contract,
