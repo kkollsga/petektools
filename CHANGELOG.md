@@ -6,6 +6,8 @@ All notable changes to petekTools are recorded here. Format follows
 
 ## [Unreleased]
 
+## [0.2.13] - 2026-07-13
+
 ### Added
 - **Bare `view2d(surface)` attribute switching.** When `fill` is omitted, an
   object exposing callable `attr_names()` + `value_layer()` now contributes its

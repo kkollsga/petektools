@@ -212,7 +212,7 @@ def build_correlation_demo_payload() -> Dict[str, Any]:
     bundle = build_well_log_bundle()
 
     # Map wells at the bundle's world positions, each carrying its tie residuals so
-    # the map draws the tie-quality glyph + per-horizon residuals on hover.
+    # the map draws the tie-quality glyph + lists per-horizon residuals in the panel.
     wells = [
         {"id": w["id"], "display_name": w["display_name"], "x": w["x"], "y": w["y"],
          "trajectory": [[w["x"], w["y"], 1820.0], [w["x"], w["y"], 1950.0]],

@@ -229,9 +229,10 @@ petektools.view2d([surface, well_points], color="inferno_-2700_-2500",
 Colour can also be set **per object** (view2d and view3d): pass a dict item
 `{"object": obj, "color": ..., "fill": ..., "name": ...}` anywhere a bare
 object is accepted. Per-object settings win over the call-level
-`color=`/`fill=` (which stay the defaults for bare items), `name` overrides
-the legend display name, and each layer then carries — and the legend shows —
-its own colormap ramp and clamp range:
+`color=`/`fill=` (including omitted-fill attribute discovery for a dict item
+without its own `fill`), `name` overrides the legend display name, and each
+layer then carries — and the legend shows — its own colormap ramp and clamp
+range:
 
 ```python
 petektools.view2d([

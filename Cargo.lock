@@ -450,9 +450,9 @@ dependencies = [
 
 [[package]]
 name = "num-bigint"
-version = "0.4.7"
+version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c863e9ab5e7bf9c99ba75e1050f1e4d624ae87ed3532d6238ffbdc7b585dbbe6"
+checksum = "a5e44f723f1133c9deac646763579fdb3ac745e418f2a7af9cd0c431da1f20b9"
 dependencies = [
  "num-integer",
  "num-traits",
@@ -517,7 +517,7 @@ checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
 name = "petektools"
-version = "0.2.12"
+version = "0.2.13"
 dependencies = [
  "approx",
  "bytemuck",
@@ -536,7 +536,7 @@ dependencies = [
 
 [[package]]
 name = "petektools-py"
-version = "0.2.12"
+version = "0.2.13"
 dependencies = [
  "bytemuck",
  "ndarray",
