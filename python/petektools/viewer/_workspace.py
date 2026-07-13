@@ -48,6 +48,7 @@ _SCENE3D_OPTIONS = frozenset(
 _ITEM_KEYS = frozenset({"object", "id", "label", "visible", "views", "role"})
 _PROVIDER_ITEM_KEYS = _ITEM_KEYS | frozenset({"disabled", "reason", "diagnostic"})
 _LANE_KEYS = frozenset({"id", "label"})
+_TIER_KEYS = frozenset({"id", "label"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +84,8 @@ class WorkspaceItem:
     role: str | None = None
     lanes: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = ()
     active_lanes: tuple[tuple[str, str], ...] = ()
+    details: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = ()
+    active_details: tuple[tuple[str, str], ...] = ()
     disabled: bool = False
     reason: str | None = None
     diagnostic: Any = None
@@ -102,6 +105,12 @@ class WorkspaceItem:
     def active_lane(self, view: str) -> str | None:
         return dict(self.active_lanes).get(view)
 
+    def details_for(self, view: str) -> tuple[tuple[str, str], ...]:
+        return dict(self.details).get(view, ())
+
+    def active_detail(self, view: str) -> str | None:
+        return dict(self.active_details).get(view)
+
     def to_dict(self) -> dict[str, Any]:
         resources = {}
         for name, _ in self.views:
@@ -117,6 +126,13 @@ class WorkspaceItem:
                     {"id": lane_id, "label": label} for lane_id, label in lanes
                 ]
                 spec["active_lane"] = self.active_lane(name)
+            details = self.details_for(name)
+            if details:
+                spec["tiers"] = [
+                    {"id": detail_id, "label": label}
+                    for detail_id, label in details
+                ]
+                spec["active_detail"] = self.active_detail(name)
             resources[name] = spec
         value = {
             "id": self.id,
@@ -223,10 +239,40 @@ def _normalise_lanes(
     return tuple(out)
 
 
+def _normalise_tiers(value: Any, *, view: str) -> tuple[tuple[str, str], ...]:
+    if view != "scene3d":
+        raise ValueError("workspace detail tiers are currently available only for scene3d")
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        raise TypeError("workspace scene3d tiers must be an ordered list")
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for index, tier in enumerate(value):
+        if not isinstance(tier, Mapping):
+            raise TypeError(f"workspace scene3d tier {index} must be a mapping")
+        unknown = set(tier) - _TIER_KEYS
+        if unknown:
+            raise ValueError(f"unknown workspace tier key(s) {sorted(unknown)}")
+        tier_id = tier.get("id")
+        label = tier.get("label")
+        if not isinstance(tier_id, str) or not tier_id or tier_id != tier_id.strip():
+            raise ValueError("workspace tier IDs must be non-empty, trimmed strings")
+        if tier_id in seen:
+            raise ValueError(f"duplicate workspace scene3d tier ID {tier_id!r}")
+        if not isinstance(label, str) or not label or label != label.strip():
+            raise ValueError("workspace tier labels must be non-empty, trimmed strings")
+        seen.add(tier_id)
+        out.append((tier_id, label))
+    if [tier_id for tier_id, _ in out] != ["preview", "full"]:
+        raise ValueError("workspace scene3d tiers must be ordered preview then full")
+    return tuple(out)
+
+
 def _normalise_views(
     value: Any, *, provider: bool
 ) -> tuple[
     tuple[tuple[str, tuple[tuple[str, Any], ...]], ...],
+    tuple[tuple[str, tuple[tuple[str, str], ...]], ...],
+    tuple[tuple[str, str], ...],
     tuple[tuple[str, tuple[tuple[str, str], ...]], ...],
     tuple[tuple[str, str], ...],
 ]:
@@ -244,6 +290,8 @@ def _normalise_views(
     out: list[tuple[str, tuple[tuple[str, Any], ...]]] = []
     lanes_out: list[tuple[str, tuple[tuple[str, str], ...]]] = []
     active_out: list[tuple[str, str]] = []
+    details_out: list[tuple[str, tuple[tuple[str, str], ...]]] = []
+    active_details_out: list[tuple[str, str]] = []
     for raw_name, raw_options in names.items():
         name = str(raw_name)
         if name not in _VIEW_NAMES:
@@ -281,6 +329,27 @@ def _normalise_views(
                 )
             lanes_out.append((name, lanes))
             active_out.append((name, active_lane))
+        raw_tiers = options.pop("tiers", None)
+        active_detail = options.pop("active_detail", None)
+        if (raw_tiers is not None or active_detail is not None) and not provider:
+            raise ValueError("workspace detail tiers are available only on provider catalog items")
+        details = _normalise_tiers(raw_tiers, view=name) if raw_tiers is not None else ()
+        if active_detail is not None and not details:
+            raise ValueError(f"workspace {name} active_detail requires declared tiers")
+        if details:
+            detail_ids = {detail_id for detail_id, _ in details}
+            if active_detail is None:
+                active_detail = details[0][0]
+            if not isinstance(active_detail, str) or active_detail not in detail_ids:
+                raise ValueError(
+                    f"workspace {name} active_detail {active_detail!r} is not a declared tier"
+                )
+            if active_detail != "preview":
+                raise ValueError(
+                    f"workspace {name} active_detail must be 'preview' for progressive tiers"
+                )
+            details_out.append((name, details))
+            active_details_out.append((name, active_detail))
         allowed = _MAP_OPTIONS if name == "map" else _SCENE3D_OPTIONS if name == "scene3d" else frozenset()
         unknown = set(options) - allowed
         if unknown and not provider:
@@ -291,7 +360,13 @@ def _normalise_views(
         out.append((name, tuple(options.items())))
     if not out and not provider:
         raise ValueError("workspace item must enable at least one view")
-    return tuple(out), tuple(lanes_out), tuple(active_out)
+    return (
+        tuple(out),
+        tuple(lanes_out),
+        tuple(active_out),
+        tuple(details_out),
+        tuple(active_details_out),
+    )
 
 
 def _normalise_visible(value: Any, views: tuple[tuple[str, Any], ...]) -> tuple[tuple[str, bool], ...]:
@@ -435,7 +510,7 @@ class _Normalizer:
         if not label:
             raise ValueError("workspace leaves require a non-empty label")
         item_id = self._claim(str(explicit_id) if explicit_id is not None else _stable_path("item", path))
-        views, lanes, active_lanes = _normalise_views(
+        views, lanes, active_lanes, details, active_details = _normalise_views(
             raw_views, provider=self.provider
         )
         disabled = not views
@@ -467,6 +542,8 @@ class _Normalizer:
             role=str(role) if role is not None else None,
             lanes=lanes,
             active_lanes=active_lanes,
+            details=details,
+            active_details=active_details,
             disabled=disabled,
             reason=reason,
             diagnostic=diagnostic,
@@ -528,6 +605,8 @@ def _apply_visible_override(
             role=node.role,
             lanes=node.lanes,
             active_lanes=node.active_lanes,
+            details=node.details,
+            active_details=node.active_details,
             disabled=node.disabled,
             reason=node.reason,
             diagnostic=copy.deepcopy(node.diagnostic),
@@ -561,8 +640,10 @@ class WorkspaceSession:
         self._tab = tab
         self._base_payload = _payload_object(payload, self._title)
         self._lock = threading.RLock()
-        self._cache: dict[tuple[str, str, str | None], dict[str, Any]] = {}
-        self._inflight: dict[tuple[str, str, str | None], _ResourceFlight] = {}
+        self._cache: dict[tuple[str, str, str | None, str | None], dict[str, Any]] = {}
+        self._inflight: dict[
+            tuple[str, str, str | None, str | None], _ResourceFlight
+        ] = {}
         self._generation = 0
         self._diagnostics: list[dict[str, Any]] = []
         self._url: str | None = None
@@ -629,9 +710,17 @@ class WorkspaceSession:
         return self
 
     def _materializer(
-        self, item: WorkspaceItem, view: str, lane: str | None
+        self,
+        item: WorkspaceItem,
+        view: str,
+        lane: str | None,
+        detail: str | None,
     ) -> Callable[[], Any]:
         if self._provider:
+            if detail is not None:
+                return lambda: self._source.view_resource(
+                    item_id=item.id, view=view, lane=lane, detail=detail
+                )
             return lambda: self._source.view_resource(
                 item_id=item.id, view=view, lane=lane
             )
@@ -660,7 +749,13 @@ class WorkspaceSession:
             "supply that typed bundle through payload= or a view provider"
         )
 
-    def resource(self, item_id: str, view: str, lane: str | None = None) -> dict[str, Any]:
+    def resource(
+        self,
+        item_id: str,
+        view: str,
+        lane: str | None = None,
+        detail: str | None = None,
+    ) -> dict[str, Any]:
         """Materialize and cache one typed leaf/view resource."""
         with self._lock:
             if item_id not in self._items:
@@ -676,7 +771,19 @@ class WorkspaceSession:
                     raise KeyError(
                         f"workspace item {item_id!r} view {view!r} has no lane {lane!r}"
                     )
-            key = (item_id, view, lane)
+            details = item.details_for(view)
+            if details:
+                detail = item.active_detail(view) if detail is None else detail
+                declared_details = {detail_id for detail_id, _ in details}
+                if detail not in declared_details:
+                    raise KeyError(
+                        f"workspace item {item_id!r} view {view!r} has no detail {detail!r}"
+                    )
+            elif detail is not None:
+                raise KeyError(
+                    f"workspace item {item_id!r} view {view!r} has no detail tiers"
+                )
+            key = (item_id, view, lane, detail)
             cached = self._cache.get(key)
             if cached is not None:
                 return copy.deepcopy(cached)
@@ -694,7 +801,7 @@ class WorkspaceSession:
             return copy.deepcopy(flight.result)
 
         try:
-            value = self._materializer(item, view, lane)()
+            value = self._materializer(item, view, lane, detail)()
             if isinstance(value, str):
                 value = json.loads(value)
             if not isinstance(value, Mapping):
@@ -707,6 +814,8 @@ class WorkspaceSession:
                 "lane": lane,
                 "payload": copy.deepcopy(dict(value)),
             }
+            if detail is not None:
+                result["detail"] = detail
         except Exception as exc:
             with self._lock:
                 if self._inflight.get(key) is flight:
@@ -717,6 +826,7 @@ class WorkspaceSession:
                         "item_id": item_id,
                         "view": view,
                         "lane": lane,
+                        "detail": detail,
                         "error": type(exc).__name__,
                         "message": str(exc),
                     }

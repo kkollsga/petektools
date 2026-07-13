@@ -99,19 +99,35 @@ def save_workspace(session, path: Union[str, Path], *, include: str = "visible")
             if include == "visible" and not item.visible_in(view):
                 continue
             lanes = item.lanes_for(view)
-            if lanes:
+            details = item.details_for(view)
+            if lanes or details:
                 lane_ids = (
                     [item.active_lane(view)]
                     if include == "visible"
                     else [lane_id for lane_id, _ in lanes]
-                )
+                ) if lanes else [None]
+                # A static file has no progressive network phase: freeze the
+                # advertised complete tier directly and open on it offline.
+                detail_ids = (
+                    ["full"] if any(detail_id == "full" for detail_id, _ in details)
+                    else [item.active_detail(view)]
+                ) if details else [None]
                 packed = [
-                    session.resource(item.id, view, lane)
+                    session.resource(item.id, view, lane, detail)
                     for lane in lane_ids
-                    if lane is not None
+                    for detail in detail_ids
+                    if (not lanes or lane is not None) and (not details or detail is not None)
                 ]
                 resources.setdefault(item.id, {})[view] = packed
-                embedded.extend(f"{item.id}::{view}::{lane}" for lane in lane_ids)
+                embedded.extend(
+                    "::".join(
+                        part
+                        for part in (item.id, view, lane, detail)
+                        if part is not None
+                    )
+                    for lane in lane_ids
+                    for detail in detail_ids
+                )
             else:
                 resources.setdefault(item.id, {})[view] = session.resource(item.id, view)
                 embedded.append(f"{item.id}::{view}")

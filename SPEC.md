@@ -71,6 +71,11 @@ typed values/mask and never expands nodes or triangles. The renderer maps its
 index raster through `origin + i*step_i + j*step_j`, uses the inverse affine for
 inspection, and treats a false mask or NaN as a hole. Existing ScalarLayer and
 TriFill payloads remain compatibility paths.
+Affine 3-D surfaces likewise use typed `regular_surface` elevation/mask/value
+blocks. A provider may advertise ordered preview/full scene tiers; preview is
+rendered first, full builds transferable GPU-ready arrays in the existing decode
+worker, and the renderer swaps it without clearing preview state, moving the
+camera, or re-entering global Loading. Static export embeds full directly.
 Its optional project-workspace shell is equally generic: an insertion-ordered
 tree, or a producer's `view_catalog()` / `view_resource()` duck, supplies stable
 render-item IDs and typed resources. petekTools never traverses a project,

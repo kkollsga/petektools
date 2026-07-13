@@ -894,6 +894,8 @@ session.save("selected.html", include="selected")
 # A disabled provider leaf is retained with views={}, optional reason and
 # JSON-shaped diagnostic metadata, and no resource link.
 #   view_resource(*, item_id, view, lane=None) -> typed JSON render mini-bundle
+# Progressive 3-D providers may declare ordered preview/full `tiers` in the
+# scene3d view spec; their resource duck additionally receives detail=.
 viewer.view(tree_or_source, *, title="Project workspace", visible=None,
             tab="auto", payload=None, save=None, serve=True, port=0, block=False,
             open_browser=True) -> viewer.WorkspaceSession
@@ -927,6 +929,8 @@ viewer.view2d_payload(items, *, title="2D view", color=True, fill=None,
 
 viewer.view3d(items, *, wells=None, well_labels=False, well_style=None, ...) -> str | dict
 viewer.view3d_payload(items, *, wells=None, well_labels=False, well_style=None, ...) -> dict
+# Exact affine structured surfaces emit compact typed `regular_surface` blocks;
+# expanded Mesh3D nodes/triangles remain the non-affine compatibility path.
 
 # Shared frozen, JSON-serializable values; nested styles progressively disclose
 # advanced trajectory/marker/label controls.

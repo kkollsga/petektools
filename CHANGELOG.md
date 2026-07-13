@@ -7,6 +7,12 @@ All notable changes to petekTools are recorded here. Format follows
 ## [Unreleased]
 
 ### Added
+- **Progressive compact 3-D surfaces.** Workspace scene resources may advertise
+  preview/full detail tiers. Preview becomes usable first; full affine-surface
+  elevation/mask/value blocks build transferable render buffers in the shared
+  worker and swap without camera movement or a global Loading reset. Static
+  exports embed full detail directly, while no-tier and legacy Mesh3D resources
+  remain unchanged.
 - **Compact affine Map grids.** Exact structured surface layers now travel as
   dimensions, origin, affine I/J step vectors, and typed row-major values/mask,
   with no expanded mesh nodes or triangles. Direct Canvas rasterization and

@@ -63,6 +63,11 @@ of compatible view names and `visible` is an independent `view → bool` initial
 state. A normal resource spec is `{href, deferred}`. A provider may add ordered
 interactive attributes as `{href, deferred, lanes: [{id, label}, ...],
 active_lane}`; lane IDs are stable producer keys and labels are display-only.
+`scene3d` may additionally advertise progressive detail as `tiers:[{id:
+"preview",label:"Preview"},{id:"full",label:"Full detail"}]` plus
+`active_detail:"preview"`. Live resource identity then includes
+`detail=preview|full`; resource envelopes echo `detail`. No-tier records and
+providers retain their original call/envelope shape.
 IDs are globally unique immutable identity keys.
 
 A provider may preserve an unavailable/unknown catalog leaf with `views: []`,
@@ -80,7 +85,7 @@ contains every declared lane so its selector remains fully offline. `snapshot`
 records the included resource keys.
 
 A resource response is `{schema_version: 1, kind: "workspace_resource",
-item_id, view, lane?, payload}`. `payload` is an ordinary typed render envelope;
+item_id, view, lane?, detail?, payload}`. `payload` is an ordinary typed render envelope;
 bulk blocks keep their existing content-addressed representation and global
 browser digest cache. Resource failure is local to that item/view/lane and
 retryable. Switching back to a cached lane performs no fetch or producer call.
@@ -474,6 +479,16 @@ A triangle touching a `null`-z node is **skipped** (a hole, never guessed).
 `name` is the attribute identity (e.g. `"z"`); `display_name` the duck-typed
 source-object name (e.g. `"Top Dome"`).
 
+**CompactRegularSurface3D (additive Mesh3D alternative):** `{name,
+display_name?, range, colormap?, regular_surface:{dimensions:[ncol,nrow],
+origin:[x,y], step_i:[dx,dy], step_j:[dx,dy], elevations:Block, mask:Block,
+values:Block|null, elevation_range:[min,max], triangle_count}}`. Elevations and
+optional colour values are row-major `f32`; mask is row-major `u8`. There are no
+expanded nodes or triangles. The shared inline worker decodes these blocks and
+constructs transferable position/index/colour buffers. `values:null` is the
+neutral bare-surface form. Rotation, flipped J, and NaN holes follow the same
+affine/mask rules as `AffineGridFill`.
+
 **Bare-item classification — solid layers are for value surfaces only.** All
 three value-surface roles (`surface`, `structured_mesh`, `tri_surface`) emit a
 SOLID `Mesh3D` bare: their primary value layer becomes a NEUTRAL elevation mesh
@@ -510,7 +525,10 @@ a refusal, crash, or silent blank. A malformed bundle surfaces a banner + an
 use `runtime` and `webgl`. The build outcome is exposed for tests as
 `window.__PETEK_SCENE3D_STATUS` (`{state: "ok"|"loading"|"empty"|"malformed"|"runtime"|"webgl"|"error", points?,
 triangles, meshes, wells, lattices, latticeZ, buildMs}` — `latticeZ` is the
-per-lattice rendered flat level, read back from the built geometry).
+per-lattice rendered flat level, read back from the built geometry). Compact
+surfaces also report `detail`, `refining`, `workerBuildMs`, and `maxAttachMs`.
+Full-detail refinement keeps the preview status/camera live while worker buffers
+build, then swaps the regular mesh atomically on an animation frame.
 z-exaggeration is a display-only group scale; the theme flip re-reads the
 line/background tokens while identities keep their slots.
 

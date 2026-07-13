@@ -1102,6 +1102,39 @@ def test_view2d_affine_regular_grid_via_surface_geometry_sets_frame():
     assert payload["map"]["frame"]["origin_x"] > 400_000
 
 
+def test_view3d_affine_regular_surface_is_compact_and_typed(tmp_path):
+    surface = _RotatedFlippedRegularSurface()
+    payload = viewer.view3d_payload(surface, fill=True)
+    mesh = payload["scene3d"]["meshes"][0]
+    assert "nodes" not in mesh and "triangles" not in mesh
+    regular = mesh["regular_surface"]
+    assert regular["dimensions"] == [3, 2]
+    assert regular["origin"] == surface.origin
+    assert regular["step_i"] == pytest.approx(surface.step_i)
+    assert regular["step_j"] == pytest.approx(surface.step_j)
+    elevations = _decode_block(regular["elevations"])
+    values = _decode_block(regular["values"])
+    mask = _decode_block(regular["mask"])
+    assert elevations[0] == values[0] == 10.0
+    assert elevations[1] != elevations[1] and values[1] != values[1]
+    assert elevations[2:] == values[2:] == (30.0, 40.0, 50.0, 60.0)
+    assert mask == (1, 0, 1, 1, 1, 1)
+    assert payload["summary"]["triangles"] == 0
+
+    out = tmp_path / "regular-surface-3d.html"
+    viewer.save_view(payload, out)
+    html = out.read_text()
+    match = re.search(r"window\.PETEK_VIEWER_PAYLOAD=(.*?);window\.PETEK_VIEWER_MODE", html)
+    frozen = json.loads(match.group(1))["scene3d"]["meshes"][0]
+    assert "regular_surface" in frozen and "nodes" not in frozen and "triangles" not in frozen
+
+
+def test_view3d_affine_regular_surface_bare_is_neutral():
+    mesh = viewer.view3d_payload(_RotatedFlippedRegularSurface())["scene3d"]["meshes"][0]
+    assert mesh["values"] is None
+    assert mesh["regular_surface"]["values"] is None
+
+
 @pytest.mark.parametrize(
     "surface_type",
     [

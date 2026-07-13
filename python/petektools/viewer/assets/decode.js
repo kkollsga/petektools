@@ -79,6 +79,43 @@
     return cache;
   }
 
+  // Compact affine regular surface -> ready Three.js position/index/colour
+  // buffers. Geometry construction is deliberately DOM/Three-free so the
+  // complete O(n) pass runs in the shared worker and returns transferables.
+  function buildRegularSurface(surface, center, range, stops) {
+    var dims = surface.dimensions, nc = dims[0] | 0, nr = dims[1] | 0;
+    var elev = decodeBlockDesc(surface.elevations);
+    var mask = decodeBlockDesc(surface.mask);
+    var values = surface.values ? decodeBlockDesc(surface.values) : null;
+    var n = nc * nr, pos = new Float32Array(n * 3), col = values ? new Float32Array(n * 3) : null;
+    var ox = surface.origin[0], oy = surface.origin[1];
+    var ix = surface.step_i[0], iy = surface.step_i[1];
+    var jx = surface.step_j[0], jy = surface.step_j[1];
+    var cx = center[0], cy = center[1], cz = center[2];
+    var lo = range ? range[0] : 0, span = range ? ((range[1] - range[0]) || 1) : 1;
+    for (var j = 0; j < nr; j++) for (var i = 0; i < nc; i++) {
+      var q = j * nc + i, z = elev[q];
+      pos[q * 3] = ox + i * ix + j * jx - cx;
+      pos[q * 3 + 1] = z - cz;
+      pos[q * 3 + 2] = oy + i * iy + j * jy - cy;
+      if (col) {
+        var v = values[q], c = isFinite(v) ? ramp(stops, (v - lo) / span) : [127.5, 127.5, 127.5];
+        col[q * 3] = c[0] / 255; col[q * 3 + 1] = c[1] / 255; col[q * 3 + 2] = c[2] / 255;
+      }
+    }
+    var maxTris = Math.max(0, nc - 1) * Math.max(0, nr - 1) * 2;
+    var index = new Uint32Array(maxTris * 3), d = 0;
+    for (var jj = 0; jj < nr - 1; jj++) for (var ii = 0; ii < nc - 1; ii++) {
+      var a = jj * nc + ii, b = a + 1, c2 = a + nc, d2 = c2 + 1;
+      if (!mask[a] || !mask[b] || !mask[c2] || !mask[d2] ||
+          !isFinite(elev[a]) || !isFinite(elev[b]) || !isFinite(elev[c2]) || !isFinite(elev[d2])) continue;
+      index[d++] = a; index[d++] = b; index[d++] = c2;
+      index[d++] = b; index[d++] = d2; index[d++] = c2;
+    }
+    if (d !== index.length) index = index.slice(0, d);
+    return { pos: pos, index: index, col: col, triangleCount: d / 3 };
+  }
+
   // Envelope + optional sidecar bytes -> the five decoded typed arrays + counts.
   function decodeBlocks(env, binU8) {
     var B = env.blocks;
@@ -215,6 +252,17 @@
         bufs[dg] = dec[dg].buffer; dtypes[dg] = m.table[dg].dtype; transfer.push(dec[dg].buffer);
       }
       postMessage({ cmd: "decoded2d", requestId: m.requestId, blocks: bufs, dtypes: dtypes, decodeMs: Date.now() - t2 }, transfer);
+    } else if (m.cmd === "buildRegularSurface") {
+      var t3 = Date.now();
+      var built = buildRegularSurface(m.surface, m.center, m.range, m.stops);
+      var transfer3 = [built.pos.buffer, built.index.buffer];
+      if (built.col) transfer3.push(built.col.buffer);
+      postMessage({
+        cmd: "regularSurfaceBuilt", requestId: m.requestId,
+        pos: built.pos.buffer, index: built.index.buffer,
+        col: built.col ? built.col.buffer : null,
+        triangleCount: built.triangleCount, buildMs: Date.now() - t3,
+      }, transfer3);
     }
   }
 
@@ -229,6 +277,7 @@
       "var getBlockBytes=" + getBlockBytes.toString() + ";",
       "var decodeBlockDesc=" + decodeBlockDesc.toString() + ";",
       "var decodeBlockTable=" + decodeBlockTable.toString() + ";",
+      "var buildRegularSurface=" + buildRegularSurface.toString() + ";",
       "var decodeBlocks=" + decodeBlocks.toString() + ";",
       "var computeCenter=" + computeCenter.toString() + ";",
       "var depthRange=" + depthRange.toString() + ";",
@@ -262,6 +311,7 @@
   return {
     b64ToBytes: b64ToBytes, blockToTyped: blockToTyped, getBlockBytes: getBlockBytes,
     decodeBlockDesc: decodeBlockDesc, decodeBlockTable: decodeBlockTable,
+    buildRegularSurface: buildRegularSurface,
     decodeBlocks: decodeBlocks, computeCenter: computeCenter, depthRange: depthRange,
     expandRenderPositions: expandRenderPositions, decimateTriCell: decimateTriCell,
     ramp: ramp, bakeColors: bakeColors,

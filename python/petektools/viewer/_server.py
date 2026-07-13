@@ -161,11 +161,19 @@ def build_server(
             item = q.get("item", [None])[0]
             view = q.get("view", [None])[0]
             lane = q.get("lane", [None])[0]
+            detail = q.get("detail", [None])[0]
             if not item or not view:
                 self._send(400, b"workspace resource requires item and view", "text/plain")
                 return
             try:
-                body = workspace_provider(item_id=item, view=view, lane=lane)
+                # Preserve the original callback contract unless this request
+                # actually selects an advertised progressive detail tier.
+                if detail is None:
+                    body = workspace_provider(item_id=item, view=view, lane=lane)
+                else:
+                    body = workspace_provider(
+                        item_id=item, view=view, lane=lane, detail=detail
+                    )
                 if isinstance(body, bytes):
                     data = body
                 elif isinstance(body, str):

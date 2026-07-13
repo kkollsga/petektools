@@ -10,6 +10,7 @@
   // group scale (true values in the readout, a "z ×N" badge).
   var s3d = null;      // { renderer, scene, camera, controls, group, badge }
   var s3dBuilt = null; // built scene registry for the current payload
+  var _s3dRegularPending = {}, _s3dRegularRequestId = 0, _s3dPendingFor = null;
   var S3D_NEUTRAL = [150, 150, 150];      // non-finite / monochrome vertex colour
   var S3D_MESH_NEUTRAL = 0x8f9aa5;        // neutral (no-values) surface material
 
@@ -60,7 +61,7 @@
       applyScene3dVisibility();
       restyleScene3dLines();
       s3d.group.scale.set(1, S.s3dExag, 1);
-      if (!s3d.framed) { frameScene3d(); s3d.framed = true; }
+      if (!s3d.framed && !(s3dBuilt && s3dBuilt._regularPending)) { frameScene3d(); s3d.framed = true; }
       updateS3dBadge();
       drawScene3dLegend(sc);
       if (s3dBuilt._degraded) showScene3dDegradeBanner(s3dBuilt._degraded); else hideBanner();
@@ -132,6 +133,9 @@
   }
 
   function buildScene3d(sc) {
+    if (sc.detail === "full" && s3dBuilt && s3dBuilt._detail === "preview") {
+      refineRegularScene3d(sc); return;
+    }
     var THREE = s3d.THREE;
     var t0 = (typeof performance !== "undefined") ? performance.now() : 0;
     // drop the previous payload's objects (GPU buffers included)
@@ -159,7 +163,14 @@
       for (var q = 0; q < c.n; q++) ext(c.f[q * 3], c.f[q * 3 + 1], c.f[q * 3 + 2]);
     });
     (sc.meshes || []).forEach(function (m) {
-      m.nodes.forEach(function (nd) { ext(nd[0], nd[1], nd[2] == null ? NaN : nd[2]); });
+      if (m.regular_surface) {
+        var G = m.regular_surface, ni = G.dimensions[0] - 1, nj = G.dimensions[1] - 1;
+        [0, ni].forEach(function (i) { [0, nj].forEach(function (j) {
+          ext(G.origin[0] + i * G.step_i[0] + j * G.step_j[0],
+              G.origin[1] + i * G.step_i[1] + j * G.step_j[1], NaN);
+        }); });
+        var er = G.elevation_range || [refZ, refZ]; ext(NaN, NaN, er[0]); ext(NaN, NaN, er[1]);
+      } else m.nodes.forEach(function (nd) { ext(nd[0], nd[1], nd[2] == null ? NaN : nd[2]); });
     });
     (sc.wells || []).forEach(function (w) {
       w.trajectory.forEach(function (p) { ext(p[0], p[1], p[2] == null ? NaN : p[2]); });
@@ -188,14 +199,19 @@
     // ---- primitive budget (the volume tab's auto-degrade discipline) --------
     var budget = triBudget();
     var totalTris = 0;
-    (sc.meshes || []).forEach(function (m) { totalTris += m.triangles.length; });
+    (sc.meshes || []).forEach(function (m) {
+      if (m.regular_surface) totalTris += m.regular_surface.triangle_count == null
+        ? Math.max(0, m.regular_surface.dimensions[0] - 1) * Math.max(0, m.regular_surface.dimensions[1] - 1) * 2
+        : m.regular_surface.triangle_count;
+      else totalTris += m.triangles.length;
+    });
     var totalPts = 0;
     clouds.forEach(function (c) { totalPts += c.n; });
     var triStride = totalTris > budget ? Math.ceil(totalTris / budget) : 1;
     var ptStride = totalPts > budget ? Math.ceil(totalPts / budget) : 1;
 
     var built = {
-      _for: sc, _colormap: S.colormap,
+      _for: sc, _colormap: S.colormap, _detail: sc.detail || null,
       pointObjs: [], meshObjs: [], wellObjs: [], wellLabels: [],
       latticeObjs: [], contourObjs: [], outlineObjs: [],
       latticeZ: [], // per-lattice rendered flat level (data-space; tests)
@@ -204,6 +220,7 @@
       depthRange: { min: zmin, max: zmax },
       _center: { cx: cx, cy: cy, cz: cz, refZ: refZ }, // world<->render transform (picking)
       _degraded: null,
+      _regularPending: 0, _maxAttachMs: 0,
     };
 
     // ---- point clouds: ONE THREE.Points per cloud, per-vertex ramp colours
@@ -237,6 +254,10 @@
 
     // ---- surface meshes: value-coloured (fill=) or neutral + wireframe ------
     (sc.meshes || []).forEach(function (m) {
+      if (m.regular_surface) {
+        queueRegularSurface(m, built, [cx, cy, cz], false);
+        return;
+      }
       var nNodes = m.nodes.length;
       var pos = new Float32Array(nNodes * 3);
       var finiteZ = new Array(nNodes);
@@ -356,11 +377,108 @@
     built.buildMs = Math.round(((typeof performance !== "undefined") ? performance.now() : 0) - t0);
     s3dBuilt = built;
     s3d.framed = false; // a fresh payload reframes the camera
-    setScene3dStatus("ok", {
+    setScene3dStatus(built._regularPending ? "loading" : "ok", {
       points: built.pointCount, triangles: built.triangleCount,
       meshes: built.meshObjs.length, wells: (sc.wells || []).length,
       lattices: built.latticeObjs.length, latticeZ: built.latticeZ,
       buildMs: built.buildMs, labels: built.wellLabels.length,
+      detail: built._detail,
+    });
+  }
+
+  function queueRegularSurface(m, built, center, refining, staging) {
+    var id = ++_s3dRegularRequestId, stops = COLORMAPS[m.colormap || S.colormap] || COLORMAPS.viridis;
+    var request = { m: m, built: built, refining: !!refining, staging: staging, detail: built._detail };
+    _s3dRegularPending[id] = request; built._regularPending++;
+    var msg = { cmd: "buildRegularSurface", requestId: id, surface: m.regular_surface,
+      center: center, range: m.range, stops: stops };
+    var worker = typeof ensureWorker === "function" ? ensureWorker() : null;
+    if (worker) worker.postMessage(msg);
+    else setTimeout(function () {
+      try {
+        var r = window.PETEK_DECODE.buildRegularSurface(msg.surface, msg.center, msg.range, msg.stops);
+        onRegularSurfaceBuilt({ requestId: id, pos: r.pos.buffer, index: r.index.buffer,
+          col: r.col ? r.col.buffer : null, triangleCount: r.triangleCount, buildMs: 0 });
+      } catch (e) {
+        delete _s3dRegularPending[id]; built._regularPending--;
+        setScene3dStatus("error", { reason: String((e && e.message) || e) });
+      }
+    }, 0);
+  }
+
+  function regularSurfaceObject(m, data) {
+    var THREE = s3d.THREE, t0 = performance.now();
+    var geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(data.pos), 3));
+    geo.setIndex(new THREE.BufferAttribute(new Uint32Array(data.index), 1));
+    var hasValues = !!data.col;
+    if (hasValues) geo.setAttribute("color", new THREE.BufferAttribute(new Float32Array(data.col), 3));
+    // Avoid an O(n) main-thread normal pass: the worker-built immutable buffers
+    // attach directly and retain their value colours under ambient display.
+    var mat = new THREE.MeshBasicMaterial({
+      vertexColors: hasValues, side: THREE.DoubleSide,
+      color: hasValues ? 0xffffff : S3D_MESH_NEUTRAL,
+    });
+    var mesh = new THREE.Mesh(geo, mat);
+    mesh.userData.petek = { kind: "mesh", item_id: m.item_id, m: m };
+    return { mesh: mesh, geo: geo, m: m, hasValues: hasValues,
+      triangleCount: data.triangleCount, attachMs: performance.now() - t0 };
+  }
+
+  function onRegularSurfaceBuilt(data) {
+    var pending = _s3dRegularPending[data.requestId]; if (!pending) return;
+    delete _s3dRegularPending[data.requestId];
+    var built = pending.built, entry = regularSurfaceObject(pending.m, data);
+    built._regularPending--; built._maxAttachMs = Math.max(built._maxAttachMs || 0, entry.attachMs);
+    if (pending.refining) {
+      pending.staging.objects.push(entry); pending.staging.triangles += entry.triangleCount;
+      pending.staging.remaining--;
+      if (pending.staging.remaining === 0) finishRegularRefinement(pending.staging);
+      return;
+    }
+    if (pending.detail === "preview" && built._detail === "full") {
+      entry.geo.dispose(); entry.mesh.material.dispose(); return;
+    }
+    s3d.group.add(entry.mesh); built.meshObjs.push(entry); built.triangleCount += entry.triangleCount;
+    if (s3dBuilt === built) {
+      if (!s3d.framed) { frameScene3d(); s3d.framed = true; }
+      setScene3dStatus("ok", { points: built.pointCount, triangles: built.triangleCount,
+        meshes: built.meshObjs.length, wells: (built._for.wells || []).length, lattices: built.latticeObjs.length,
+        buildMs: built.buildMs, workerBuildMs: data.buildMs, maxAttachMs: built._maxAttachMs,
+        detail: built._detail });
+      applyScene3dVisibility(); s3d.render(); buildPanel();
+    }
+  }
+
+  function refineRegularScene3d(sc) {
+    if (_s3dPendingFor === sc) return;
+    var regular = (sc.meshes || []).filter(function (m) { return !!m.regular_surface; });
+    if (!regular.length) { s3dBuilt = null; buildScene3d(sc); return; }
+    _s3dPendingFor = sc;
+    var c = s3dBuilt._center, staging = { sc: sc, objects: [], triangles: 0, built: s3dBuilt, detail: "full", remaining: regular.length };
+    regular.forEach(function (m) { queueRegularSurface(m, s3dBuilt, [c.cx, c.cy, c.cz], true, staging); });
+    // Deliberately keep the preview-ready state and camera while full buffers
+    // build. No workspace/global loading transition is emitted here.
+    setScene3dStatus("ok", { detail: "preview", refining: true,
+      triangles: s3dBuilt.triangleCount, maxAttachMs: s3dBuilt._maxAttachMs || 0 });
+  }
+
+  function finishRegularRefinement(staging) {
+    requestAnimationFrame(function () {
+      var built = staging.built, oldRegular = built.meshObjs.filter(function (o) { return !!o.m.regular_surface; });
+      var oldTriangles = oldRegular.reduce(function (n, o) { return n + (o.triangleCount || 0); }, 0);
+      staging.objects.forEach(function (o) { s3d.group.add(o.mesh); });
+      oldRegular.forEach(function (o) {
+        s3d.group.remove(o.mesh); o.geo.dispose(); o.mesh.material.dispose();
+      });
+      built.meshObjs = built.meshObjs.filter(function (o) { return !o.m.regular_surface; }).concat(staging.objects);
+      built.triangleCount = built.triangleCount - oldTriangles + staging.triangles;
+      built._for = staging.sc; built._detail = staging.detail || "full"; built._colormap = S.colormap;
+      _s3dPendingFor = null;
+      setScene3dStatus("ok", { detail: built._detail, refining: false,
+        triangles: built.triangleCount, meshes: built.meshObjs.length,
+        maxAttachMs: built._maxAttachMs || 0, cameraPreserved: true });
+      applyScene3dVisibility(); s3d.render(); buildPanel();
     });
   }
 
@@ -411,6 +529,15 @@
   // geometry/positions never rebuild — the volume tab's recolour idiom).
   // Per-object pins (cloud.colormap / mesh.colormap) keep their own ramp.
   function recolorScene3d(sc) {
+    var regularMeshes = (sc.meshes || []).filter(function (m) { return !!m.regular_surface; });
+    if (regularMeshes.length && _s3dPendingFor !== sc) {
+      _s3dPendingFor = sc;
+      var center0 = s3dBuilt._center;
+      var staging0 = { sc: sc, objects: [], triangles: 0, built: s3dBuilt, detail: s3dBuilt._detail, remaining: regularMeshes.length };
+      regularMeshes.forEach(function (m) {
+        queueRegularSurface(m, s3dBuilt, [center0.cx, center0.cy, center0.cz], true, staging0);
+      });
+    }
     var pc = sc.point_color;
     s3dBuilt.pointObjs.forEach(function (o) {
       var cc = s3dCloudColor(o.src, pc);
@@ -426,6 +553,7 @@
     });
     s3dBuilt.meshObjs.forEach(function (o) {
       if (!o.hasValues) return;
+      if (o.m.regular_surface) return; // rebuilt by the next detail/resource swap
       bakeMeshColors(o.m, o.geo.attributes.color.array);
       o.geo.attributes.color.needsUpdate = true;
     });
@@ -566,6 +694,24 @@
       // nearest face vertex to the hit, in the mesh's local frame — its node
       // row carries the TRUE data coords (and value, when value-coloured)
       var m = u.m;
+      if (m.regular_surface) {
+        var G = m.regular_surface, nc = G.dimensions[0], vi0 = hit.face.a;
+        var ii = vi0 % nc, jj = Math.floor(vi0 / nc);
+        var elev = G.__elev || (G.__elev = decodeLane(G.elevations));
+        var vals = G.values ? (G.__values || (G.__values = decodeLane(G.values))) : null;
+        var value0 = vals ? vals[vi0] : null;
+        var regularOut = {
+          key: "mesh:" + (m.display_name || m.name || "") + ":" + vi0,
+          label: disp(m, m.name) || "mesh",
+          x: G.origin[0] + ii * G.step_i[0] + jj * G.step_j[0],
+          y: G.origin[1] + ii * G.step_i[1] + jj * G.step_j[1],
+          z: elev && isFinite(elev[vi0]) ? elev[vi0] : null,
+        };
+        if (value0 != null && isFinite(value0) && m.name !== "z") {
+          regularOut.value = value0; regularOut.valueLabel = m.name;
+        }
+        return regularOut;
+      }
       var local = hit.object.worldToLocal(hit.point.clone());
       var pos = hit.object.geometry.attributes.position;
       var best = hit.face.a, bestD = Infinity;

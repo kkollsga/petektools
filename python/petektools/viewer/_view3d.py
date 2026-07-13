@@ -25,7 +25,7 @@ from typing import Any, Sequence
 
 from ._save import save_view
 from ._server import serve
-from ._v3 import _le_bytes
+from ._v3 import NAN_F32, _le_bytes
 from ._view2d import (
     _LayerMesh,
     _grid_lines,
@@ -40,6 +40,7 @@ from ._view2d import (
     _render_role,
     _rings,
     _scene_items,
+    _coerce_regular_grid_fill,
 )
 from ._well_style import WellStyle, normalize_wells
 
@@ -183,7 +184,7 @@ def view3d_payload(
                     entry["colormap"] = fspec["cmap"]  # per-object pin
                     item_cmap = item_cmap or fspec["cmap"]
                 meshes.append(entry)
-                n_triangles += len(entry["triangles"])
+                n_triangles += _mesh_triangle_count(entry)
                 contributed = True
                 mesh_added = True
         if contours is not None:
@@ -211,14 +212,18 @@ def view3d_payload(
                     f"{type(item).__name__} declares surface kind "
                     f"{getattr(item, 'kind', None)!r} but offers no value_layer()"
                 )
-            entry["values"] = None
+            if "regular_surface" in entry:
+                entry["regular_surface"]["values"] = None
+                entry["values"] = None
+            else:
+                entry["values"] = None
             entry["range"] = None
             entry["name"] = "mesh"
             entry["display_name"] = name
             if item_id is not None:
                 entry["item_id"] = item_id
             meshes.append(entry)
-            n_triangles += len(entry["triangles"])
+            n_triangles += _mesh_triangle_count(entry)
             continue
 
         if role == "geometry" and not (_is_geometry(item) or _is_trimesh(item)):
@@ -594,6 +599,9 @@ def _value_mesh(item: Any, attr: str | None) -> dict[str, Any] | None:
     layer = fn(attr=attr) if attr is not None else fn()
     if layer is None:
         return None
+    compact = _regular_surface_mesh(item, layer, attr, fn)
+    if compact is not None:
+        return compact
     name = type(item).__name__
     if not isinstance(layer, dict):
         raise TypeError(
@@ -632,6 +640,76 @@ def _value_mesh(item: Any, attr: str | None) -> dict[str, Any] | None:
     }
 
 
+def _typed_block(values: list[Any], dtype: str) -> dict[str, Any]:
+    normalized = [
+        (float(value) if value is not None and math.isfinite(float(value)) else NAN_F32)
+        if dtype == "f32"
+        else (1 if value else 0)
+        for value in values
+    ]
+    raw = _le_bytes(normalized, dtype)
+    return {
+        "dtype": dtype,
+        "shape": [len(values)],
+        "data": base64.b64encode(raw).decode("ascii"),
+    }
+
+
+def _regular_surface_mesh(
+    item: Any,
+    layer: Any,
+    attr: str | None,
+    value_fn: Any,
+) -> dict[str, Any] | None:
+    """Compact affine elevation surface; non-affine layers keep Mesh3D."""
+    value_grid = _coerce_regular_grid_fill(item, layer, type(item).__name__)
+    if value_grid is None:
+        return None
+    elevation_grid = value_grid
+    if attr is not None:
+        primary = value_fn()
+        elevation_grid = _coerce_regular_grid_fill(
+            item, primary, type(item).__name__
+        )
+        if elevation_grid is None:
+            return None
+    grid = value_grid["regular_grid"]
+    elevations = elevation_grid["regular_grid"]["values"]
+    mask = [value is not None for value in elevations]
+    finite = [float(value) for value in elevations if value is not None]
+    if not finite:
+        return None
+    ncol, nrow = grid["dimensions"]
+    triangle_count = 0
+    for j in range(nrow - 1):
+        for i in range(ncol - 1):
+            a = j * ncol + i
+            if mask[a] and mask[a + 1] and mask[a + ncol] and mask[a + ncol + 1]:
+                triangle_count += 2
+    return {
+        "name": value_grid["name"],
+        "regular_surface": {
+            "dimensions": list(grid["dimensions"]),
+            "origin": list(grid["origin"]),
+            "step_i": list(grid["step_i"]),
+            "step_j": list(grid["step_j"]),
+            "elevations": _typed_block(elevations, "f32"),
+            "mask": _typed_block(mask, "u8"),
+            "values": _typed_block(grid["values"], "f32"),
+            "elevation_range": [min(finite), max(finite)],
+            "triangle_count": triangle_count,
+        },
+        "range": list(value_grid["range"]),
+    }
+
+
+def _mesh_triangle_count(mesh: dict[str, Any]) -> int:
+    regular = mesh.get("regular_surface")
+    if regular:
+        return int(regular["triangle_count"])
+    return len(mesh["triangles"])
+
+
 def _verts_shallowest(rows: Any) -> float | None:
     """The SHALLOWEST elevation among vertex/node rows — z is elevation
     (negative down), so shallowest = the max finite third component. ``None``
@@ -658,7 +736,11 @@ def _scene_shallowest(
     the fallback level for z-less flat items. ``None`` for an all-flat scene."""
     zs = [z for z in point_zs if math.isfinite(z)]
     for mesh in meshes:
-        zs.extend(n[2] for n in mesh["nodes"] if n[2] is not None)
+        regular = mesh.get("regular_surface")
+        if regular:
+            zs.extend(regular["elevation_range"])
+        else:
+            zs.extend(n[2] for n in mesh["nodes"] if n[2] is not None)
     for well in wells:
         zs.extend(p[2] for p in well["trajectory"] if p[2] is not None)
     zs.extend(lat["z"] for lat in lattices if lat["z"] is not None)
@@ -681,7 +763,11 @@ def _ref_z(
     """
     zs = list(point_zs)
     for mesh in meshes:
-        zs.extend(n[2] for n in mesh["nodes"] if n[2] is not None)
+        regular = mesh.get("regular_surface")
+        if regular:
+            zs.extend(regular["elevation_range"])
+        else:
+            zs.extend(n[2] for n in mesh["nodes"] if n[2] is not None)
     for well in wells:
         zs.extend(p[2] for p in well["trajectory"] if p[2] is not None)
     if not zs:

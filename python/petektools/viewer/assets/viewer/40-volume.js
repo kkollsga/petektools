@@ -187,6 +187,7 @@
         if (e.data.cmd === "decoded") onV3Decoded(e.data);
         else if (e.data.cmd === "recolored") applyRecolor(e.data.col);
         else if (e.data.cmd === "decoded2d") onMap2dDecoded(e.data); // 2-D map blocks
+        else if (e.data.cmd === "regularSurfaceBuilt") onRegularSurfaceBuilt(e.data);
       };
       _worker.onerror = function () {
         _worker = null; // future decodes fall back to the sync path
@@ -484,4 +485,3 @@
       .then(function (env) { App.payload.volume = env; vol3 = null; renderVolume(); })
       .catch(function (e) { hideEmpty(); showBanner("Server re-cut unavailable", String((e && e.message) || e), "Falling back to the client-side shell filter (exterior triangles only)."); });
   }
-

@@ -93,6 +93,13 @@ lane="thickness")` once, and returning to Depth reuses its cache. Lane state is
 independent per view. `default_lane` is accepted as a provider input alias;
 workspace manifest v1 always emits `active_lane`.
 
+A provider may advertise progressive 3-D detail with ordered
+`tiers=[preview, full]` and `active_detail="preview"`. Live mode renders
+`detail=preview` first, then requests `detail=full` in the background. Full
+completion replaces the compact regular mesh without moving the camera or
+returning the workspace to global Loading. No-tier providers retain the original
+call shape. Static workspace export embeds the advertised full tier directly.
+
 Providers can also retain unsupported assets as disabled searchable leaves:
 `{"id": ..., "label": ..., "views": {}, "disabled": True,
 "reason": "Unsupported project asset", "diagnostic": {...}}`. Zero views
@@ -369,7 +376,14 @@ blocks on the wire, decoded on the volume tab's kernel; smooth at the 200k
 cap), and **solid surface layers are for surfaces only**: all three value-surface
 roles (`surface`, `structured_mesh`, `tri_surface`) passed bare render a neutral
 elevation mesh from their primary value layer (value-coloured under `fill=`;
-triangles touching a z-less node are holes, never guessed). Their geometry-only
+triangles touching a z-less node are holes, never guessed).
+Exact affine structured surfaces use compact `regular_surface` meshes:
+dimensions/origin/I+J steps plus typed row-major elevation, mask, and optional
+value blocks, with no expanded nodes or triangles. The shared volume/Map worker
+builds transferable position/index/colour buffers. A preview stays interactive
+while a separately fetched full tier builds; the final swap is atomic and
+camera-stable. Non-affine and legacy Mesh3D payloads keep their established path.
+Their geometry-only
 counterparts (`grid_geometry`, `structured_shell`, `mesh_shell`) render as a
 **flat wireframe grid** placed at the **shallowest point** of their own nodes
 (z is elevation, negative down → max finite node z; a z-less geometry falls

@@ -26,6 +26,7 @@ import shutil
 import subprocess
 import sys
 import time
+import base64
 from pathlib import Path
 
 import pytest
@@ -40,6 +41,7 @@ _WORKSPACE_JS = Path(__file__).parent / "viewer_perf" / "workspace_bench.mjs"
 _WORKSPACE_SCALE_JS = Path(__file__).parent / "viewer_perf" / "workspace_scale_bench.mjs"
 _WORKSPACE_LANE_JS = Path(__file__).parent / "viewer_perf" / "workspace_lane_bench.mjs"
 _WORKSPACE_STATE_JS = Path(__file__).parent / "viewer_perf" / "workspace_state_bench.mjs"
+_REGULAR_SURFACE_JS = Path(__file__).parent / "viewer_perf" / "regular_surface_build_bench.js"
 _NODE = shutil.which("node")
 
 
@@ -60,6 +62,96 @@ def _playwright_available() -> bool:
 
 
 _HAVE_PW = _playwright_available()
+
+
+@pytest.mark.skipif(not _HAVE_PW, reason="playwright + chromium not available (browser leg)")
+def test_static_workspace_opens_embedded_full_detail_without_preview_request(tmp_path):
+    from petektools import WorkspaceSession
+
+    class DetailProvider:
+        def view_catalog(self):
+            return [{
+                "id": "surface:top",
+                "views": {"scene3d": {
+                    "tiers": [
+                        {"id": "preview", "label": "Preview"},
+                        {"id": "full", "label": "Full detail"},
+                    ],
+                    "active_detail": "preview",
+                }},
+                "visible": {"scene3d": True},
+            }]
+
+        def view_resource(self, *, item_id, view, lane=None, detail=None):
+            return {"schema_version": 4, "scene3d": {"meshes": [], "detail": detail}}
+
+    path = tmp_path / "static-full-detail.html"
+    WorkspaceSession(DetailProvider()).save(path)
+    out = subprocess.run(
+        [_NODE, str(_WORKSPACE_STATE_JS), str(path)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert out.returncode == 0, out.stderr
+    result = json.loads((out.stdout.strip().splitlines() or ["{}"])[-1])
+    assert not result.get("consoleErrors"), result.get("consoleErrors")
+    workspace = result["workspace"]
+    assert workspace["activeDetail"] == {"surface:top": {"scene3d": "full"}}
+    assert workspace["loaded"] == 1
+    assert workspace["loading"] == 0
+    assert workspace["errors"] == 0
+
+
+@pytest.mark.skipif(_NODE is None, reason="node not available")
+def test_compact_regular_surface_worker_build(tmp_path):
+    ncol = nrow = 400
+    values = [
+        -2600.0 + 40.0 * math.sin(i / 31.0) * math.cos(j / 37.0)
+        for j in range(nrow)
+        for i in range(ncol)
+    ]
+    mask = [1] * len(values)
+
+    def block(data, dtype):
+        raw = _v3._le_bytes(data, dtype)
+        return {
+            "dtype": dtype,
+            "shape": [len(data)],
+            "data": base64.b64encode(raw).decode("ascii"),
+        }
+
+    source = tmp_path / "regular-surface.json"
+    source.write_text(json.dumps({
+        "surface": {
+            "dimensions": [ncol, nrow],
+            "origin": [431000.0, 6521000.0],
+            "step_i": [25.0, 0.0],
+            "step_j": [0.0, -25.0],
+            "elevations": block(values, "f32"),
+            "mask": block(mask, "u8"),
+            "values": block(values, "f32"),
+        },
+        "center": [436000.0, 6516000.0, -2600.0],
+        "range": [-2640.0, -2560.0],
+        "stops": [[68, 1, 84], [59, 82, 139], [33, 145, 140], [94, 201, 98], [253, 231, 37]],
+    }))
+    out = subprocess.run(
+        [_NODE, str(_REGULAR_SURFACE_JS), str(source)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert out.returncode == 0, out.stderr
+    result = json.loads(out.stdout)
+    assert result["nodes"] == ncol * nrow
+    assert result["triangles"] == (ncol - 1) * (nrow - 1) * 2
+    assert result["colors"] == ncol * nrow
+    assert result["buildMs"] < 250.0, result
+    print(
+        f"\n[regular-surface] {result['nodes']} nodes / {result['triangles']} tris "
+        f"built in worker kernel in {result['buildMs']} ms"
+    )
 
 # grid shapes per scale (cell-major i,j,k); flat-ish reservoirs (low relief).
 SCALES = {

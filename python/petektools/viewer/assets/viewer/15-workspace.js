@@ -19,18 +19,21 @@
   function workspaceLane(id, view) {
     return W && W.activeLane[id] ? (W.activeLane[id][view] == null ? null : W.activeLane[id][view]) : null;
   }
-  function workspaceResourceSlot(view, lane) {
-    return view + "\u0000" + (lane == null ? "" : String(lane));
+  function workspaceDetail(id, view) {
+    return W && W.activeDetail[id] ? (W.activeDetail[id][view] == null ? null : W.activeDetail[id][view]) : null;
   }
-  function workspaceRequestKey(id, view, lane) {
-    return id + "\u0000" + workspaceResourceSlot(view, lane);
+  function workspaceResourceSlot(view, lane, detail) {
+    return view + "\u0000" + (lane == null ? "" : String(lane)) + "\u0000" + (detail == null ? "" : String(detail));
   }
-  function workspaceResource(id, view, lane) {
-    return W && W.resources[id] && W.resources[id][workspaceResourceSlot(view, lane)];
+  function workspaceRequestKey(id, view, lane, detail) {
+    return id + "\u0000" + workspaceResourceSlot(view, lane, detail);
+  }
+  function workspaceResource(id, view, lane, detail) {
+    return W && W.resources[id] && W.resources[id][workspaceResourceSlot(view, lane, detail)];
   }
   function storeWorkspaceResource(id, view, resource) {
     if (!W.resources[id]) return;
-    W.resources[id][workspaceResourceSlot(view, resource.lane)] = resource;
+    W.resources[id][workspaceResourceSlot(view, resource.lane, resource.detail)] = resource;
   }
 
   function initWorkspace(payload) {
@@ -39,7 +42,7 @@
     if (manifest.schema_version !== 1) throw new Error("unsupported workspace schema_version " + manifest.schema_version);
     W = {
       manifest: manifest, available: (manifest.available_views || []).slice(),
-      order: [], items: {}, visible: {}, activeLane: {}, resources: {}, loading: {}, errors: {}, searchText: {},
+      order: [], items: {}, visible: {}, activeLane: {}, activeDetail: {}, resources: {}, loading: {}, errors: {}, detailErrors: {}, searchText: {},
       query: "", expanded: {}, expansionManual: {}, groups: {}, fetches: 0, compositions: 0, searchTimer: null,
       treeBuildMs: [], groupToggleMs: [], panelTimer: null, composeTimers: {},
     };
@@ -58,9 +61,11 @@
           W.order.push(node.id); W.items[node.id] = node;
           W.visible[node.id] = Object.assign({}, node.visible || {});
           W.activeLane[node.id] = {};
+          W.activeDetail[node.id] = {};
           Object.keys(node.resources || {}).forEach(function (view) {
             var spec = node.resources[view];
             if (spec && spec.lanes && spec.lanes.length) W.activeLane[node.id][view] = spec.active_lane || spec.lanes[0].id;
+            if (spec && spec.tiers && spec.tiers.length) W.activeDetail[node.id][view] = spec.active_detail || spec.tiers[0].id;
           });
           W.resources[node.id] = {};
         }
@@ -92,7 +97,10 @@
       Object.keys(embedded[id] || {}).forEach(function (view) {
         var values = Array.isArray(embedded[id][view]) ? embedded[id][view] : [embedded[id][view]];
         values.forEach(function (resource) {
-          if (resource && resource.kind === "workspace_resource") storeWorkspaceResource(id, view, resource);
+          if (resource && resource.kind === "workspace_resource") {
+            storeWorkspaceResource(id, view, resource);
+            if (resource.detail === "full" && W.activeDetail[id]) W.activeDetail[id][view] = "full";
+          }
         });
       });
     });
@@ -105,6 +113,7 @@
       itemCount: W.order.length, activeView: workspaceViewName(App.tab),
       visible: JSON.parse(JSON.stringify(W.visible)),
       activeLane: JSON.parse(JSON.stringify(W.activeLane)),
+      activeDetail: JSON.parse(JSON.stringify(W.activeDetail)),
       expanded: JSON.parse(JSON.stringify(W.expanded)),
       expansionManual: JSON.parse(JSON.stringify(W.expansionManual)),
       loaded: W.order.reduce(function (n, id) { return n + Object.keys(W.resources[id]).length; }, 0),
@@ -117,7 +126,7 @@
 
   function workspaceLoadingHint(view) {
     if (!W || !workspaceHasView(view)) return "";
-    var pending = Object.keys(W.loading).some(function (key) { return W.loading[key].view === view; });
+    var pending = Object.keys(W.loading).some(function (key) { return W.loading[key].view === view && !W.loading[key].background; });
     return pending ? "Loading selected workspace resources…" : "Select an item in the Project navigator.";
   }
 
@@ -127,10 +136,10 @@
     W.order.forEach(function (id) {
       if (!workspaceItemVisible(id, view) || !workspaceItemHasView(id, view)) return;
       selected++;
-      var lane = workspaceLane(id, view), key = workspaceRequestKey(id, view, lane);
+      var lane = workspaceLane(id, view), detail = workspaceDetail(id, view), key = workspaceRequestKey(id, view, lane, detail);
       if (W.loading[key]) pending++;
       if (W.errors[key]) failures.push(W.errors[key]);
-      var resource = workspaceResource(id, view, lane);
+      var resource = workspaceResource(id, view, lane, detail);
       if (!resource) return;
       var payload = resource.payload;
       var valid = view === "scene3d" ? !!(payload && payload.scene3d && typeof payload.scene3d === "object")
@@ -164,8 +173,9 @@
     W.order.forEach(function (id) {
       if (!workspaceItemVisible(id, view) || !workspaceItemHasView(id, view)) return;
       var lane = workspaceLane(id, view);
-      if (workspaceResource(id, view, lane)) hasLoaded = true;
-      else loadWorkspaceResource(id, view, lane);
+      var detail = workspaceDetail(id, view);
+      if (workspaceResource(id, view, lane, detail)) hasLoaded = true;
+      else loadWorkspaceResource(id, view, lane, false, null, detail);
     });
     if (hasLoaded) composeWorkspaceView(view);
     exposeWorkspaceState();
@@ -176,10 +186,11 @@
     return !!(item && !item.disabled && (item.views || []).indexOf(view) >= 0);
   }
 
-  function resourceHref(id, view, lane) {
+  function resourceHref(id, view, lane, detail) {
     var item = W.items[id], spec = item.resources && item.resources[view];
     if (!spec || !spec.href) return null;
-    return spec.href + (lane == null ? "" : "&lane=" + encodeURIComponent(lane));
+    return spec.href + (lane == null ? "" : "&lane=" + encodeURIComponent(lane))
+      + (detail == null ? "" : "&detail=" + encodeURIComponent(detail));
   }
 
   function scheduleWorkspacePanel() {
@@ -196,36 +207,58 @@
     }, 0);
   }
 
-  function loadWorkspaceResource(id, view, lane, retry, fallbackLane) {
+  function loadFullAfterPreviewReady(id, view, lane) {
+    var checks = 0;
+    function check() {
+      var status = window.__PETEK_SCENE3D_STATUS;
+      if (status && status.state === "ok" && status.detail === "preview") {
+        loadWorkspaceResource(id, view, lane, false, null, "full", true); return;
+      }
+      if (++checks < 1800 && workspaceDetail(id, view) === "preview") {
+        setTimeout(check, 16);
+      }
+    }
+    requestAnimationFrame(check);
+  }
+
+  function loadWorkspaceResource(id, view, lane, retry, fallbackLane, detail, background) {
     if (!W || !workspaceItemHasView(id, view)) return;
-    var key = workspaceRequestKey(id, view, lane);
-    if (workspaceResource(id, view, lane) && !retry) { composeWorkspaceView(view); return; }
+    if (detail === undefined) detail = workspaceDetail(id, view);
+    var key = workspaceRequestKey(id, view, lane, detail);
+    if (workspaceResource(id, view, lane, detail) && !retry) { composeWorkspaceView(view); return; }
     if (W.loading[key]) return;
     delete W.errors[key];
     if (App.mode === "file") {
-      if (!workspaceResource(id, view, lane)) {
+      if (!workspaceResource(id, view, lane, detail)) {
         W.errors[key] = (W.manifest.snapshot && W.manifest.snapshot.message) || "Resource was not embedded in this static snapshot.";
         if (fallbackLane != null && workspaceLane(id, view) === lane) W.activeLane[id][view] = fallbackLane;
         scheduleWorkspacePanel();
       } else composeWorkspaceView(view);
       return;
     }
-    var href = resourceHref(id, view, lane);
+    var href = resourceHref(id, view, lane, detail);
     if (!href) { W.errors[key] = "No resource link declared."; scheduleWorkspacePanel(); return; }
-    W.loading[key] = { view: view, lane: lane }; W.fetches++; scheduleWorkspacePanel();
+    W.loading[key] = { view: view, lane: lane, detail: detail, background: !!background }; W.fetches++; scheduleWorkspacePanel();
     fetch(href)
       .then(function (r) { if (!r.ok) return r.text().then(function (t) { throw new Error(t || ("HTTP " + r.status)); }); return r.json(); })
       .then(function (resource) {
         if (!resource || resource.kind !== "workspace_resource") throw new Error("invalid workspace resource envelope");
-        if (resource.item_id !== id || resource.view !== view || (resource.lane == null ? null : resource.lane) !== lane) {
-          throw new Error("workspace resource identity/lane mismatch");
+        if (resource.item_id !== id || resource.view !== view || (resource.lane == null ? null : resource.lane) !== lane || (resource.detail == null ? null : resource.detail) !== detail) {
+          throw new Error("workspace resource identity/lane/detail mismatch");
         }
         storeWorkspaceResource(id, view, resource);
         delete W.loading[key];
+        if (detail === "full" && W.activeDetail[id]) W.activeDetail[id][view] = "full";
         scheduleWorkspaceCompose(view);
+        var spec = W.items[id].resources && W.items[id].resources[view];
+        if (detail === "preview" && spec && (spec.tiers || []).some(function (tier) { return tier.id === "full"; })) {
+          setTimeout(function () { loadFullAfterPreviewReady(id, view, lane); }, 0);
+        }
       })
       .catch(function (e) {
-        delete W.loading[key]; W.errors[key] = String((e && e.message) || e);
+        delete W.loading[key];
+        if (background) W.detailErrors[key] = String((e && e.message) || e);
+        else W.errors[key] = String((e && e.message) || e);
         if (fallbackLane != null && workspaceLane(id, view) === lane) W.activeLane[id][view] = fallbackLane;
         scheduleWorkspacePanel();
       });
@@ -262,7 +295,7 @@
     var entries = [];
     W.order.forEach(function (id) {
       if (!workspaceItemVisible(id, "map")) return;
-      var r = workspaceResource(id, "map", workspaceLane(id, "map"));
+      var r = workspaceResource(id, "map", workspaceLane(id, "map"), workspaceDetail(id, "map"));
       if (r && r.payload && r.payload.map) entries.push({ id: id, payload: r.payload });
     });
     if (!entries.length) {
@@ -356,11 +389,12 @@
   function composeWorkspaceScene3d() {
     var entries = [];
     W.order.forEach(function (id) {
-      var r = workspaceResource(id, "scene3d", workspaceLane(id, "scene3d"));
-      if (r && r.payload && r.payload.scene3d) entries.push({ id: id, scene: r.payload.scene3d });
+      var r = workspaceResource(id, "scene3d", workspaceLane(id, "scene3d"), workspaceDetail(id, "scene3d"));
+      if (r && r.payload && r.payload.scene3d) entries.push({ id: id, scene: r.payload.scene3d, detail: r.detail || null });
     });
     if (!entries.length) { App.payload.scene3d = null; s3dBuilt = null; return; }
-    var scene = { schema_version: 1, points: [], meshes: [], lattices: [], contours: [], wells: [], outlines: [], layers: [], point_color: null, colormap: null, z_exaggeration: 5, ref_z: 0 };
+    var scene = { schema_version: 1, points: [], meshes: [], lattices: [], contours: [], wells: [], outlines: [], layers: [], point_color: null, colormap: null, z_exaggeration: 5, ref_z: 0,
+      detail: entries.every(function (entry) { return entry.detail === "full"; }) ? "full" : (entries.some(function (entry) { return entry.detail === "preview"; }) ? "preview" : null) };
     entries.forEach(function (entry) {
       var sc = entry.scene;
       ["points", "meshes", "lattices", "contours", "wells", "layers"].forEach(function (name) {
@@ -382,14 +416,14 @@
       });
       S.s3dLatticeDefaultApplied = true;
     }
-    s3dBuilt = null;
+    if (!(scene.detail === "full" && s3dBuilt && s3dBuilt._detail === "preview")) s3dBuilt = null;
     var tab = document.querySelector('.tab[data-tab="scene3d"]'); if (tab) tab.hidden = false;
   }
 
   function composeWorkspaceWells() {
     var bundles = [];
     W.order.forEach(function (id) {
-      var r = workspaceResource(id, "wells", workspaceLane(id, "wells"));
+      var r = workspaceResource(id, "wells", workspaceLane(id, "wells"), workspaceDetail(id, "wells"));
       if (r && r.payload && r.payload.wells_logs) bundles.push({ id: id, bundle: r.payload.wells_logs });
     });
     if (!bundles.length) {
@@ -414,8 +448,8 @@
   function setWorkspaceVisible(id, view, visible) {
     if (!W || !W.visible[id]) return;
     W.visible[id][view] = visible;
-    var lane = workspaceLane(id, view);
-    if (visible && !workspaceResource(id, view, lane)) loadWorkspaceResource(id, view, lane);
+    var lane = workspaceLane(id, view), detail = workspaceDetail(id, view);
+    if (visible && !workspaceResource(id, view, lane, detail)) loadWorkspaceResource(id, view, lane, false, null, detail);
     else if (view === "map") composeWorkspaceMap();
     else if (view === "scene3d") { applyScene3dVisibility(); if (s3d) s3d.render(); }
     else if (view === "wells" && S.wl) {
@@ -429,9 +463,12 @@
     if (!W || !W.activeLane[id] || workspaceLane(id, view) === lane) return;
     var previous = workspaceLane(id, view);
     W.activeLane[id][view] = lane;
+    var spec = W.items[id].resources && W.items[id].resources[view];
+    if (spec && spec.tiers && spec.tiers.length) W.activeDetail[id][view] = spec.active_detail || spec.tiers[0].id;
+    var detail = workspaceDetail(id, view);
     if (workspaceItemVisible(id, view)) {
-      if (workspaceResource(id, view, lane)) composeWorkspaceView(view);
-      else loadWorkspaceResource(id, view, lane, false, previous);
+      if (workspaceResource(id, view, lane, detail)) composeWorkspaceView(view);
+      else loadWorkspaceResource(id, view, lane, false, previous, detail);
     }
     exposeWorkspaceState(); buildWorkspaceNavigator(); buildPanel();
   }
@@ -528,8 +565,8 @@
         row.appendChild(twist); row.appendChild(cb); row.appendChild(el("span", "workspace-label", groupLabel));
         row.appendChild(el("span", "workspace-count", checked + "/" + ids.length)); target.appendChild(row);
       } else {
-        var has = !node.disabled && (node.views || []).indexOf(view) >= 0, lane = workspaceLane(node.id, view);
-        var key = workspaceRequestKey(node.id, view, lane);
+        var has = !node.disabled && (node.views || []).indexOf(view) >= 0, lane = workspaceLane(node.id, view), detail = workspaceDetail(node.id, view);
+        var key = workspaceRequestKey(node.id, view, lane, detail);
         var selected = has && workspaceItemVisible(node.id, view);
         var row = el("div", "workspace-row workspace-object" + (selected ? " workspace-selected" : "")
           + (W.loading[key] ? " workspace-loading" : "") + (W.errors[key] ? " workspace-error" : "")
@@ -561,7 +598,7 @@
             var offline = el("span", "workspace-status", "offline"); offline.title = W.errors[key]; row.appendChild(offline);
           } else {
             var retry = el("button", "workspace-retry", "retry"); retry.title = W.errors[key];
-            retry.setAttribute("aria-label", "Retry " + node.label); retry.onclick = function () { loadWorkspaceResource(node.id, view, lane, true); }; row.appendChild(retry);
+            retry.setAttribute("aria-label", "Retry " + node.label); retry.onclick = function () { loadWorkspaceResource(node.id, view, lane, true, null, detail); }; row.appendChild(retry);
           }
         } else if (!has && node.reason) {
           var unavailable = el("span", "workspace-status", "unavailable");

@@ -220,6 +220,29 @@ class LaneProvider:
         return {"schema_version": 4, "map": {"lane": lane}, "scene3d": None}
 
 
+class DetailProvider:
+    def __init__(self):
+        self.calls = []
+
+    def view_catalog(self):
+        return [{
+            "id": "surface:top",
+            "label": "Top",
+            "views": {"scene3d": {
+                "tiers": [
+                    {"id": "preview", "label": "Preview"},
+                    {"id": "full", "label": "Full detail"},
+                ],
+                "active_detail": "preview",
+            }},
+            "visible": {"scene3d": True},
+        }]
+
+    def view_resource(self, *, item_id, view, lane=None, detail=None):
+        self.calls.append((item_id, view, lane, detail))
+        return {"schema_version": 4, "scene3d": {"detail": detail, "meshes": []}}
+
+
 def _saved_workspace(path):
     text = path.read_text()
     prefix = "<script>window.PETEK_VIEWER_PAYLOAD="
@@ -298,6 +321,37 @@ def test_provider_lane_resources_cache_once_and_static_freeze_semantics(tmp_path
     ]
 
 
+def test_scene3d_detail_tiers_cache_independently_and_static_freezes_full(tmp_path):
+    provider = DetailProvider()
+    session = WorkspaceSession(provider)
+    spec = session.manifest()["workspace"]["tree"][0]["resources"]["scene3d"]
+    assert spec["tiers"] == [
+        {"id": "preview", "label": "Preview"},
+        {"id": "full", "label": "Full detail"},
+    ]
+    assert spec["active_detail"] == "preview"
+
+    preview = session.resource("surface:top", "scene3d")
+    assert preview["detail"] == "preview"
+    assert session.resource("surface:top", "scene3d", detail="preview") == preview
+    full = session.resource("surface:top", "scene3d", detail="full")
+    assert full["detail"] == "full"
+    assert provider.calls == [
+        ("surface:top", "scene3d", None, "preview"),
+        ("surface:top", "scene3d", None, "full"),
+    ]
+    with pytest.raises(KeyError, match="has no detail 'medium'"):
+        session.resource("surface:top", "scene3d", detail="medium")
+
+    provider = DetailProvider()
+    path = tmp_path / "full-detail.html"
+    WorkspaceSession(provider).save(path)
+    frozen = _saved_workspace(path)
+    resources = frozen["resources"]["surface:top"]["scene3d"]
+    assert [resource["detail"] for resource in resources] == ["full"]
+    assert provider.calls == [("surface:top", "scene3d", None, "full")]
+
+
 def test_workspace_server_forwards_declared_lane_and_caches_it_once():
     provider = LaneProvider()
     session = WorkspaceSession(provider).serve(open_browser=False)
@@ -312,6 +366,20 @@ def test_workspace_server_forwards_declared_lane_and_caches_it_once():
         assert first == second
         assert first["lane"] == "thickness"
         assert provider.calls == [("surface:top", "map", "thickness")]
+    finally:
+        session._server.shutdown()
+        session._server.server_close()
+
+
+def test_workspace_server_forwards_scene3d_detail_tier():
+    provider = DetailProvider()
+    session = WorkspaceSession(provider).serve(open_browser=False)
+    try:
+        href = session.manifest()["workspace"]["tree"][0]["resources"]["scene3d"]["href"]
+        with urllib.request.urlopen(session.url + href[1:] + "&detail=full") as response:
+            resource = json.load(response)
+        assert resource["detail"] == "full"
+        assert provider.calls == [("surface:top", "scene3d", None, "full")]
     finally:
         session._server.shutdown()
         session._server.server_close()
@@ -335,6 +403,19 @@ def test_workspace_server_forwards_declared_lane_and_caches_it_once():
                 "views": {"map": {"lanes": [{"id": "z", "label": "Z"}], "active_lane": "missing"}},
             },
             "is not a declared lane",
+        ),
+        (
+            {
+                "id": "x",
+                "views": {"scene3d": {
+                    "tiers": [
+                        {"id": "preview", "label": "Preview"},
+                        {"id": "full", "label": "Full detail"},
+                    ],
+                    "active_detail": "full",
+                }},
+            },
+            "active_detail must be 'preview'",
         ),
     ],
 )
