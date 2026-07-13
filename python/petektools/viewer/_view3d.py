@@ -41,6 +41,7 @@ from ._view2d import (
     _rings,
     _scene_items,
 )
+from ._well_style import WellStyle, normalize_wells
 
 
 def view3d_payload(
@@ -50,6 +51,9 @@ def view3d_payload(
     color: bool | str = True,
     fill: bool | str = False,
     contours: float | list[float] | None = None,
+    wells: Any = None,
+    well_labels: bool | str = False,
+    well_style: WellStyle | dict[str, Any] | None = None,
     max_grid_lines: int = 800,
     max_line_points: int = 1000,
     point_limit: int | None = 200_000,
@@ -140,7 +144,9 @@ def view3d_payload(
     meshes: list[dict[str, Any]] = []
     lattices: list[dict[str, Any]] = []
     contour_sets: list[dict[str, Any]] = []
-    wells: list[dict[str, Any]] = []
+    well_entries: list[dict[str, Any]] = normalize_wells(
+        wells, labels=False, style=well_style
+    )
     outlines: list[Any] = []  # plain rings (ref_z) + {"points", "z"} flat rings
     flat_rings: list[dict[str, Any]] = []  # rings tied to a flat item's level
     layers: list[dict[str, Any]] = []
@@ -251,8 +257,18 @@ def view3d_payload(
             continue
 
         if _is_well(item) and role != "points":
-            wells.append(_well_entry(item, name, len(wells)))
-            layers.append({"kind": "wells", "name": wells[-1]["id"]})
+            if well_style is None and well_labels is False:
+                # Exact compatibility: item-detected wells predate the first-class
+                # wells= seam and retain their original two-key wire shape.
+                added = [_well_entry(item, name, len(well_entries))]
+            else:
+                added = normalize_wells(
+                    {"object": item, "name": name, "style": well_style or WellStyle()},
+                    labels=False,
+                    style=well_style,
+                )
+            well_entries.extend(added)
+            layers.extend({"kind": "wells", "name": w["id"]} for w in added)
             continue
 
         # Stable point metadata is authoritative even if a producer also
@@ -348,7 +364,17 @@ def view3d_payload(
     # the SCENE's shallowest point (z is elevation, negative down → max
     # finite z over the scene's own data); null when the scene is all-flat
     # (the JS falls back to ref_z).
-    scene_shallowest = _scene_shallowest(point_zs, meshes, wells, lattices, flat_rings)
+    show_well_labels = bool(
+        well_labels is True or (well_labels == "auto" and len(well_entries) <= 12)
+    )
+    if well_labels not in (False, True, "auto"):
+        raise ValueError("well_labels must be False, True, or 'auto'")
+    if well_labels is not False:
+        for well in well_entries:
+            well["label"] = show_well_labels
+    scene_shallowest = _scene_shallowest(
+        point_zs, meshes, well_entries, lattices, flat_rings
+    )
     for lat in lattices:
         if lat["z"] is None:
             lat["z"] = scene_shallowest
@@ -363,8 +389,8 @@ def view3d_payload(
         summary["triangles"] = summary.get("triangles", 0) + n_triangles
     if lattices:
         summary["lattices"] = len(lattices)
-    if wells:
-        summary["wells"] = len(wells)
+    if well_entries:
+        summary["wells"] = len(well_entries)
     if contour_sets:
         summary["contour_levels"] = len(contour_sets)
     if point_color is not None:
@@ -384,13 +410,13 @@ def view3d_payload(
             "meshes": meshes,
             "lattices": lattices,
             "contours": contour_sets,
-            "wells": wells,
+            "wells": well_entries,
             "outlines": outlines,
             "layers": layers,
             "point_color": point_color,
             "colormap": color_spec["cmap"] or fill_spec["cmap"] or item_cmap,
             "z_exaggeration": float(z_exaggeration),
-            "ref_z": _ref_z(point_zs, meshes, wells),
+            "ref_z": _ref_z(point_zs, meshes, well_entries),
         },
         "sections": [],
         "section_labels": [],
@@ -406,6 +432,9 @@ def view3d(
     color: bool | str = True,
     fill: bool | str = False,
     contours: float | list[float] | None = None,
+    wells: Any = None,
+    well_labels: bool | str = False,
+    well_style: WellStyle | dict[str, Any] | None = None,
     save: str | Path | None = None,
     port: int = 0,
     block: bool = False,
@@ -430,6 +459,9 @@ def view3d(
         color=color,
         fill=fill,
         contours=contours,
+        wells=wells,
+        well_labels=well_labels,
+        well_style=well_style,
         max_grid_lines=max_grid_lines,
         max_line_points=max_line_points,
         point_limit=point_limit,

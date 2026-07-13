@@ -6,6 +6,17 @@ All notable changes to petekTools are recorded here. Format follows
 
 ## [Unreleased]
 
+### Added
+- **First-class polished wells in `view2d` and `view3d`.** Both adapters accept
+  `wells=` as a bare well, project-wells collection, or explicit dictionary,
+  with `well_labels=False|True|"auto"`. Shared frozen `WellStyle` /
+  `WellPathStyle` / `WellMarkerStyle` / `WellLabelStyle` values round-trip
+  through JSON dictionaries. The map draws projected XY trajectories, polished
+  co-located wellheads, and bounded collision-led labels; 3-D draws the same
+  styled trajectories and updates crisp screen-space labels only on render,
+  orbit, or resize. Existing item-detected 3-D wells and payloads with omitted
+  well arguments retain their exact wire shape and click-only inspection.
+
 ### Fixed
 - **Large multi-attribute surfaces now share and load lazily.** Automatic
   primary/attribute fills retain one normalized full+LOD mesh, pack/hash that

@@ -875,14 +875,25 @@ from petektools import viewer
 # grid/contour/outline/contact bitmaps (one paint/rAF); data-sized paths rebuild
 # at most once after settle. Plain JSON and saved single-file views are unchanged.
 viewer.view2d(items, *, title="2D view", color=True, fill=None, contours=None,
+              wells=None, well_labels=False, well_style=None,
               save=None, port=0, block=False, open_browser=True,
               max_grid_lines=800, max_line_points=1000, point_limit=200_000,
               max_mesh_edges=150_000, lod=True, encoding="blocks",
               block_threshold_bytes=65_536) -> str | dict
 viewer.view2d_payload(items, *, title="2D view", color=True, fill=None,
-                      contours=None, max_grid_lines=800, max_line_points=1000,
+                      contours=None, wells=None, well_labels=False, well_style=None,
+                      max_grid_lines=800, max_line_points=1000,
                       point_limit=200_000, max_mesh_edges=150_000, lod=True,
                       encoding="blocks", block_threshold_bytes=65_536) -> dict
+
+viewer.view3d(items, *, wells=None, well_labels=False, well_style=None, ...) -> str | dict
+viewer.view3d_payload(items, *, wells=None, well_labels=False, well_style=None, ...) -> dict
+
+# Shared frozen, JSON-serializable values; nested styles progressively disclose
+# advanced trajectory/marker/label controls.
+viewer.WellStyle(path=viewer.WellPathStyle(width=2, opacity=.9),
+                 marker=viewer.WellMarkerStyle(size=7, shape="circle"),
+                 label=viewer.WellLabelStyle(font_size=11, leader=True))
 
 # Live: background local server; returns the URL. `section_provider` is the
 # pluggable /section callback (line=, well=, property=) by which a DOMAIN package

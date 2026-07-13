@@ -210,7 +210,16 @@ display_name?: str}` — `crossing` marks the columns the contact plane cuts
 the crossing region with a translucent identity fill, a diagonal hatch (45°/135°
 alternating per contact) and a 2px identity outline.
 
-The map reads **top-level** `wells` (not `map.wells`) for markers. The raster is
+The map reads **top-level** `wells` (not `map.wells`) for projected XY paths and
+wellhead markers. A normalized entry is `{id, display_name, x, y, trajectory,
+style, label, ties?}`; `trajectory` is `[[x, y, z | null], …]` and the map uses
+only x/y. `label` is the resolved boolean form of
+`well_labels=False|True|"auto"`. `style` is
+`{spec:"WellStyle", schema_version:1, path, marker, label}`; path carries
+`color?/width/opacity/dash`, marker carries
+`size/fill?/stroke?/stroke_width/shape`, and label carries
+`color?/font_size/halo/leader/max_displacement`. Missing additive style fields
+use historical defaults. The raster is
 **clipped to the outline polygon** by default (a panel toggle exposes the
 unclipped raster for QC). Co-located wells that share a wellhead (sidetracks)
 render as **one shared marker with a bore-count badge** and radially-offset,
@@ -418,10 +427,13 @@ offering `value_layer()` into the value-coloured mesh (explicit opt-in unchanged
 Map tab, or a bare item's wireframe edges), rendered at elevation `z`
 (`null`/absent → `ref_z`; additive — older payloads carry no `z`).
 
-**Well3D:** `{id: str, trajectory: [[x, y, z | null], …]}` — z is ELEVATION
+**Well3D:** `{id: str, trajectory: [[x, y, z | null], …], display_name?: str,
+x?: float, y?: float, style?: WellStyle, label?: bool}` — z is ELEVATION
 (negative down; note the 2-D `WellTrack.trajectory` carries positive-down
 TVD). `id` takes the same `well:` categorical identity slot as top-level
-wells. A `null`-z sample is dropped from the drawn path.
+wells. A `null`-z sample is dropped from the drawn path. Labels are crisp
+screen-space text projected on initial render, orbit, explicit redraw, and
+resize only; there is no permanent animation loop.
 
 **Render discipline (the volume tab's idioms).** The scene build honours the
 same primitive budget (`window.PETEK_TRI_BUDGET`, default 5M, points +

@@ -25,6 +25,7 @@ from ._save import save_view
 from ._server import build_server, serve
 from ._view2d import view2d, view2d_payload
 from ._view3d import view3d, view3d_payload
+from ._well_style import WellLabelStyle, WellMarkerStyle, WellPathStyle, WellStyle
 
 #: Directory of the packaged viewer assets (index.html + the three JS files).
 ASSETS = Path(__file__).parent / "assets"
@@ -37,5 +38,9 @@ __all__ = [
     "view2d_payload",
     "view3d",
     "view3d_payload",
+    "WellPathStyle",
+    "WellMarkerStyle",
+    "WellLabelStyle",
+    "WellStyle",
     "ASSETS",
 ]

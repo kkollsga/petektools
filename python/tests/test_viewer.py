@@ -22,6 +22,7 @@ from pathlib import Path
 
 import pytest
 
+import petektools
 from petektools import viewer
 from petektools.viewer import demo
 
@@ -1409,6 +1410,60 @@ def test_view3d_wells_duck_type():
 
     with pytest.raises(TypeError, match="x, y, z"):
         viewer.view3d_payload([BadWell()])
+
+
+def test_well_styles_are_shared_serializable_values():
+    style = viewer.WellStyle(
+        path=viewer.WellPathStyle(color="#123456", width=3, dash=(5, 2)),
+        marker=viewer.WellMarkerStyle(size=9, shape="diamond"),
+        label=viewer.WellLabelStyle(font_size=12, max_displacement=48),
+    )
+    assert viewer.WellStyle.from_dict(style.to_dict()) == style
+    assert style.replace(path=style.path.replace(width=4)).path.width == 4
+    assert style.path.width == 3
+    assert petektools.WellStyle is viewer.WellStyle
+    with pytest.raises(ValueError, match="opacity"):
+        viewer.WellPathStyle(opacity=2)
+    with pytest.raises(ValueError, match="shape"):
+        viewer.WellMarkerStyle(shape="star")
+
+
+def test_view2d_first_class_wells_explicit_dict_and_label_modes():
+    wells = [
+        {"id": "A", "trajectory": [[0, 0, -10], [5, 3, -20]]},
+        {"id": "B", "x": 10, "y": 10, "trajectory": []},
+    ]
+    p = viewer.view2d_payload([], wells=wells, well_labels=True, encoding="json")
+    assert p["summary"]["wells"] == 2
+    assert p["wells"][0]["trajectory"] == [[0.0, 0.0, -10.0], [5.0, 3.0, -20.0]]
+    assert p["wells"][0]["label"] is True
+    assert p["wells"][0]["style"]["spec"] == "WellStyle"
+    assert p["map"]["wells"] == []
+
+
+def test_view3d_wells_collection_duck_and_auto_bound():
+    class Well:
+        def __init__(self, i):
+            self.id = f"W{i}"
+            self.trajectory = [[i, 0, -10], [i, 2, -20]]
+
+    class ProjectWells:
+        def values(self):
+            return [Well(i) for i in range(13)]
+
+    p = viewer.view3d_payload([], wells=ProjectWells(), well_labels="auto")
+    assert len(p["scene3d"]["wells"]) == 13
+    assert all(w["label"] is False for w in p["scene3d"]["wells"])
+    p2 = viewer.view3d_payload([], wells=[Well(1)], well_labels=True)
+    assert p2["scene3d"]["wells"][0]["label"] is True
+
+
+def test_wells_omitted_keeps_payload_shape_exact():
+    old = viewer.view2d_payload([_Points3D()], encoding="json")
+    explicit_default = viewer.view2d_payload(
+        [_Points3D()], wells=None, well_labels=False, well_style=None, encoding="json"
+    )
+    assert explicit_default == old
 
 
 def test_view3d_contours_reuse_view2d_seam():

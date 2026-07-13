@@ -34,6 +34,7 @@ from petektools.viewer import _v3, save_view
 _BENCH_JS = Path(__file__).parent / "viewer_perf" / "decode_bench.js"
 _RENDER_JS = Path(__file__).parent / "viewer_perf" / "render_bench.mjs"
 _WELLS_JS = Path(__file__).parent / "viewer_perf" / "wells_bench.mjs"
+_WELL_RENDER_JS = Path(__file__).parent / "viewer_perf" / "well_render_bench.mjs"
 _NODE = shutil.which("node")
 
 
@@ -297,6 +298,33 @@ def _run_wells(view: Path, *extra: str, timeout: int = 120) -> dict:
     line = (out.stdout.strip().splitlines() or ["{}"])[-1]
     data = json.loads(line) if line.startswith("{") else {}
     return {"rc": out.returncode, "stderr": out.stderr, **data}
+
+
+@pytest.mark.skipif(not _HAVE_PW, reason="playwright + chromium not available (browser leg)")
+@pytest.mark.parametrize("nwells", [1, 8, 50])
+def test_first_class_wells_map_and_scene3d(nwells, tmp_path):
+    from petektools import viewer
+
+    wells = []
+    for i in range(nwells):
+        # Every eighth bore is co-located (sidetrack semantics); the rest form
+        # a deterministic field grid with a short deviated XY/Z path.
+        x = float((i // 8) * 120 + (0 if i % 8 == 7 else (i % 8) * 35))
+        y = float((i // 8) * 90)
+        wells.append({"id": f"W{i:02d}", "trajectory": [[x, y, -100], [x + 18, y + 9, -350]]})
+    payload = viewer.view2d_payload([], wells=wells, well_labels=True, encoding="json")
+    payload["scene3d"] = viewer.view3d_payload(
+        [], wells=wells, well_labels=True
+    )["scene3d"]
+    out = tmp_path / f"well_render_{nwells}.html"
+    save_view(payload, out)
+    run = subprocess.run([_NODE, str(_WELL_RENDER_JS), str(out)], capture_output=True, text=True, timeout=120)
+    data = json.loads((run.stdout.strip().splitlines() or ["{}"])[-1])
+    assert run.returncode == 0, data or run.stderr
+    assert not data["consoleErrors"] and data["mapHover"] is False
+    assert data["mapLayout"]["visible"] == nwells
+    assert data["mapLayout"]["labels"] <= nwells
+    assert data["labelsAfter"]["visible"] <= nwells
 
 
 @pytest.mark.skipif(not _HAVE_PW, reason="playwright + chromium not available (browser leg)")

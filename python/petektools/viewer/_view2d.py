@@ -30,6 +30,7 @@ from typing import Any, Iterable, Sequence
 from . import _blocks
 from ._save import save_view
 from ._server import serve
+from ._well_style import WellStyle, normalize_wells
 
 
 def view2d_payload(
@@ -39,6 +40,9 @@ def view2d_payload(
     color: bool | str = True,
     fill: bool | str | None = None,
     contours: float | list[float] | None = None,
+    wells: Any = None,
+    well_labels: bool | str = False,
+    well_style: WellStyle | dict[str, Any] | None = None,
     max_grid_lines: int = 800,
     max_line_points: int = 1000,
     point_limit: int | None = 200_000,
@@ -176,6 +180,7 @@ def view2d_payload(
     floats) stays plain JSON regardless. ``encoding="json"`` forces the plain
     (pre-blocks) shape; the viewer renders either.
     """
+    well_entries = normalize_wells(wells, labels=well_labels, style=well_style)
     color_spec = _parse_spec(color, "color")
     fill_spec = _parse_spec(fill, "fill")
     auto_fill = fill is None
@@ -404,7 +409,14 @@ def view2d_payload(
         )
 
     if frame is None:
-        frame = _frame_from_extent(_extent(points, grid_lines, outlines))
+        well_lines = [
+            [[float(p[0]), float(p[1])] for p in well.get("trajectory", [])]
+            for well in well_entries
+            if well.get("trajectory")
+        ]
+        frame = _frame_from_extent(
+            _extent(points, [*grid_lines, *well_lines], outlines)
+        )
     if not outlines:
         outlines = _rect_outline_from_frame(frame)
 
@@ -429,6 +441,8 @@ def view2d_payload(
         summary["contour_levels"] = len(contour_sets)
     if point_color is not None:
         summary["point_color"] = point_color["by"]
+    if well_entries:
+        summary["wells"] = len(well_entries)
 
     if encoding not in ("blocks", "json"):
         raise ValueError(f"encoding= must be 'blocks' or 'json', got {encoding!r}")
@@ -459,7 +473,7 @@ def view2d_payload(
         },
         "sections": [],
         "section_labels": [],
-        "wells": [],
+        "wells": well_entries,
         "charts": [],
     }
     # Additive stride-ladder LOD: the coarse mesh-grid-line ring (fills / contours
@@ -483,6 +497,9 @@ def view2d(
     color: bool | str = True,
     fill: bool | str | None = None,
     contours: float | list[float] | None = None,
+    wells: Any = None,
+    well_labels: bool | str = False,
+    well_style: WellStyle | dict[str, Any] | None = None,
     save: str | Path | None = None,
     port: int = 0,
     block: bool = False,
@@ -514,6 +531,9 @@ def view2d(
         color=color,
         fill=fill,
         contours=contours,
+        wells=wells,
+        well_labels=well_labels,
+        well_style=well_style,
         max_grid_lines=max_grid_lines,
         max_line_points=max_line_points,
         point_limit=point_limit,

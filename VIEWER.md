@@ -235,7 +235,9 @@ cell dims (i×j×k) and mean cell size on every tab.
 ### 3D (three.js — the `view3d` scene)
 The generic 3-D companion to the `view2d` QA path: `petektools.view3d([...])`
 accepts the SAME duck-typed items (points, geometries, trimeshes,
-`value_layer()` surfaces, `iso_lines()` contours, outlines) plus wells
+`value_layer()` surfaces, `iso_lines()` contours, outlines) plus first-class
+`wells=` (a bare well, a project-wells collection, or explicit dictionaries;
+`well_labels=False|True|"auto"`; shared serializable `WellStyle`) and item wells
 (`trajectory()` of `[x, y, z]` rows, z **elevation** — negative down, the
 family convention) and renders them in **one Three.js scene** (payload
 `scene3d`; the "3D" tab appears only when present). `color=` / `fill=` /
@@ -253,7 +255,8 @@ back to the scene's shallowest point), with edge rings at that same level.
 Unclassified legacy geometry/value ducks retain the flat fallback; `fill=` still
 opts any value-bearing producer into the value-coloured mesh. Contour polylines
 draw at their level, and wells
-draw identity-coloured with a screen-sized wellhead marker. The panel carries
+draw identity-coloured with a screen-sized wellhead marker and crisp labels
+projected only on render/orbit/resize (no permanent loop). The panel carries
 the colormap selector and the volume tab's **z-exaggeration** control (slider +
 "fit z ×N", display-only scale with a `z ×N` badge and true depths in the
 readout); the legend is the Map tab's per-layer machinery (type icons +

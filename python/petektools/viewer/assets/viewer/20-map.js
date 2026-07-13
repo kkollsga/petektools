@@ -26,7 +26,10 @@
     }
     (App.payload.map.fills || []).forEach(function (f) { var N = f.nodes; for (var q = 0; q < (N ? N.length : 0); q++) ext(ndX(N, q), ndY(N, q)); });
     (App.payload.map.contours || []).forEach(function (c) { extLineSet(c.lines); });
-    (App.payload.wells || []).forEach(function (w) { ext(w.x, w.y); });
+    (App.payload.wells || []).forEach(function (w) {
+      ext(w.x, w.y);
+      (w.trajectory || []).forEach(function (p) { ext(p[0], p[1]); });
+    });
     return { x0: xlo, y0: ylo, x1: xhi, y1: yhi };
   }
   function fitMap(cv) {
@@ -562,40 +565,70 @@
     // Cached contact overlays retain their historical position above points.
     drawOverlayCache(ctx, cv, "over");
 
-    // wells (markers + click-to-section). Co-located bores that share a wellhead
-    // (sidetracks) collapse to ONE shared marker with a bore-count badge; their
-    // labels fan out radially with leader lines so none collide or hide.
+    // Wells: projected XY trajectories + polished screen-space heads. Labels
+    // use a deterministic bounded candidate ledger; no hover path is installed.
     var visWells = [];
     (App.payload.wells || []).forEach(function (well, wi) { if (S.wellVis[wi]) visWells.push({ w: well, s: w2s(well.x, well.y) }); });
+    visWells.forEach(function (v) {
+      var ps = (v.w.style && v.w.style.path) || {}, tr = v.w.trajectory || [];
+      if (tr.length < 2) return;
+      ctx.save(); ctx.strokeStyle = ps.color || idColor("well:" + v.w.id);
+      ctx.lineWidth = ps.width || 2; ctx.globalAlpha = ps.opacity == null ? .9 : ps.opacity;
+      ctx.setLineDash(ps.dash || []); ctx.beginPath();
+      tr.forEach(function (p, q) { var s2 = w2s(p[0], p[1]); if (!q) ctx.moveTo(s2[0], s2[1]); else ctx.lineTo(s2[0], s2[1]); });
+      ctx.stroke(); ctx.restore();
+    });
     var clusters = [];
     visWells.forEach(function (v) {
       var c = null;
       for (var q = 0; q < clusters.length; q++) { if (Math.hypot(clusters[q].s[0] - v.s[0], clusters[q].s[1] - v.s[1]) <= 10) { c = clusters[q]; break; } }
       if (c) c.items.push(v); else clusters.push({ s: v.s.slice(), items: [v] });
     });
-    ctx.font = "11px system-ui";
+    var labelBoxes = [], labelCount = 0;
+    function labelWell(v, anchor, preferred) {
+      if (!v.w.label) return;
+      var ls = (v.w.style && v.w.style.label) || {}, fs = ls.font_size || 11;
+      var text = disp(v.w, v.w.id); ctx.font = fs + "px system-ui";
+      var tw = ctx.measureText(text).width, candidates = preferred || [[9, 3], [9, -9], [-tw - 9, 3], [-tw - 9, -9], [9, 16], [-tw - 9, 16]];
+      var chosen = null, maxD = ls.max_displacement || 72;
+      for (var ci = 0; ci < candidates.length; ci++) {
+        var dx = candidates[ci][0], dy = candidates[ci][1];
+        if (Math.hypot(dx, dy) > maxD) continue;
+        var b = { x: anchor[0] + dx - 2, y: anchor[1] + dy - fs, w: tw + 4, h: fs + 4 };
+        var hit = labelBoxes.some(function (o) { return b.x < o.x + o.w && b.x + b.w > o.x && b.y < o.y + o.h && b.y + b.h > o.y; });
+        if (!hit) { chosen = { x: anchor[0] + dx, y: anchor[1] + dy, b: b }; break; }
+      }
+      if (!chosen) return;
+      labelBoxes.push(chosen.b); labelCount++;
+      if (ls.leader !== false && Math.hypot(chosen.x - anchor[0], chosen.y - anchor[1]) > 10) {
+        ctx.strokeStyle = ls.color || idColor("well:" + v.w.id); ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(anchor[0], anchor[1]); ctx.lineTo(chosen.x, chosen.y - 3); ctx.stroke();
+      }
+      ctx.fillStyle = ls.color || token("--text-secondary");
+      if (ls.halo !== false) { ctx.strokeStyle = token("--surface-1"); ctx.lineWidth = 3; ctx.strokeText(text, chosen.x, chosen.y); }
+      ctx.fillText(text, chosen.x, chosen.y);
+    }
+    function drawHead(w, s, shared) {
+      var ms = (w.style && w.style.marker) || {}, r = (ms.size || (shared ? 8 : 7)) / 2;
+      var fill = ms.fill || idColor("well:" + w.id), stroke = ms.stroke || token("--surface-1");
+      ctx.save(); ctx.beginPath();
+      if (ms.shape === "diamond") { ctx.moveTo(s[0], s[1]-r); ctx.lineTo(s[0]+r,s[1]); ctx.lineTo(s[0],s[1]+r); ctx.lineTo(s[0]-r,s[1]); ctx.closePath(); }
+      else if (ms.shape === "square") ctx.rect(s[0]-r,s[1]-r,2*r,2*r);
+      else ctx.arc(s[0], s[1], r, 0, 6.2832);
+      ctx.fillStyle = fill; ctx.fill(); ctx.lineWidth = ms.stroke_width || 2; ctx.strokeStyle = stroke; ctx.stroke(); ctx.restore();
+    }
     clusters.forEach(function (cl) {
       var s = cl.s, shared = cl.items.length > 1;
       if (shared) {
-        // radial leader lines + coloured label dots for each bore
         var R = 26;
         cl.items.forEach(function (v, k) {
           var ang = -Math.PI / 2 + (k / cl.items.length) * 2 * Math.PI;
           var lx = s[0] + Math.cos(ang) * R, ly = s[1] + Math.sin(ang) * R;
           var col = idColor("well:" + v.w.id);
-          ctx.strokeStyle = col; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(s[0], s[1]); ctx.lineTo(lx, ly); ctx.stroke();
-          ctx.beginPath(); ctx.arc(lx, ly, 3.5, 0, 6.2832); ctx.fillStyle = col; ctx.fill();
-          ctx.strokeStyle = token("--surface-1"); ctx.lineWidth = 1; ctx.stroke();
-          var right = Math.cos(ang) >= 0;
-          ctx.fillStyle = token("--text-secondary"); ctx.textAlign = right ? "left" : "right";
-          ctx.fillText(disp(v.w, v.w.id), lx + (right ? 6 : -6), ly + 3);
-          ctx.textAlign = "left"; drawTieGlyph(ctx, lx, ly, v.w);
+          if (v.w.label) { ctx.strokeStyle = col; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(s[0], s[1]); ctx.lineTo(lx, ly); ctx.stroke(); }
+          drawHead(v.w, [lx, ly], false); labelWell(v, [lx, ly]); drawTieGlyph(ctx, lx, ly, v.w);
         });
-        ctx.textAlign = "left";
-        // shared wellhead marker
-        ctx.beginPath(); ctx.arc(s[0], s[1], 6, 0, 6.2832);
-        ctx.fillStyle = token("--text-secondary"); ctx.fill();
-        ctx.lineWidth = 2; ctx.strokeStyle = token("--surface-1"); ctx.stroke();
+        drawHead(cl.items[0].w, s, true);
         // bore-count badge
         ctx.beginPath(); ctx.arc(s[0] + 7, s[1] - 7, 6.5, 0, 6.2832);
         ctx.fillStyle = token("--accent"); ctx.fill();
@@ -604,14 +637,10 @@
         ctx.fillText(String(cl.items.length), s[0] + 7, s[1] - 7);
         ctx.textAlign = "left"; ctx.textBaseline = "alphabetic"; ctx.font = "11px system-ui";
       } else {
-        var well = cl.items[0].w, col = idColor("well:" + well.id);
-        ctx.beginPath(); ctx.arc(s[0], s[1], 5, 0, 2 * Math.PI);
-        ctx.fillStyle = col; ctx.fill();
-        ctx.lineWidth = 2; ctx.strokeStyle = token("--surface-1"); ctx.stroke();
-        ctx.fillStyle = token("--text-secondary"); ctx.fillText(disp(well, well.id), s[0] + 8, s[1] + 3);
-        drawTieGlyph(ctx, s[0], s[1], well);
+        var v = cl.items[0]; drawHead(v.w, s, false); labelWell(v, s); drawTieGlyph(ctx, s[0], s[1], v.w);
       }
     });
+    window.__PETEK_WELL_LAYOUT = { visible: visWells.length, clusters: clusters.length, labels: labelCount, labelBoxes: labelBoxes };
 
     // in-progress fence
     if (S.fence.pts.length) {

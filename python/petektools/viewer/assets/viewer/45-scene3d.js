@@ -65,12 +65,16 @@
     var scene = new THREE.Scene();
     var camera = new THREE.PerspectiveCamera(50, 1, 0.1, 1e9);
     var controls = new THREE.OrbitControls(camera, renderer.domElement);
-    controls.addEventListener("change", function () { renderer.render(scene, camera); });
+    controls.addEventListener("change", function () { if (s3d && s3d.render) s3d.render(); else renderer.render(scene, camera); });
     scene.add(new THREE.AmbientLight(0xffffff, 0.75));
     var dir = new THREE.DirectionalLight(0xffffff, 0.7); dir.position.set(1, 1, 2); scene.add(dir);
     var group = new THREE.Group(); scene.add(group);
-    s3d = { THREE: THREE, renderer: renderer, scene: scene, camera: camera, controls: controls, group: group, badge: badge, framed: false };
-    s3d.render = function () { renderer.render(scene, camera); };
+    var labels = document.createElement("div");
+    labels.className = "scene3d-well-labels";
+    labels.style.cssText = "position:absolute;inset:0;overflow:hidden;pointer-events:none";
+    host.appendChild(labels);
+    s3d = { THREE: THREE, renderer: renderer, scene: scene, camera: camera, controls: controls, group: group, badge: badge, labels: labels, framed: false };
+    s3d.render = function () { renderer.render(scene, camera); updateScene3dWellLabels(); };
     wireScene3dClickInspect(renderer.domElement);
   }
   function resizeScene3d(host) {
@@ -170,7 +174,7 @@
 
     var built = {
       _for: sc, _colormap: S.colormap,
-      pointObjs: [], meshObjs: [], wellObjs: [],
+      pointObjs: [], meshObjs: [], wellObjs: [], wellLabels: [],
       latticeObjs: [], contourObjs: [], outlineObjs: [],
       latticeZ: [], // per-lattice rendered flat level (data-space; tests)
       pointCount: 0, triangleCount: 0,
@@ -304,19 +308,22 @@
         pts.push(new THREE.Vector3(p[0] - cx, p[2] - cz, p[1] - cy));
       });
       if (!pts.length) return;
-      var color = idColor("well:" + w.id) || "#888";
+      var ws = w.style || {}, ps = ws.path || {}, ms = ws.marker || {};
+      var color = ps.color || idColor("well:" + w.id) || "#888";
       var line = new THREE.Line(
         new THREE.BufferGeometry().setFromPoints(pts),
-        new THREE.LineBasicMaterial({ color: new THREE.Color(color) })
+        new THREE.LineBasicMaterial({ color: new THREE.Color(color), transparent: (ps.opacity == null ? .9 : ps.opacity) < 1, opacity: ps.opacity == null ? .9 : ps.opacity })
       );
       // wellhead marker: a screen-sized point sprite (immune to z-exaggeration)
       var mgeo = new THREE.BufferGeometry();
       mgeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array([pts[0].x, pts[0].y, pts[0].z]), 3));
-      var marker = new THREE.Points(mgeo, new THREE.PointsMaterial({ size: 8, sizeAttenuation: false, color: new THREE.Color(color) }));
+      var markerColor = ms.fill || idColor("well:" + w.id) || color;
+      var marker = new THREE.Points(mgeo, new THREE.PointsMaterial({ size: ms.size || 7, sizeAttenuation: false, color: new THREE.Color(markerColor) }));
       line.userData.petek = { kind: "well", name: w.id, label: disp(w, w.id) };
       marker.userData.petek = { kind: "well", name: w.id, label: disp(w, w.id) };
       s3d.group.add(line); s3d.group.add(marker);
       built.wellObjs.push(line); built.wellObjs.push(marker);
+      if (w.label) built.wellLabels.push({ w: w, p: pts[0].clone() });
     });
 
     var stride = Math.max(triStride, ptStride);
@@ -334,8 +341,41 @@
       points: built.pointCount, triangles: built.triangleCount,
       meshes: built.meshObjs.length, wells: (sc.wells || []).length,
       lattices: built.latticeObjs.length, latticeZ: built.latticeZ,
-      buildMs: built.buildMs,
+      buildMs: built.buildMs, labels: built.wellLabels.length,
     });
+  }
+
+  // Crisp DOM labels projected only when the scene explicitly renders (initial
+  // build, orbit change, resize, theme/z controls). There is no permanent loop.
+  function updateScene3dWellLabels() {
+    if (!s3d || !s3d.labels) return;
+    s3d.labels.textContent = "";
+    if (!s3dBuilt || !S.s3dShow.wells) return;
+    var rect = s3d.renderer.domElement.getBoundingClientRect(), boxes = [];
+    s3dBuilt.wellLabels.forEach(function (entry) {
+      var p = entry.p.clone().applyMatrix4(s3d.group.matrixWorld).project(s3d.camera);
+      if (p.z < -1 || p.z > 1) return;
+      var ax = (p.x * .5 + .5) * rect.width, ay = (-p.y * .5 + .5) * rect.height;
+      var ls = (entry.w.style && entry.w.style.label) || {}, fs = ls.font_size || 11;
+      var text = disp(entry.w, entry.w.id), tw = Math.max(24, text.length * fs * .58);
+      var candidates = [[9,-fs/2],[9,-fs-8],[-tw-9,-fs/2],[-tw-9,-fs-8],[9,10],[-tw-9,10]], chosen = null;
+      for (var ci=0; ci<candidates.length; ci++) {
+        var dx=candidates[ci][0], dy=candidates[ci][1];
+        if (Math.hypot(dx,dy) > (ls.max_displacement || 72)) continue;
+        var b={x:ax+dx-2,y:ay+dy-2,w:tw+4,h:fs+5};
+        if (!boxes.some(function(o){return b.x<o.x+o.w&&b.x+b.w>o.x&&b.y<o.y+o.h&&b.y+b.h>o.y;})) { chosen={x:ax+dx,y:ay+dy,b:b}; break; }
+      }
+      if (!chosen) return; boxes.push(chosen.b);
+      var d=document.createElement("div"); d.textContent=text;
+      d.style.cssText="position:absolute;white-space:nowrap;font:"+fs+"px system-ui;color:"+(ls.color||"var(--text-secondary)")+";left:"+chosen.x+"px;top:"+chosen.y+"px"+(ls.halo===false?"":";text-shadow:-1px -1px var(--surface-1),1px -1px var(--surface-1),-1px 1px var(--surface-1),1px 1px var(--surface-1)");
+      s3d.labels.appendChild(d);
+      if (ls.leader !== false && Math.hypot(chosen.x-ax,chosen.y-ay)>10) {
+        var l=document.createElement("div"), dx2=chosen.x-ax, dy2=chosen.y-ay, len=Math.hypot(dx2,dy2);
+        l.style.cssText="position:absolute;left:"+ax+"px;top:"+ay+"px;width:"+len+"px;height:1px;background:"+(ls.color||idColor("well:"+entry.w.id))+";transform-origin:0 0;transform:rotate("+Math.atan2(dy2,dx2)+"rad)";
+        s3d.labels.appendChild(l);
+      }
+    });
+    window.__PETEK_SCENE3D_WELL_LABELS = { requested: s3dBuilt.wellLabels.length, visible: boxes.length, boxes: boxes };
   }
 
   function bakeMeshColors(m, col) {
@@ -682,4 +722,3 @@
     if (keys.childNodes.length) lg.appendChild(keys);
     lg.style.display = lg.childNodes.length ? "block" : "none";
   }
-
