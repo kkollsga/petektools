@@ -100,14 +100,17 @@ infer `disabled=True`; these records have no resource links and never fetch.
 
 The live `model.json` contains only workspace manifest v1 and any caller-supplied
 typed payload. `./workspace-resource?item=…&view=…&lane=…` constructs one
-resource on first request and caches it under a lock; failures are diagnostics
-and remain retryable. `WorkspaceSession.save(include="visible")` embeds only
+resource on first request with per-key single-flight caching: concurrent requests
+for the same resource share one producer call while distinct resources build in
+parallel. Failures are isolated diagnostics and remain retryable.
+`WorkspaceSession.save(include="visible")` embeds only
 initially visible resources; `include="selected"` embeds every catalogued
 resource and every declared lane so the full chosen tree and its attribute
 selectors remain available offline. A visible-only export embeds just each
 visible view's declared active lane. Both use the same zero-network,
-self-contained HTML export. `refresh()` is the explicit boundary
-for producer/tree mutation and clears the resource snapshot.
+self-contained HTML export. `refresh()` is the explicit boundary for
+producer/tree mutation; it clears the resource snapshot without allowing an
+older in-flight completion to repopulate the refreshed cache.
 
 Workspace payloads use a three-region application shell: the searchable Project
 navigator owns the left side, the active viewport stays central, and a

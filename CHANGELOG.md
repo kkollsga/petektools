@@ -7,6 +7,11 @@ All notable changes to petekTools are recorded here. Format follows
 ## [Unreleased]
 
 ### Added
+- **Parallel workspace materialization.** Lazy workspace resources now use
+  per-item/view/lane single-flight caching: duplicate concurrent requests share
+  one producer call while distinct resources materialize in parallel. Failures
+  remain isolated and retryable, and refresh cannot publish stale in-flight
+  results into the new snapshot.
 - **Workspace application shell.** Workspace payloads now render as a deliberate
   three-region application: a persistent, resizable Project navigator on the
   left, the active viewport in the centre, and a collapsible contextual

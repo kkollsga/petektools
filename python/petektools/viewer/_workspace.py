@@ -11,7 +11,7 @@ from __future__ import annotations
 import copy
 import json
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 from urllib.parse import quote
@@ -135,6 +135,16 @@ class WorkspaceItem:
 
 
 WorkspaceNode = WorkspaceGroup | WorkspaceItem
+
+
+@dataclass(slots=True)
+class _ResourceFlight:
+    """One generation-bound resource materialization shared by its waiters."""
+
+    generation: int
+    event: threading.Event = field(default_factory=threading.Event)
+    result: dict[str, Any] | None = None
+    error: BaseException | None = None
 
 
 def _empty_payload(title: str) -> dict[str, Any]:
@@ -552,6 +562,8 @@ class WorkspaceSession:
         self._base_payload = _payload_object(payload, self._title)
         self._lock = threading.RLock()
         self._cache: dict[tuple[str, str, str | None], dict[str, Any]] = {}
+        self._inflight: dict[tuple[str, str, str | None], _ResourceFlight] = {}
+        self._generation = 0
         self._diagnostics: list[dict[str, Any]] = []
         self._url: str | None = None
         self._server: Any = None
@@ -608,7 +620,11 @@ class WorkspaceSession:
         """Replace the catalog snapshot and clear all materialized resources."""
         with self._lock:
             self._snapshot()
+            self._generation += 1
             self._cache.clear()
+            # Existing callers retain their flight object and are woken by its
+            # producer, but post-refresh callers start against the new snapshot.
+            self._inflight.clear()
             self._diagnostics.clear()
         return self
 
@@ -646,41 +662,56 @@ class WorkspaceSession:
 
     def resource(self, item_id: str, view: str, lane: str | None = None) -> dict[str, Any]:
         """Materialize and cache one typed leaf/view resource."""
-        if item_id not in self._items:
-            raise KeyError(f"unknown workspace item {item_id!r}")
-        item = self._items[item_id]
-        if item.disabled or view not in dict(item.views):
-            raise KeyError(f"workspace item {item_id!r} has no {view!r} resource")
-        lanes = item.lanes_for(view)
-        if lanes:
-            lane = item.active_lane(view) if lane is None else lane
-            declared = {lane_id for lane_id, _ in lanes}
-            if lane not in declared:
-                raise KeyError(
-                    f"workspace item {item_id!r} view {view!r} has no lane {lane!r}"
-                )
-        key = (item_id, view, lane)
         with self._lock:
+            if item_id not in self._items:
+                raise KeyError(f"unknown workspace item {item_id!r}")
+            item = self._items[item_id]
+            if item.disabled or view not in dict(item.views):
+                raise KeyError(f"workspace item {item_id!r} has no {view!r} resource")
+            lanes = item.lanes_for(view)
+            if lanes:
+                lane = item.active_lane(view) if lane is None else lane
+                declared = {lane_id for lane_id, _ in lanes}
+                if lane not in declared:
+                    raise KeyError(
+                        f"workspace item {item_id!r} view {view!r} has no lane {lane!r}"
+                    )
+            key = (item_id, view, lane)
             cached = self._cache.get(key)
             if cached is not None:
                 return copy.deepcopy(cached)
-            try:
-                value = self._materializer(item, view, lane)()
-                if isinstance(value, str):
-                    value = json.loads(value)
-                if not isinstance(value, Mapping):
-                    raise TypeError("workspace resource provider must return a mapping or JSON object")
-                result = {
-                    "schema_version": 1,
-                    "kind": "workspace_resource",
-                    "item_id": item_id,
-                    "view": view,
-                    "lane": lane,
-                    "payload": copy.deepcopy(dict(value)),
-                }
-                self._cache[key] = result
-                return copy.deepcopy(result)
-            except Exception as exc:
+            flight = self._inflight.get(key)
+            leader = flight is None
+            if flight is None:
+                flight = _ResourceFlight(self._generation)
+                self._inflight[key] = flight
+
+        if not leader:
+            flight.event.wait()
+            if flight.error is not None:
+                raise flight.error
+            assert flight.result is not None
+            return copy.deepcopy(flight.result)
+
+        try:
+            value = self._materializer(item, view, lane)()
+            if isinstance(value, str):
+                value = json.loads(value)
+            if not isinstance(value, Mapping):
+                raise TypeError("workspace resource provider must return a mapping or JSON object")
+            result = {
+                "schema_version": 1,
+                "kind": "workspace_resource",
+                "item_id": item_id,
+                "view": view,
+                "lane": lane,
+                "payload": copy.deepcopy(dict(value)),
+            }
+        except Exception as exc:
+            with self._lock:
+                if self._inflight.get(key) is flight:
+                    del self._inflight[key]
+                flight.error = exc
                 self._diagnostics.append(
                     {
                         "item_id": item_id,
@@ -690,7 +721,19 @@ class WorkspaceSession:
                         "message": str(exc),
                     }
                 )
-                raise
+                flight.event.set()
+            raise
+
+        with self._lock:
+            if (
+                self._generation == flight.generation
+                and self._inflight.get(key) is flight
+            ):
+                self._cache[key] = result
+                del self._inflight[key]
+            flight.result = result
+            flight.event.set()
+        return copy.deepcopy(result)
 
     # The live/static methods are completed by the delivery layer below; keeping
     # them here makes the session contract inspectable from its first release.

@@ -365,6 +365,111 @@ def test_provider_catalog_and_resource_duck_are_lazy_once_under_concurrency():
     assert provider.resource_calls == 2
 
 
+def test_distinct_workspace_resources_materialize_concurrently():
+    class SlowProvider:
+        def __init__(self):
+            self.calls = []
+            self.lock = threading.Lock()
+
+        def view_catalog(self):
+            return [
+                {"id": f"surface:{index}", "views": {"map": {}}, "visible": False}
+                for index in range(4)
+            ]
+
+        def view_resource(self, *, item_id, view, lane=None):
+            with self.lock:
+                self.calls.append((item_id, view, lane))
+            time.sleep(0.2)
+            return {"map": {"item_id": item_id}}
+
+    provider = SlowProvider()
+    session = WorkspaceSession(provider)
+    started = time.perf_counter()
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        values = list(
+            pool.map(lambda index: session.resource(f"surface:{index}", "map"), range(4))
+        )
+    elapsed = time.perf_counter() - started
+
+    assert elapsed < 0.45
+    assert len(provider.calls) == 4
+    assert [value["item_id"] for value in values] == [
+        f"surface:{index}" for index in range(4)
+    ]
+
+
+def test_workspace_resource_failure_isolated_and_retryable():
+    class FailingProvider:
+        def __init__(self):
+            self.calls = {"surface:good": 0, "surface:bad": 0}
+            self.fail = True
+            self.lock = threading.Lock()
+
+        def view_catalog(self):
+            return [
+                {"id": item_id, "views": {"map": {}}, "visible": False}
+                for item_id in self.calls
+            ]
+
+        def view_resource(self, *, item_id, view, lane=None):
+            with self.lock:
+                self.calls[item_id] += 1
+            time.sleep(0.1)
+            if item_id == "surface:bad" and self.fail:
+                raise RuntimeError("bad surface")
+            return {"map": {"item_id": item_id}}
+
+    provider = FailingProvider()
+    session = WorkspaceSession(provider)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        good = pool.submit(session.resource, "surface:good", "map")
+        bad = pool.submit(session.resource, "surface:bad", "map")
+        assert good.result()["item_id"] == "surface:good"
+        with pytest.raises(RuntimeError, match="bad surface"):
+            bad.result()
+
+    assert session.resource("surface:good", "map")["item_id"] == "surface:good"
+    provider.fail = False
+    assert session.resource("surface:bad", "map")["item_id"] == "surface:bad"
+    assert provider.calls == {"surface:good": 1, "surface:bad": 2}
+
+
+def test_workspace_refresh_does_not_publish_an_obsolete_inflight_resource():
+    class RefreshProvider:
+        def __init__(self):
+            self.version = 1
+            self.calls = []
+            self.started = threading.Event()
+            self.release_old = threading.Event()
+
+        def view_catalog(self):
+            return [{"id": "surface:top", "views": {"map": {}}, "visible": False}]
+
+        def view_resource(self, *, item_id, view, lane=None):
+            version = self.version
+            self.calls.append(version)
+            if version == 1:
+                self.started.set()
+                assert self.release_old.wait(timeout=2.0)
+            return {"map": {"version": version}}
+
+    provider = RefreshProvider()
+    session = WorkspaceSession(provider)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        old = pool.submit(session.resource, "surface:top", "map")
+        assert provider.started.wait(timeout=1.0)
+        provider.version = 2
+        session.refresh()
+        new = pool.submit(session.resource, "surface:top", "map")
+        assert new.result(timeout=1.0)["payload"]["map"]["version"] == 2
+        provider.release_old.set()
+        assert old.result(timeout=1.0)["payload"]["map"]["version"] == 1
+
+    assert session.resource("surface:top", "map")["payload"]["map"]["version"] == 2
+    assert provider.calls == [1, 2]
+
+
 def test_resource_failure_is_diagnostic_and_retryable():
     class Flaky(Provider):
         def view_resource(self, **kwargs):
