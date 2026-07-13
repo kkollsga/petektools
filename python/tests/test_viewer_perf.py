@@ -413,6 +413,7 @@ def test_workspace_lazy_views_localize_empty_and_malformed_states(
     assert status["state"] == expected
     assert status.get("reason") == result["final"]["empty"]
     assert status.get("reason")
+    assert {sample[view]["state"] for sample in result["history"]} == {expected}
 
 
 @pytest.mark.skipif(not _HAVE_PW, reason="playwright/chromium not installed")
@@ -450,6 +451,10 @@ def test_workspace_slow_scene_reports_loading_then_ready(tmp_path):
     result = json.loads(out.stdout.strip().splitlines()[-1])
     assert result["first"]["scene3d"]["state"] == "loading"
     assert result["final"]["scene3d"]["state"] == "ok"
+    states = [sample["scene3d"]["state"] for sample in result["history"]]
+    first_ready = states.index("ok")
+    assert set(states[:first_ready]) == {"loading"}
+    assert set(states[first_ready:]) == {"ok"}
 
 
 def _build_scale_view(scale: str, tmp_path: Path) -> Path:

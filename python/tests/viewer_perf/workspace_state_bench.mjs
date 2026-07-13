@@ -22,9 +22,20 @@ const result = await page.evaluate(async () => {
     empty: document.getElementById("empty").textContent,
   });
   const first = read();
-  for (let i = 0; i < 100 && window.__PETEK_WORKSPACE_STATE.loading; i++) await sleep(20);
-  await sleep(30);
-  return { first, final: read(), workspace: { ...window.__PETEK_WORKSPACE_STATE } };
+  const history = [read()];
+  for (let i = 0; i < 100 && window.__PETEK_WORKSPACE_STATE.loading; i++) {
+    await sleep(20); history.push(read());
+  }
+  await sleep(30); history.push(read());
+  // Force the redraw paths that historically allowed a late scene success to
+  // overwrite the workspace's terminal empty/malformed state.
+  for (let i = 0; i < 8; i++) {
+    const tab = document.querySelector('.tab[aria-selected="true"]');
+    if (tab) tab.click();
+    window.dispatchEvent(new Event("resize"));
+    await sleep(15); history.push(read());
+  }
+  return { first, final: read(), history, workspace: { ...window.__PETEK_WORKSPACE_STATE } };
 });
 result.consoleErrors = errors;
 await browser.close();

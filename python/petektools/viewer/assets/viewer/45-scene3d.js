@@ -17,6 +17,15 @@
   // __PETEK_VOLUME_STATUS): { state: "ok"|"error", points, triangles, buildMs }.
   function setScene3dStatus(state, info) {
     if (typeof window !== "undefined") {
+      // A renderer/decode completion may arrive after the selected workspace
+      // resource changed. Never let that stale success overwrite the current
+      // localized loading/empty/malformed/error state.
+      if (state === "ok") {
+        var feedback = workspaceViewFeedback("scene3d");
+        if (feedback && feedback.state !== "ready") {
+          state = feedback.state; info = { reason: feedback.message };
+        }
+      }
       window.__PETEK_SCENE3D_STATUS = Object.assign({ state: state }, info || {});
     }
   }

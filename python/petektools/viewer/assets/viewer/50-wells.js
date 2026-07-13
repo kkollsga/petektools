@@ -8,6 +8,15 @@
   // such pick are parked unflattened + tagged). Curve identity is by TRACK
   // (mnemonic), never by well — PHIE is one colour everywhere.
   function trackRatio(kind) { return kind === "flag" ? 0.42 : 1.0; }
+  function setWellsStatus(state, info) {
+    if (state === "ready") {
+      var feedback = workspaceViewFeedback("wells");
+      if (feedback && feedback.state !== "ready") {
+        state = feedback.state; info = { reason: feedback.message };
+      }
+    }
+    window.__PETEK_WELLS_STATUS = Object.assign({ state: state }, info || {});
+  }
   function correlationTracks(w) {
     var tpl = S.wl.template;
     if (!tpl || !tpl.tracks || !tpl.tracks.length) return w.curves.map(function(c){ return { curve:c, curves:[{curve:c, layer:null}], ratio:trackRatio(c.kind), def:null }; });
@@ -58,15 +67,15 @@
     var cv = document.getElementById("wells-canvas");
     var feedback = workspaceViewFeedback("wells");
     if (feedback && feedback.state !== "ready") {
-      window.__PETEK_WELLS_STATUS = { state: feedback.state, reason: feedback.message };
+      setWellsStatus(feedback.state, { reason: feedback.message });
       showEmpty(feedback.message); return;
     }
     if (!S.wl) {
       var state = { state: "empty", message: "No well-log bundle (wells_logs) in this payload." };
-      window.__PETEK_WELLS_STATUS = { state: state.state, reason: state.message };
+      setWellsStatus(state.state, { reason: state.message });
       showEmpty(state.message); return;
     }
-    window.__PETEK_WELLS_STATUS = { state: "ready", wells: S.wl.wells.length };
+    setWellsStatus("ready", { wells: S.wl.wells.length });
     hideEmpty(); sizeCanvas(cv);
     var ctx = cv.getContext("2d");
     ctx.clearRect(0, 0, cv.width, cv.height);
