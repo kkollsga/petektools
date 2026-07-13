@@ -4,10 +4,11 @@ This module is deliberately domain-agnostic. It accepts plain coordinate
 sequences plus duck-typed objects from producer libraries: a point object may
 offer ``xyz()``/``xy()``, a geometry may offer ``node_xy(i, j)`` with ``ncol`` and
 ``nrow``, a triangulated mesh may offer ``triangles()`` with ``xyz()``/``points()``,
-and an outline may offer ``rings()``. Two optional value conventions extend
+and an outline may offer ``rings()``. Optional value conventions extend
 these: ``value_layer(attr=None)`` returns a per-node value-coloured trimesh
 (``{"name", "nodes", "triangles", "values", "range"}``; opted in via
-``fill=``), and ``iso_lines(interval=..., levels=..., attr=None)`` returns
+``fill=``), ``attr_names()`` advertises selectable named value layers, and
+``iso_lines(interval=..., levels=..., attr=None)`` returns
 ``[(level, [polyline, ...]), ...]`` contour polylines (opted in via
 ``contours=``). An optional ``name`` attribute on any item becomes the
 layer's legend display name.
@@ -34,7 +35,7 @@ def view2d_payload(
     *,
     title: str = "2D view",
     color: bool | str = True,
-    fill: bool | str = False,
+    fill: bool | str | None = None,
     contours: float | list[float] | None = None,
     max_grid_lines: int = 800,
     max_line_points: int = 1000,
@@ -56,22 +57,28 @@ def view2d_payload(
       optional ``wireframe_edges()`` (index pairs) overrides the drawn edge set,
       e.g. a quad-dominant wireframe with cell diagonals removed
     - outline: ``rings()`` returning rings of ``[x, y]`` or ``[x, y, z]`` rows
-    - value fill (opt-in via ``fill=``): ``value_layer(attr=None)`` returning
+    - value fill: ``value_layer(attr=None)`` returning
       ``{"name", "nodes", "triangles", "values", "range"}`` — a per-node
       value-coloured trimesh rendered UNDER the grid lines
+    - selectable attributes: an item offering callable ``attr_names()`` and
+      ``value_layer()`` automatically emits its primary layer followed by every
+      named attribute when ``fill`` is omitted; ``fill=False`` explicitly opts out
     - contour lines (opt-in via ``contours=``): ``iso_lines(interval=...,
       levels=..., attr=None)`` returning ``[(level, [polyline, ...]), ...]``
     - structured surface (value-bearing, e.g. petekio's regular ``Surface``):
       an item offering ``value_layer()`` (typically with a 2-D ``.geometry``)
       that matches no convention above renders its STRUCTURE when passed
       bare — the ``.geometry`` lattice lines (clipped to ``edge``), or,
-      geometry-less, its primary value layer's unique triangle edges. Values
-      never colour anything without an explicit ``fill=``
+      geometry-less, its primary value layer's unique triangle edges. A surface
+      that does not offer callable ``attr_names()`` stays structure-only when bare
 
     ``color=`` colours POINTS (and selects the colormap for whatever is
     value-coloured); it never triggers fills. It defaults ON — pass
-    ``color=False`` for monochrome points. ``fill=`` opts items into value
-    fills (``value_layer()``); contours keep their own ``contours=`` parameter.
+    ``color=False`` for monochrome points. Omitted ``fill`` auto-discovers the
+    primary + named layers only on items offering callable ``attr_names()`` and
+    ``value_layer()``; ``fill=False`` disables fills, ``fill=True`` requests only
+    the primary layer, and a string requests exactly that attribute. Contours keep
+    their own ``contours=`` parameter.
     Both accept ``bool`` or a string spec parsed by REGISTRY MATCH: the string
     splits on ``"_"``; if a token matches a known colormap name (``viridis`` /
     ``magma`` / ``grays`` / ``inferno``), everything before it is the attribute
@@ -95,8 +102,8 @@ def view2d_payload(
         {"object": obj, "color": bool | spec, "fill": bool | spec, "name": str}
 
     All keys but ``object`` are optional. Per-object settings take PRECEDENCE
-    over the call-level ``color=``/``fill=`` (which stay the defaults for bare
-    items — back-compat, ``color=True`` default included), and ``name``
+    over the call-level ``color=``/``fill=`` (including omitted-fill auto mode
+    when the dict has no ``fill`` key; ``color=True`` default included), and ``name``
     overrides the object's duck-typed display name. Colour/ramp/range travel
     PER LAYER: every points layer entry carries its slice of the shared points
     array (``start``/``n``) plus its own resolved ``range`` (the explicit spec
@@ -114,7 +121,10 @@ def view2d_payload(
     wins over ``fill``'s), and an explicit ``fill`` range overrides each fill
     entry's producer range. ``fill=True`` asks every item offering
     ``value_layer()`` for its primary layer; a string spec's attribute asks for
-    that attribute. ``contours=<float>`` requests ``iso_lines(interval=...)``;
+    that attribute. When ``fill`` is omitted, a callable ``attr_names()`` result
+    is validated as an ordered iterable of unique, non-empty strings; malformed
+    metadata fails loudly before any advertised attribute is emitted.
+    ``contours=<float>`` requests ``iso_lines(interval=...)``;
     a list requests ``iso_lines(levels=...)``; the ``color`` spec's attribute
     (if any) is forwarded as ``attr=``. Items without these methods are
     unaffected, and an item that yields a fill still contributes its
@@ -159,6 +169,7 @@ def view2d_payload(
     """
     color_spec = _parse_spec(color, "color")
     fill_spec = _parse_spec(fill, "fill")
+    auto_fill = fill is None
     lod_cfg = _parse_lod(lod)
     scene_items = _scene_items(items)
     points: list[list[float]] = []
@@ -179,9 +190,22 @@ def view2d_payload(
             scene_entry, color_spec, fill_spec
         )
         contributed = False
-        if fspec["enabled"]:
-            fill_entry = _value_fill(item, fspec["attr"])
+        auto_attrs = _auto_fill_attrs(item) if auto_fill and not f_explicit else None
+        requested_attrs: list[str | None] = []
+        if auto_attrs is not None:
+            requested_attrs = [None, *auto_attrs]
+        elif fspec["enabled"]:
+            requested_attrs = [fspec["attr"]]
+        emitted_fill_names: set[str] = set()
+        for requested_attr in requested_attrs:
+            fill_entry = _value_fill(item, requested_attr)
             if fill_entry is not None:
+                if auto_attrs is not None and fill_entry["name"] in emitted_fill_names:
+                    raise ValueError(
+                        f"value_layer() on {type(item).__name__} returned duplicate "
+                        f"layer name {fill_entry['name']!r} while enumerating attr_names()"
+                    )
+                emitted_fill_names.add(fill_entry["name"])
                 fill_entry["display_name"] = name
                 if fspec["range"] is not None:
                     fill_entry["range"] = list(fspec["range"])
@@ -189,7 +213,7 @@ def view2d_payload(
                     fill_entry["colormap"] = fspec["cmap"]  # per-object pin
                     item_cmap = item_cmap or fspec["cmap"]
                 if lod_cfg["enabled"]:
-                    ring = _value_fill_lod(item, fspec["attr"], lod_cfg["stride"])
+                    ring = _value_fill_lod(item, requested_attr, lod_cfg["stride"])
                     if ring is not None:
                         fill_entry["lod"] = {
                             "stride": lod_cfg["stride"],
@@ -200,6 +224,16 @@ def view2d_payload(
                         }
                 fills.append(fill_entry)
                 contributed = True
+            elif auto_attrs is not None:
+                label = (
+                    "primary layer"
+                    if requested_attr is None
+                    else f"attribute {requested_attr!r}"
+                )
+                raise TypeError(
+                    f"attr_names() on {type(item).__name__} advertised {label}, "
+                    "but value_layer() returned None"
+                )
         if contours is not None:
             iso = _iso_contours(item, contours, cspec["attr"], lod_cfg)
             if iso is not None:
@@ -407,7 +441,7 @@ def view2d(
     *,
     title: str = "2D view",
     color: bool | str = True,
-    fill: bool | str = False,
+    fill: bool | str | None = None,
     contours: float | list[float] | None = None,
     save: str | Path | None = None,
     port: int = 0,
@@ -424,8 +458,10 @@ def view2d(
     """Open or save a generic 2-D map view.
 
     ``color=`` colours points (and picks the colormap + clamp range through
-    the ``"[<attr>_]<cmap>[_<min>_<max>]"`` spec grammar); ``fill=`` opts
-    items into value-coloured fills; ``contours=`` opts them into contour
+    the ``"[<attr>_]<cmap>[_<min>_<max>]"`` spec grammar); omitted ``fill``
+    auto-enumerates the primary + named layers of objects offering callable
+    ``attr_names()`` and ``value_layer()``, while explicit ``fill=`` controls
+    one value-coloured fill; ``contours=`` opts items into contour
     lines (see :func:`view2d_payload` for the full grammar and duck-typed
     conventions). Returns the local server URL in live mode, the written path
     when ``save=`` is supplied, or the payload when ``open_browser=False`` and
@@ -594,6 +630,45 @@ def _value_fill(item: Any, attr: str | None) -> dict[str, Any] | None:
     if layer is None:
         return None
     return _coerce_fill(layer, type(item).__name__)
+
+
+def _auto_fill_attrs(item: Any) -> list[str] | None:
+    """Return ordered named attributes for omitted-``fill`` auto mode.
+
+    Auto mode is deliberately a two-duck handshake: both ``attr_names`` and
+    ``value_layer`` must be callable. A non-participating item returns ``None``
+    and retains the historical omitted-fill behaviour. Once an item participates,
+    malformed metadata fails loudly and deterministically rather than producing an
+    ambiguous selector or silently dropping a layer.
+    """
+    names_fn = getattr(item, "attr_names", None)
+    value_fn = getattr(item, "value_layer", None)
+    if not callable(names_fn) or not callable(value_fn):
+        return None
+    raw = names_fn()
+    if isinstance(raw, (str, bytes)) or not isinstance(raw, Iterable):
+        raise TypeError(
+            f"attr_names() on {type(item).__name__} must return an iterable of strings"
+        )
+    names: list[str] = []
+    seen: set[str] = set()
+    for index, value in enumerate(raw):
+        if not isinstance(value, str):
+            raise TypeError(
+                f"attr_names() on {type(item).__name__}: item {index} must be a string, "
+                f"got {type(value).__name__}"
+            )
+        if not value:
+            raise ValueError(
+                f"attr_names() on {type(item).__name__}: item {index} must not be empty"
+            )
+        if value in seen:
+            raise ValueError(
+                f"attr_names() on {type(item).__name__} returned duplicate name {value!r}"
+            )
+        seen.add(value)
+        names.append(value)
+    return names
 
 
 def _coerce_fill(layer: Any, name: str) -> dict[str, Any]:

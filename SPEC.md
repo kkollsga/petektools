@@ -55,8 +55,11 @@ JSON bundles** — map raster layers, section columns, a corner-point mesh (and,
 later, chart marks) — shipped as petekTools wheel package data (the crates.io Rust
 kernel crate excludes it and stays lean; the Rust kernel charter is unwidened).
 It carries **no domain logic, performs no computation, and does no domain I/O**:
-it draws exactly what the payload declares. New cross-sections come from a
-consumer-supplied `section_provider` callback (live) or are pre-computed into the
+it draws exactly what the payload declares. Its generic Python adapters may
+discover producer-declared render lanes through small duck-typed conventions
+(`value_layer` / `attr_names`), but never interpret their domain meaning. New
+cross-sections come from a consumer-supplied `section_provider` callback (live)
+or are pre-computed into the
 payload (file). petekTools defines the **generic render schema** (its contract,
 `python/petektools/viewer/SCHEMA.md`); each library maps its domain bundles onto
 it (petekStatic `StaticModel` views, petekIO logs/crossplots, peteksim MC charts).

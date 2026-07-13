@@ -98,11 +98,18 @@ coarse is up, and swaps back at full detail — geometry truth is never
 decimated. Payload shapes for both are in `SCHEMA.md` (MapBundle →
 **Binary blocks** / **Stride-ladder LOD**).
 
-For the `view2d` QA path, `color=` and `fill=` are **separate, explicit
-semantics** (owner ruling 2026-07-10): `color=` colours **points** (and picks
+For the `view2d` QA path, `color=` and `fill=` are **separate semantics**
+(owner rulings 2026-07-10 / 2026-07-13): `color=` colours **points** (and picks
 the colormap for whatever is value-coloured) — it never triggers fills, and it
-defaults ON (`color=False` for monochrome points); value **fills** come only
-from `fill=`; contour lines only from `contours=`. Both
+defaults ON (`color=False` for monochrome points). When `fill` is omitted, an
+item offering callable `attr_names()` **and** `value_layer()` contributes its
+primary layer followed by every named attribute in producer order; the Fill
+picker switches among them and labels each `source · layer` (for example,
+`Top Agat · values` / `Top Agat · thickness`). This is metadata discovery only:
+an existing producer without both ducks retains the structure-only omitted-fill
+behaviour. Explicit `fill=False` disables all fills, `fill=True` requests the
+primary only, and a string requests exactly that named lane; per-object dict
+overrides still win. Contour lines remain opt-in through `contours=`. Both
 `color=` and `fill=` accept `True` or a string spec parsed by **registry
 match**: `"[<attr>_]<cmap>[_<min>_<max>]"`, where `<cmap>` is one of
 `viridis` / `magma` / `grays` / `inferno` and the two trailing floats are an
@@ -113,18 +120,19 @@ all three. Values outside an explicit range **clamp to the ramp ends**, the
 parsed colormap initializes the panel selector (`map.colormap`), and a
 malformed spec raises `ValueError`. So `view2d([pts, geom], color=True)` shows
 exactly coloured points + geometry lines — no surprise trimesh fill. A
-value-bearing item passed bare (e.g. a petekio regular `Surface`:
-`value_layer()` + a 2-D `.geometry`, no top-level geometry/trimesh ducks)
-renders its STRUCTURE — the geometry lattice lines (or, geometry-less, its
-primary value layer's triangle edges); values still colour nothing without
-`fill=`.
+value-bearing item passed bare without callable `attr_names()` (for example a
+single-layer producer exposing only `value_layer()` + a 2-D `.geometry`) renders
+its STRUCTURE — the geometry lattice lines (or, geometry-less, its primary value
+layer's triangle edges). A producer that participates in the two-duck attribute
+handshake gets the selectable omitted-fill behaviour above.
 
 **Per-object colour — the dict item form (owner ruling 2026-07-11, view2d AND
 view3d).** A scene item may be a dict `{"object": obj, "color": bool|spec,
 "fill": bool|spec, "name": str}` — per-object settings take **precedence**
-over the call-level `color=`/`fill=` (which remain the defaults for bare
-items; `color=True` default unchanged), and `name` overrides the duck-typed
-display name. Colour/ramp/range travel **per layer**: each points layer /
+over the call-level `color=`/`fill=` (including omitted-fill auto mode for a
+dict item without its own `fill`; `color=True` default unchanged), and `name`
+overrides the duck-typed display name. Colour/ramp/range travel **per layer**:
+each points layer /
 point cloud carries its own resolved clamp range (and a pinned colormap for a
 per-object spec — the panel selector doesn't override a pin), each fill/mesh
 its own colormap, and the legend shows each entry's own ramp + range. The

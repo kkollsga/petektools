@@ -83,7 +83,7 @@
     // own colormap pin (dict item form) drives the ramp.
     if (fill) {
       var fr = fill.range || [];
-      rampBlock(lg, typeIcon("fill", null, fill.colormap), disp(fill, fill.name), fr[0], fr[1], fill.colormap);
+      rampBlock(lg, typeIcon("fill", null, fill.colormap), fillLabel(fill), fr[0], fr[1], fill.colormap);
     }
     // identity keys present in this view
     var keys = el("div", "keys");
@@ -236,4 +236,3 @@
     if (App.mode === "server") requestSection({ well: well.id }, well.id);
     else showEmpty("No pre-computed section for well " + well.id + " in this file export.");
   }
-

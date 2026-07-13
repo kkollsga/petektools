@@ -193,11 +193,14 @@ triangle edges as grid lines with the mesh `edge` rings as the outline; a mesh
 that also offers `wireframe_edges()` index pairs draws exactly those instead —
 quad-dominant, with interior cell diagonals removed.
 
-Three kwargs add value rendering, each explicit. `color=` colours **points**
+Three kwargs add value rendering. `color=` colours **points**
 by their z value (and selects the colormap for whatever is value-coloured) —
 it never triggers fills, and it defaults ON (pass `color=False` for
-monochrome points). `fill=` asks each item offering
-`value_layer()` for a per-node value layer and paints it as a value-coloured
+monochrome points). When `fill` is omitted, an item offering callable
+`attr_names()` and `value_layer()` contributes its primary layer followed by
+every named attribute to the Fill selector. Explicit `fill=False` disables
+fills, `fill=True` requests primary only, and `fill="name"` requests that one
+attribute. Each per-node value layer paints as a value-coloured
 fill *under* the grid lines (each triangle flat-filled with the colormap
 colour of its mean node value; a triangle touching a NaN node is left
 unfilled). `contours=25.0` asks each item offering `iso_lines()` for contour
@@ -214,8 +217,9 @@ values clamp to the ramp ends), `color="porosity"` stays an attribute name
 three. A malformed spec (e.g. one trailing float) raises `ValueError`. The
 viewer panel gets a fill selector (when several items contribute fills),
 "Fill"/"Contours" toggles, and a per-layer legend — type icon + the item's
-duck-typed `name` (e.g. `"Top Dome"`) + the colour ramp and clamped range on
-value-coloured layers. Items without these methods are silently unaffected:
+duck-typed `name` and active lane (e.g. `"Top Dome · thickness"`) + the colour
+ramp and clamped range on value-coloured layers. Items without these methods are
+silently unaffected:
 
 ```python
 petektools.view2d([surface, well_points], color="inferno_-2700_-2500",

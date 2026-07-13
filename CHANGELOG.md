@@ -7,6 +7,16 @@ All notable changes to petekTools are recorded here. Format follows
 ## [Unreleased]
 
 ### Added
+- **Bare `view2d(surface)` attribute switching.** When `fill` is omitted, an
+  object exposing callable `attr_names()` + `value_layer()` now contributes its
+  primary value layer followed by every named attribute in producer order; the
+  existing Fill picker switches among ordinary `TriFill` entries labelled
+  `source · layer`, with shared mesh geometry deduplicated by the existing block
+  wire. Explicit behavior remains exact and unchanged: `fill=False` disables
+  fills, `fill=True` requests primary only, `fill="name"` requests that one lane,
+  per-object dict overrides win, and `color=` never triggers a fill. Producers
+  without the two-duck handshake retain their omitted-fill behavior. Malformed,
+  empty, or duplicate attribute metadata fails loudly and deterministically.
 - **Per-object colour — the dict item form** (owner ruling; `view2d` AND
   `view3d`). A scene item may now be a dict `{"object": obj, "color":
   bool|spec, "fill": bool|spec, "name": str}`: per-object settings take

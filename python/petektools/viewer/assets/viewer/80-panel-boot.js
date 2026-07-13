@@ -24,9 +24,9 @@
     if (fills.length) {
       var fg = group("Fill");
       if (fills.length > 1) {
-        fg.appendChild(selectRow("Layer", fills.map(function (f) { return disp(f, f.name); }), S.mapFillIdx, function (i) { S.mapFillIdx = i; renderMap(); }));
+        fg.appendChild(selectRow("Layer", fills.map(fillLabel), S.mapFillIdx, function (i) { S.mapFillIdx = i; renderMap(); }));
       } else {
-        fg.appendChild(el("div", "hint", disp(fills[0], fills[0].name)));
+        fg.appendChild(el("div", "hint", fillLabel(fills[0])));
       }
       if (!S.mapLayers.length) fg.appendChild(colormapRow());
       body.appendChild(fg);

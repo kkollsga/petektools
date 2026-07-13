@@ -180,6 +180,17 @@
     if (o && o.display_name) return o.display_name;
     return pretty(rawName != null ? rawName : (o && o.name));
   }
+  // A TriFill carries the source object's `display_name` and the value-layer
+  // identity in `name`. Keep both visible: auto-enumerated attributes from one
+  // surface (and equal attribute names across several surfaces) must never become
+  // an ambiguous row of duplicate selector/legend labels.
+  function fillLabel(fill) {
+    if (!fill) return "fill";
+    var attr = pretty(fill.name);
+    var source = fill.display_name ? String(fill.display_name) : "";
+    if (source && attr && source !== attr) return source + " · " + attr;
+    return source || attr || "fill";
+  }
 
   // ---- units / formatting --------------------------------------------------
   function fmt(v, unit) {

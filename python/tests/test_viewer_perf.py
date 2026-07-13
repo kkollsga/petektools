@@ -937,6 +937,78 @@ def test_map_click_inspect_hover_shows_nothing(tmp_path):
     print(f"\n[inspect] click text = {ac['text']!r} @ ({ac['left']:.0f},{ac['top']:.0f})")
 
 
+# --- omitted-fill surface attributes: selector + active legend ----------------
+_FILL_SELECTOR_JS = Path(__file__).parent / "viewer_perf" / "fill_selector_bench.mjs"
+
+
+def _build_attribute_fill_view(tmp_path: Path) -> tuple[Path, dict]:
+    from petektools import viewer
+
+    class Surface:
+        geometry = None
+
+        def __init__(self, name, base):
+            self.name = name
+            self.base = base
+
+        def attr_names(self):
+            return ["thickness"]
+
+        def value_layer(self, attr=None, stride=None):
+            offset = self.base + (100.0 if attr == "thickness" else 0.0)
+            return {
+                "name": attr or "values",
+                "nodes": [[0.0, 0.0], [10.0, 0.0], [0.0, 10.0], [10.0, 10.0]],
+                "triangles": [[0, 1, 2], [1, 3, 2]],
+                "values": [offset + 1.0, offset + 2.0, offset + 3.0, offset + 4.0],
+                "range": [offset + 1.0, offset + 4.0],
+            }
+
+    payload = viewer.view2d_payload(
+        [Surface("Top A", 0.0), Surface("Top B", 1000.0)],
+        lod=False,
+        encoding="json",
+    )
+    out = tmp_path / "attribute_fills.html"
+    save_view(payload, out)
+    return out, payload
+
+
+@pytest.mark.skipif(not _HAVE_PW, reason="playwright + chromium not available (browser leg)")
+def test_map_attribute_fill_selector_switches_source_and_attr(tmp_path):
+    view, payload = _build_attribute_fill_view(tmp_path)
+    assert [f["name"] for f in payload["map"]["fills"]] == [
+        "values", "thickness", "values", "thickness",
+    ]
+
+    out = subprocess.run(
+        [_NODE, str(_FILL_SELECTOR_JS), str(view)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    line = (out.stdout.strip().splitlines() or ["{}"])[-1]
+    result = json.loads(line) if line.startswith("{") else {}
+    assert out.returncode == 0, out.stderr
+    assert not result.get("consoleErrors"), result.get("consoleErrors")
+
+    expected = [
+        "Top A · values",
+        "Top A · thickness",
+        "Top B · values",
+        "Top B · thickness",
+    ]
+    assert result["initial"]["options"] == expected
+    assert result["initial"]["selected"] == 0
+    assert expected[0] in result["initial"]["headers"]
+    assert result["firstAttr"]["selected"] == 1
+    assert expected[1] in result["firstAttr"]["headers"]
+    assert result["secondSourceAttr"]["selected"] == 3
+    assert expected[3] in result["secondSourceAttr"]["headers"]
+    assert result["initial"]["scales"] != result["firstAttr"]["scales"]
+    assert result["firstAttr"]["scales"] != result["secondSourceAttr"]["scales"]
+
+
 # --- the Scene3D (view3d) tab: smoke + the 200k-point build budget -------------
 # Drives the P4 view3d path end to end in a real browser: a scene3d payload
 # (points + geometry + a value-coloured surface + a well + contours) must build

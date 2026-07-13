@@ -864,6 +864,19 @@ onto the schema and hands it here (home ruling `decision_viewer_home_petektools`
 ```python
 from petektools import viewer
 
+# Generic 2-D adapter. Omitted fill auto-enumerates primary + named lanes only
+# for objects offering callable attr_names() and value_layer(). Explicit fill
+# remains exact: False=off, True=primary only, str=that one named lane.
+viewer.view2d(items, *, title="2D view", color=True, fill=None, contours=None,
+              save=None, port=0, block=False, open_browser=True,
+              max_grid_lines=800, max_line_points=1000, point_limit=200_000,
+              max_mesh_edges=150_000, lod=True, encoding="blocks",
+              block_threshold_bytes=65_536) -> str | dict
+viewer.view2d_payload(items, *, title="2D view", color=True, fill=None,
+                      contours=None, max_grid_lines=800, max_line_points=1000,
+                      point_limit=200_000, max_mesh_edges=150_000, lod=True,
+                      encoding="blocks", block_threshold_bytes=65_536) -> dict
+
 # Live: background local server; returns the URL. `section_provider` is the
 # pluggable /section callback (line=, well=, property=) by which a DOMAIN package
 # answers fence/well requests — the unit computes nothing itself.

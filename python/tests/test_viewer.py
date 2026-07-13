@@ -611,7 +611,8 @@ def test_view2d_color_true_no_longer_fills_a_value_layer_item():
 
 
 def test_view2d_fill_false_ignores_value_layer():
-    p = viewer.view2d_payload([_ValueMesh()])  # fill defaults to False
+    # No attr_names() handshake: omitted fill keeps the legacy no-fill path.
+    p = viewer.view2d_payload([_ValueMesh()])
     assert p["map"]["fills"] == []
     assert "fills" not in p["summary"]
 
@@ -866,9 +867,35 @@ class _SurfaceDuck:
         return [(-2610.0, [[[0.0, 0.0], [10.0, 10.0]]])]
 
 
+class _AttributedSurfaceDuck(_SurfaceDuck):
+    """The generic omitted-fill handshake: ordered attrs + value layers."""
+
+    def __init__(self, name="Top Dome", attrs=("thickness", "poro")):
+        super().__init__()
+        self.name = name
+        self._attrs = attrs
+        self.value_calls = []
+        self.attr_calls = 0
+
+    def attr_names(self):
+        self.attr_calls += 1
+        return self._attrs
+
+    def value_layer(self, attr=None, stride=None):
+        self.value_calls.append((attr, stride))
+        offset = {None: 0.0, "thickness": 100.0, "poro": 200.0}.get(attr, 300.0)
+        return {
+            "name": attr or "values",
+            "nodes": [[0.0, 0.0], [10.0, 0.0], [0.0, 10.0], [10.0, 10.0]],
+            "triangles": [[0, 1, 2], [1, 3, 2]],
+            "values": [offset + 1.0, offset + 2.0, offset + 3.0, offset + 4.0],
+            "range": [offset + 1.0, offset + 4.0],
+        }
+
+
 def test_view2d_bare_surface_renders_structure_lines():
-    # the natural flow view2d([pts, surf]) must not die: a bare Surface shows
-    # its STRUCTURE (the .geometry lattice), never a bare-color fill
+    # A legacy single-layer producer without attr_names keeps the historical
+    # structure-only path (the .geometry lattice), never a bare-color fill.
     surf = _SurfaceDuck()
     p = viewer.view2d_payload([surf])  # color defaults ON; no fill=
     assert p["map"]["fills"] == []                # values stay fill= opt-in
@@ -878,9 +905,131 @@ def test_view2d_bare_surface_renders_structure_lines():
     assert {"kind": "lines", "name": "Top Dome"} in p["map"]["layers"]
 
 
+def test_view2d_bare_attribute_surface_auto_enumerates_primary_then_attrs():
+    surf = _AttributedSurfaceDuck()
+    p = viewer.view2d_payload(surf, encoding="json")
+
+    assert surf.attr_calls == 1
+    assert [f["name"] for f in p["map"]["fills"]] == ["values", "thickness", "poro"]
+    assert [f["display_name"] for f in p["map"]["fills"]] == ["Top Dome"] * 3
+    assert [f["range"] for f in p["map"]["fills"]] == [
+        [1.0, 4.0],
+        [101.0, 104.0],
+        [201.0, 204.0],
+    ]
+    # Every full ring forwards its exact attr, and each LOD call forwards the
+    # same attr with the configured stride. Primary remains attr=None and first.
+    assert surf.value_calls == [
+        (None, None),
+        (None, 4),
+        ("thickness", None),
+        ("thickness", 4),
+        ("poro", None),
+        ("poro", 4),
+    ]
+
+
+def test_view2d_attribute_surface_explicit_fill_semantics_stay_exact():
+    off = _AttributedSurfaceDuck()
+    assert viewer.view2d_payload(off, fill=False)["map"]["fills"] == []
+    assert off.attr_calls == 0 and off.value_calls == []
+
+    primary = _AttributedSurfaceDuck()
+    p = viewer.view2d_payload(primary, fill=True, lod=False, encoding="json")
+    assert [f["name"] for f in p["map"]["fills"]] == ["values"]
+    assert primary.attr_calls == 0 and primary.value_calls == [(None, None)]
+
+    named = _AttributedSurfaceDuck()
+    p = viewer.view2d_payload(named, fill="thickness", lod=False, encoding="json")
+    assert [f["name"] for f in p["map"]["fills"]] == ["thickness"]
+    assert named.attr_calls == 0 and named.value_calls == [("thickness", None)]
+
+
+def test_view2d_attribute_surface_dict_fill_override_and_inheritance():
+    inherited = _AttributedSurfaceDuck()
+    disabled = _AttributedSurfaceDuck(name="Base Dome")
+    p = viewer.view2d_payload(
+        [
+            {"object": inherited, "name": "Renamed Top"},
+            {"object": disabled, "fill": False},
+        ],
+        lod=False,
+        encoding="json",
+    )
+    assert [f["name"] for f in p["map"]["fills"]] == ["values", "thickness", "poro"]
+    assert [f["display_name"] for f in p["map"]["fills"]] == ["Renamed Top"] * 3
+    assert inherited.attr_calls == 1
+    assert disabled.attr_calls == 0 and disabled.value_calls == []
+
+    opted_in = _AttributedSurfaceDuck()
+    p2 = viewer.view2d_payload(
+        [{"object": opted_in, "fill": "poro"}],
+        fill=False,
+        lod=False,
+        encoding="json",
+    )
+    assert [f["name"] for f in p2["map"]["fills"]] == ["poro"]
+
+
+@pytest.mark.parametrize(
+    ("attrs", "error", "message"),
+    [
+        ("thickness", TypeError, "iterable of strings"),
+        (("thickness", 7), TypeError, "item 1 must be a string"),
+        (("",), ValueError, "must not be empty"),
+        (("thickness", "thickness"), ValueError, "duplicate name"),
+    ],
+)
+def test_view2d_attribute_surface_validates_attr_names(attrs, error, message):
+    surf = _AttributedSurfaceDuck(attrs=attrs)
+    with pytest.raises(error, match=message):
+        viewer.view2d_payload(surf)
+    # Validation completes before the primary or any advertised lane is emitted.
+    assert surf.value_calls == []
+
+
+def test_view2d_attribute_surface_rejects_advertised_missing_or_duplicate_layer():
+    class Missing(_AttributedSurfaceDuck):
+        def value_layer(self, attr=None, stride=None):
+            return None if attr == "thickness" else super().value_layer(attr, stride)
+
+    with pytest.raises(TypeError, match="advertised attribute 'thickness'"):
+        viewer.view2d_payload(Missing(), lod=False)
+
+    class Duplicate(_AttributedSurfaceDuck):
+        def value_layer(self, attr=None, stride=None):
+            layer = super().value_layer(attr, stride)
+            layer["name"] = "values"
+            return layer
+
+    with pytest.raises(ValueError, match="duplicate layer name 'values'"):
+        viewer.view2d_payload(Duplicate(), lod=False)
+
+
+def test_view2d_attribute_surface_requires_both_callable_ducks_for_auto_mode():
+    surf = _SurfaceDuck()
+    surf.attr_names = ["thickness"]
+    p = viewer.view2d_payload(surf)
+    assert p["map"]["fills"] == []
+    assert "value_attr" not in surf.seen
+
+
+def test_view2d_attribute_surface_blocks_dedup_shared_geometry():
+    p = viewer.view2d_payload(
+        _AttributedSurfaceDuck(),
+        lod=False,
+        encoding="blocks",
+        block_threshold_bytes=0,
+    )
+    fills = p["map"]["fills"]
+    assert len({f["nodes"]["__block__"] for f in fills}) == 1
+    assert len({f["triangles"]["__block__"] for f in fills}) == 1
+    assert len({f["values"]["__block__"] for f in fills}) == 3
+
+
 def test_view2d_bare_value_layer_only_item_draws_mesh_edges():
     # geometry-less value-bearing item: the primary layer's triangle edges
-    # become the drawn structure (still no fill without fill=)
+    # become the drawn structure (no attr_names handshake, so still no fill)
     class LayerOnly:
         name = "Top Dome"
 

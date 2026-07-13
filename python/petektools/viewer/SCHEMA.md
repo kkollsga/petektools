@@ -53,7 +53,7 @@ state. `sections` may be empty (live mode adds them via `/section`).
 | `outline` | list[Ring] | boundary rings; `Ring` = list of `[x, y]` |
 | `grid_lines` | list[Line] | optional 2-D QA overlay; `Line` = list of `[x, y]` |
 | `points` | list[Point] | optional 2-D QA overlay; `Point` = `[x, y, z?]` |
-| `fills` | list[TriFill] | **additive:** selectable value-coloured trimesh fills, drawn UNDER `grid_lines`/`outline`/`points` |
+| `fills` | list[TriFill] | **additive:** selectable value-coloured trimesh fills, drawn UNDER `grid_lines`/`outline`/`points`; omitted-fill `view2d` auto mode emits primary + named attributes as ordinary entries |
 | `contours` | list[ContourSet] | **additive:** iso-lines; all levels stroke as one batched path, stronger than grid lines |
 | `grid_lines_lod` | list[Line] \| absent | **additive (LOD):** the coarse (strided) `grid_lines` ring — present only when a mesh producer supplied one; see **Stride-ladder LOD** |
 | `point_color` | PointColor \| null | **additive:** `{by: "z", range: [min, max]}` — the GLOBAL fallback for point colouring (per-layer fields on `layers` win; see below). Present when at least one points layer colours: the user's explicit call-level `color=` clamp range, else the union of the coloured layers' data. Points with a finite third component colour through the colormap (non-finite z falls back to the accent); values outside the range clamp to the ramp ends |
@@ -73,7 +73,7 @@ display_name?: str}`. `values` are **row-major** (`values[j·ncol + i]`);
 `null`/non-finite cells render transparent. Continuous fields use a
 perceptually-uniform colormap.
 
-**TriFill (additive; the `view2d` `fill=` output — fills are explicit, never a
+**TriFill (additive; the `view2d` value-fill output — fills are never a
 `color=` side effect):** `{name: str, display_name?: str | null, nodes:
 [[x, y], …], triangles: [[a, b, c], …], values: float[len(nodes)], range:
 [min, max], colormap?: str}`. `colormap` (additive) is a per-fill ramp pin
@@ -89,7 +89,14 @@ list** the producer seam emits (an exception to the `{min, max}` object
 convention above) — the user's explicit `fill=` clamp range when one was
 specified (out-of-range values clamp to the ramp ends). `display_name` is the
 duck-typed source-object name (e.g. `"Top Dome"`; `name` stays the attribute
-identity, e.g. `"z"`). One fill is active at a time (a panel selector when
+identity, e.g. `"z"`). The selector/legend combines them as `source · layer`,
+so equal attribute names across multiple sources remain unambiguous. When
+`view2d`'s `fill` argument is omitted, an object exposing callable
+`attr_names()` + `value_layer()` emits its primary `value_layer()` first and
+then one TriFill per advertised name in producer order. Explicit `fill=False`
+emits none, `fill=True` emits only primary, and `fill="name"` emits exactly that
+lane; producers without both ducks keep their prior omitted-fill behaviour.
+One fill is active at a time (a panel selector when
 several are present); a "Fill" toggle controls visibility, and the active fill
 drives a legend entry (type icon + display name + ramp + min/max). Both
 `fills` and `contours` are `[]` when absent; a payload without them renders
