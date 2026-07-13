@@ -258,15 +258,22 @@ as you zoom in — **the data itself is never decimated**. `lod=(stride,)` /
 `lod=(stride, simplify)` tune it; `lod=False` turns it off. See the schema
 doc's MapBundle notes for the exact payload shapes.
 
+Wheel and drag frames are composition-only: the viewer affine-transforms the
+last valid point/fill bitmaps at most once per animation frame, even after the
+view leaves their original bake margin or zoom band. One trailing settle then
+selects the LOD ring and rebuilds invalid bitmaps. A bounded four-entry fill LRU
+keeps two selectable fields at both full and coarse LOD, so switching
+A→B→A normally returns to A without re-triangulating it.
+
 `petektools.view3d([...])` renders the same items in **one Three.js scene**
 (the viewer's "3D" tab) at full view2d parity: the same duck-typed item
 handling plus wells (`trajectory()` of `[x, y, z]` rows, z elevation —
 negative down), the same `color=` / `fill=` / `contours=` semantics and spec
 grammar, and the same per-layer legend. Points render as a colour-coded 3-D
 cloud (compact binary blocks, smooth at the 200k default cap). **Solid
-surface layers are for surfaces only**: a true regular surface
-(`kind == "surface"`) passed bare renders a neutral elevation mesh
-(value-coloured under `fill=`); every other geometry-ish item passed bare —
+surface layers are for value surfaces only**: `surface`, `structured_mesh`,
+and `tri_surface` roles passed bare render neutral elevation meshes
+(value-coloured under `fill=`); every geometry-only item passed bare —
 a bare trimesh, a grid-geometry lattice, a `.geometry`-bearing value item —
 renders as a flat wireframe grid at the shallowest point of its own nodes
 (z is elevation, negative down; a z-less geometry uses the scene's

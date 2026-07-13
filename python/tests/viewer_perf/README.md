@@ -44,6 +44,8 @@ node render_bench.mjs <view.html> [flags]
 #   --heap-cap-mb=N   --frame-cap-ms=N   --tri-budget=N   --expect-degraded
 #   --screenshot=PATH --tab=map|section|volume|charts
 #   --drag-events=N   --drag-frame-cap-ms=N   (synthetic map drag + hover sweep)
+#   --surface-gesture --wheel-events=N --pan-events=N
+#   --gesture-p95-cap-ms=N --gesture-max-cap-ms=N
 ```
 
 Prints one JSON line: `{decodeRenderMs, mapRenderMs, sectionRenderMs,
@@ -51,6 +53,8 @@ chartsRenderMs, usedJSHeapMB, volBadge, degradedBanner, consoleErrors}` (plus
 `dragFrames/dragFrameMsMedian/hoverAvgMs/hoverReadout/clickReadout` with
 `--drag-events` — hover must show NOTHING under the click-to-inspect ruling;
 the still-click probe must reveal the readout).
+With `--surface-gesture`, the JSON also includes `surfaceGesture`: wheel/pan
+frame p50/p95/max, hot-path work counters, settle counts, and A→B→A cache reuse.
 
 Driven + budget-asserted by `test_viewer_perf.py` at the ledger scales — it builds
 a `save_view` HTML with a v3 volume **and** an areal map, then asserts a JS-heap
@@ -91,7 +95,7 @@ lines, before → after the batched/baked/rAF point path:
 |---|---:|---:|
 | map render (`__PETEK_RENDER_MS`) | 145.3 ms | 0.5 ms |
 | drag repaint | 138.9 ms/event (sync per event) | 30 frames / 90 events, median 0.1 ms |
-| wheel zoom | 138.8 ms/event | ≤ ~10 ms worst frame (immediate), sub-ms blit |
+| wheel zoom | 138.8 ms/event | affine bitmap composition only; p95 <8 ms, max <16.7 ms acceptance |
 | hover mousemove | 2.6 ms (O(n) scan) | 0.1 ms (grid bucket) |
 
 ## 3b. Click-to-inspect semantics (Playwright) — `inspect_bench.mjs`
@@ -140,7 +144,7 @@ vs the JSON floats it replaces: the map no longer parses megabytes of float text
 on the main thread — the base64 blocks decode off-thread into typed arrays,
 transferred zero-copy, and identical arrays decode once per session.
 
-## 5. Stride-ladder LOD + fill baking (P2b/P3)
+## 5. Stride-ladder LOD + fill baking (P2b/P3/P4)
 
 **LOD rings (`view2d(lod=…)`).** A payload may carry ONE coarse display ring
 beside each full-resolution field — `fills[i].lod`, `map.grid_lines_lod`,
@@ -169,14 +173,24 @@ Browserless measure (`test_map_lod_coarse_ring_shrinks_wire`), a 198×198-node
 - `lod=False` (and any LOD-unsupported payload) is byte-identical to the pre-LOD
   shape — the full rings render exactly as before.
 
-**Fill baking (P3).** The active value-fill rasterizes once into an offscreen
+**Fill baking (P3/P4).** The active value-fill rasterizes once into an offscreen
 bitmap (viewport + margin, clamped to the fill bbox and the shared bake caps);
-pan blits it (one `drawImage`), an in-band zoom blits it scaled, and a zoom out
-of band / an LOD ring switch / over-the-caps re-bakes on the shared settle — the
+every active wheel/drag frame affine-blits the last valid bitmap (one
+`drawImage`), including outside its bake window/zoom band, and an LOD ring
+switch / invalid view re-bakes only on the shared settle — the
 same baked-blit pattern (and the same `PT_*` caps, band and margin) the 200k
 point cloud uses, so a 78k-triangle fill never re-triangulates per pan frame. The
-bake key is `(colormap, range)` + the ring object identity, so switching rings
-invalidates the bitmap.
+bake key is `(colormap, range)` + ring object identity. Four entries are kept
+with explicit LRU eviction, enough for A/B at full+LOD; returning A→B→A hits A.
+
+`test_surface_navigation_hot_frames_are_compositing_only` builds a realistic
+200k-point + 78k-triangle two-field surface, with a stride-4 ring for each field,
+then drives 16 outward wheel events (crossing both the bitmap band and the
+scale-derived point-radius threshold) and a >1000 px out-and-back pan. The browser harness
+asserts at most one paint per rAF; p95 <8 ms and max <16.7 ms; zero point-path,
+tri-fill, canvas-backing, legend-DOM, or theme-style work while hot; exactly one
+settle rebuild; bounded cache size; and zero heavy builders on the final A of
+A→B→A. The test skips cleanly when Playwright/Chromium is unavailable.
 
 **Visibility-driven rendering (P3).** This viewer renders ON DEMAND — only the
 active tab's render fn runs (`renderActive`), scene3d/volume repaint on

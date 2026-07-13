@@ -143,7 +143,11 @@
   // exposure is the server re-cut). Threshold/zone rebuild the visible index.
   function buildVolumePanelV3(body, v) {
     var g = group("Property");
-    var tris = vol3 && vol3._for === v ? vol3.triangleCount : envTriangleCount(v);
+    // vol3 identifies the payload as soon as async decode starts, before its
+    // rendered triangleCount exists. Keep the panel live during that interval
+    // by showing the envelope's declared count until the worker result lands.
+    var tris = vol3 && vol3._for === v && vol3.triangleCount != null
+      ? vol3.triangleCount : envTriangleCount(v);
     var shell = v.shell_cell_count != null ? v.shell_cell_count : (v.cell_count || 0);
     g.appendChild(el("div", "hint", (v.property || "value") + " · shell " + shell.toLocaleString() + " cells · " + tris.toLocaleString() + " tris"));
     if (vol3 && vol3._for === v && vol3._degraded) {
@@ -160,7 +164,7 @@
       applyVolumeV3Filter(); three.render();
     }));
     g.appendChild(sliderRow("z exaggeration", 1, 20, 1, S.volExag, applyVolExagV3));
-    if (vol3 && vol3._for === v) {
+    if (vol3 && vol3._for === v && vol3.depthRange) {
       var s3 = suggestV3Exag();
       g.appendChild(fitExagButton(s3, function () { applyVolExagV3(s3); buildPanel(); }));
     }
@@ -223,8 +227,10 @@
   function sizeCanvas(cv) {
     // Work in CSS pixels 1:1 (our world<->screen math reads cv.width/height).
     var host = cv.parentElement.getBoundingClientRect();
-    cv.width = Math.max(1, Math.round(host.width));
-    cv.height = Math.max(1, Math.round(host.height));
+    var width = Math.max(1, Math.round(host.width));
+    var height = Math.max(1, Math.round(host.height));
+    if (cv.width !== width) { cv.width = width; perfCount("canvasBackingWrites"); }
+    if (cv.height !== height) { cv.height = height; perfCount("canvasBackingWrites"); }
   }
 
   // wire canvas interactions once

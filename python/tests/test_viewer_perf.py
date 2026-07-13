@@ -1299,6 +1299,112 @@ def _synthetic_2d_map(*, npts: int = MAP_POINTS_N, grid: int = MAP_FILL_GRID) ->
     }
 
 
+def _surface_navigation_ring(grid: int, stride: int, offset: float) -> dict:
+    """One extent-preserving structured fill ring for the gesture fixture."""
+    ij = list(range(0, grid, stride))
+    if ij[-1] != grid - 1:
+        ij.append(grid - 1)
+    n = len(ij)
+    nodes = [[i * 25.0, j * 25.0] for j in ij for i in ij]
+    values = [
+        offset + 0.1 + 0.2 * math.sin(i / 10.0) * math.cos(j / 10.0)
+        for j in ij
+        for i in ij
+    ]
+    triangles = []
+    for j in range(n - 1):
+        for i in range(n - 1):
+            a = j * n + i
+            triangles.append([a, a + 1, a + n])
+            triangles.append([a + 1, a + n + 1, a + n])
+    return {
+        "nodes": nodes,
+        "triangles": triangles,
+        "values": values,
+        "range": [offset, offset + 0.4],
+    }
+
+
+def _build_surface_navigation_view(tmp_path: Path) -> Path:
+    """198² two-fill+LOD mesh and 200k points for the Phase 4 hot gesture."""
+    from petektools.viewer import _blocks
+
+    m = _synthetic_2d_map()
+    base = m["fills"][0]
+    lod_a = _surface_navigation_ring(MAP_FILL_GRID, 4, 0.0)
+    fill_a = {
+        **base,
+        "name": "values",
+        "display_name": "Top A",
+        "colormap": "inferno",
+        "lod": lod_a,
+    }
+    fill_b = {
+        **base,
+        "name": "thickness",
+        "display_name": "Top A",
+        "values": [v + 100.0 for v in base["values"]],
+        "range": [100.0, 100.4],
+        "colormap": "magma",
+        "lod": _surface_navigation_ring(MAP_FILL_GRID, 4, 100.0),
+    }
+    m["fills"] = [fill_a, fill_b]
+    _blocks.encode_map(m, threshold_bytes=0)
+    env, _bin = _v3.build_v3_volume(50, 50, 4)
+    payload = {
+        "schema_version": 4,
+        "kind": "surface-navigation-perf",
+        "property": "z",
+        "properties": ["z", "thickness"],
+        "summary": {"points": MAP_POINTS_N, "triangles": len(base["triangles"])},
+        "volume": env,
+        "map": m,
+        "sections": [],
+        "section_labels": [],
+        "wells": [],
+        "charts": [],
+    }
+    out = tmp_path / "surface_navigation.html"
+    save_view(payload, out)
+    return out
+
+
+@pytest.mark.skipif(not _HAVE_PW, reason="playwright + chromium not available (browser leg)")
+def test_surface_navigation_hot_frames_are_compositing_only(tmp_path):
+    view = _build_surface_navigation_view(tmp_path)
+    r = _run_render(
+        view,
+        "--surface-gesture",
+        "--wheel-events=16",
+        "--pan-events=100",
+        "--gesture-p95-cap-ms=8",
+        "--gesture-max-cap-ms=16.7",
+        timeout=300,
+    )
+    g = r.get("surfaceGesture") or {}
+    stats = g.get("frameStats") or {}
+    print(
+        f"\n[surface-nav] {stats.get('n')} frames: p50 {stats.get('p50')} ms | "
+        f"p95 {stats.get('p95')} ms | max {stats.get('max')} ms | "
+        f"hot {g.get('hotDelta')} | settle {g.get('settleDelta')}"
+    )
+    assert r["rc"] == 0, r.get("failure") or r.get("stderr")
+    assert not r.get("consoleErrors"), r.get("consoleErrors")
+    assert g["wheelEvents"] > 2 and g["panPixels"] > 1000
+    assert g["startScale"] >= 0.05 > g["endScale"]
+    assert stats["p95"] < 8.0 and stats["max"] < 16.7
+    assert g["hotDelta"]["pointPathBuilds"] == 0
+    assert g["hotDelta"]["triFillBuilds"] == 0
+    assert g["hotDelta"]["canvasBackingWrites"] == 0
+    assert g["hotDelta"]["legendMutations"] == 0
+    assert g["hotDelta"]["styleReads"] == 0
+    assert g["settleDelta"]["settlePaints"] == 1
+    assert g["returnDelta"]["triFillBuilds"] == 0
+    assert g["returnDelta"]["fillCacheHits"] >= 1
+    assert g["stableA"] is True
+    assert g["aAfter"]["cache"]["size"] <= g["aAfter"]["cache"]["limit"] == 4
+
+
 def test_map_blocks_wire_size_beats_json():
     from petektools.viewer import _blocks
 

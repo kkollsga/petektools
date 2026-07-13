@@ -57,6 +57,7 @@
       var dark = root.getAttribute("data-theme") === "dark";
       root.setAttribute("data-theme", dark ? "light" : "dark");
       this.textContent = dark ? "☾" : "☀";
+      invalidateThemeTokens();
       renderActive(); // re-read tokens; identities keep their slot, colours restep
     });
   }
@@ -123,4 +124,3 @@
       S.colormap = COLORMAP_NAMES[i]; renderActive();
     });
   }
-

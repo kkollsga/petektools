@@ -309,6 +309,22 @@
   // a hidden document / background tab (the P3 visibility rule: no work while
   // unseen). Both the LOD switch and the fill/point re-bake ride this one timer.
   var _settleTimer = 0;
+  var _settleRafPending = false;
+  var _settleRaf = 0;
+  function paintSettledMap() {
+    _settleRaf = 0;
+    if (App.tab !== "map" || (typeof document !== "undefined" && document.hidden)) {
+      _settleRafPending = false;
+      return;
+    }
+    if (_mapRafPending) {
+      _settleRaf = requestAnimationFrame(paintSettledMap);
+      return;
+    }
+    _settleRafPending = false;
+    perfCount("settlePaints");
+    renderMap();
+  }
   function scheduleSettle() {
     if (_settleTimer) clearTimeout(_settleTimer);
     _settleTimer = setTimeout(function () {
@@ -318,7 +334,10 @@
       var want = computeLodActive();
       var lodChanged = want !== S.lodActive;
       S.lodActive = want;
-      if (!_mapRafPending) requestAnimationFrame(function () { if (!_mapRafPending) renderMap(); });
+      if (!_settleRafPending) {
+        _settleRafPending = true;
+        _settleRaf = requestAnimationFrame(paintSettledMap);
+      }
       if (lodChanged && typeof buildPanel === "function") buildPanel();
     }, 150);
   }
@@ -493,7 +512,7 @@
     // Per-layer legend entries (type icon + display name; a ramp + clamped
     // range where the layer is value-coloured) are assembled in
     // drawFieldLegend from map.layers / point_color / the active fill.
-    drawFieldLegend(layer, S.showFills ? activeFill : null);
+    if (!_mapHotFrame) drawFieldLegend(layer, S.showFills ? activeFill : null);
 
     // A small "LOD" chip while the coarse ring is showing (only when the payload
     // actually carries LOD rings) — a quiet cue that display detail is reduced.
@@ -526,11 +545,11 @@
   //      canvas (viewport + margin, clamped to the cloud bbox and hard pixel
   //      caps — the _raster windowing idiom) and re-blitted (one drawImage)
   //      while the view stays inside the baked window and zoom band. A HOT
-  //      frame (wheel/drag) that can't blit draws the batched immediate path
-  //      instead — still one redraw per frame — and re-bakes only when the
-  //      gesture pauses (a trailing timer), so no pan/zoom frame ever pays the
-  //      bake + GPU re-upload cost. Non-hot renders (tab switch, toggles, the
-  //      deferred timer) re-bake synchronously. Past the caps: immediate path.
+  //      frame (wheel/drag) always affine-blits the last valid bitmap, even
+  //      outside that band/window; only the shared trailing settle may rebuild
+  //      the data-sized paths and backing bitmap. Non-hot renders (tab switch,
+  //      toggles, the deferred timer) re-bake synchronously. Past the caps on
+  //      a non-hot render, the bounded immediate path remains the fallback.
   //   3. rAF: wheel/drag route through scheduleRenderMap() — state updates per
   //      event, at most ONE repaint per animation frame.
   function pointRadius() { return Math.max(1.5, Math.min(3.5, mapView.scale < 0.05 ? 1.5 : 2.5)); }
@@ -556,6 +575,7 @@
   // cull=true skips points outside the [0..cw, 0..ch] rect (immediate mode).
   // q0/q1 bound the point-index slice (a per-layer segment; default: all).
   function buildPointPaths(pts, sc, oxx, oyy, r, pc, cull, cw, ch, q0, q1) {
+    perfCount("pointPathBuilds");
     var square = r <= 2.5; // tiny marks: rects batch far faster than arcs
     var paths = new Array(257);
     var colored = !!(pc && pc.range), plo = 0, pf = 0;
@@ -615,7 +635,7 @@
   // Zoom band around the baked scale: inside it the bake is blitted scaled (mark
   // size drifts ≤ ~25% momentarily); outside it re-renders/re-bakes.
   var PT_BAND_LO = 0.8, PT_BAND_HI = 1.25;
-  var _ptCache = { canvas: null, ref: null, key: "", scale: 0, cox: 0, coy: 0,
+  var _ptCache = { canvas: null, ref: null, key: "", styleKey: "", scale: 0, cox: 0, coy: 0,
                    wx0: 0, wy0: 0, wx1: 0, wy1: 0 }; // w* = baked window, world coords
   // Trailing re-bake: a hot frame that couldn't blit schedules the shared settle
   // (scheduleSettle), which after the gesture pauses does one non-hot render that
@@ -626,10 +646,11 @@
     var alpha = pts.length > 20000 ? 0.45 : 0.7;
     var plan = pointLayerPlan(); // per-layer colour segments (global fallback)
     // everything the baked pixels depend on, except geometry/scale/window
-    var key = token("--accent") + "|" + r + "|" + alpha + "|" +
+    var styleKey = token("--accent") + "|" + alpha + "|" +
       plan.map(function (sg) {
         return sg.cmap + ":" + (sg.range ? sg.range[0] + "," + sg.range[1] : "-");
       }).join(";");
+    var key = styleKey + "|" + r;
     var bb = pointBBox(pts), pad = r + 2, padW = pad / mapView.scale;
     // the viewport in world coords, clamped to the (padded) cloud bbox — the
     // part the baked window must cover for a blit to be valid
@@ -639,7 +660,13 @@
     var ny1 = Math.min((cv.height - mapView.oy) / mapView.scale, bb.y1 + padW);
     var C = _ptCache;
     var k = C.canvas && C.scale > 0 ? mapView.scale / C.scale : 0;
-    var usable = !!C.canvas && C.ref === pts && C.key === key &&
+    var sameBitmap = !!C.canvas && C.ref === pts && C.key === key;
+    // Radius is derived from scale. Crossing its threshold during a wheel
+    // gesture must not make the point cloud disappear: hot frames may reuse a
+    // bitmap whose geometry and real paint style still match, then settle at
+    // the new radius. Theme/ramp/range/layer changes remain incompatible.
+    var hotBitmap = !!C.canvas && C.ref === pts && C.styleKey === styleKey;
+    var usable = sameBitmap &&
       k >= PT_BAND_LO && k <= PT_BAND_HI &&
       (nx0 >= nx1 || ny0 >= ny1 || // cloud fully off-screen: any valid bake will do
         (nx0 >= C.wx0 && ny0 >= C.wy0 && nx1 <= C.wx1 && ny1 <= C.wy1));
@@ -660,24 +687,32 @@
           fillPointPaths(cctx, buildPointPaths(pts, mapView.scale, cox, coy, r,
             sg.range ? { range: sg.range } : null, true, w, h, sg.start, sg.start + sg.n), alpha, sg.cmap);
         });
-        C.ref = pts; C.key = key; C.scale = mapView.scale; C.cox = cox; C.coy = coy;
+        C.ref = pts; C.key = key; C.styleKey = styleKey;
+        C.scale = mapView.scale; C.cox = cox; C.coy = coy;
         C.wx0 = wx0; C.wy0 = wy0; C.wx1 = wx1; C.wy1 = wy1;
         usable = true; k = 1;
       }
     }
-    if (usable) {
+    // During navigation the last matching bitmap is always transformed, even
+    // outside its normal zoom band/window. It may be transiently soft or expose
+    // a blank edge after a very long pan, but it preserves continuity and keeps
+    // all data-sized path construction on the one settle paint.
+    if (usable || (_mapHotFrame && hotBitmap)) {
       ctx.save();
       ctx.imageSmoothingEnabled = true;
       ctx.drawImage(C.canvas, mapView.ox - C.cox * k, mapView.oy - C.coy * k,
         C.canvas.width * k, C.canvas.height * k);
       ctx.restore();
+    } else if (_mapHotFrame) {
+      // A gesture normally starts from the initial non-hot bake. If it does not,
+      // defer rather than reconstructing a data-sized path in a hot frame.
+      scheduleSettle();
     } else {
-      // mid-gesture (or over the caps): batched immediate, viewport-culled
+      // Over the bake caps on a non-hot render: bounded immediate fallback.
       plan.forEach(function (sg) {
         fillPointPaths(ctx, buildPointPaths(pts, mapView.scale, mapView.ox, mapView.oy, r,
           sg.range ? { range: sg.range } : null, true, cv.width, cv.height, sg.start, sg.start + sg.n), alpha, sg.cmap);
       });
-      if (_mapHotFrame) scheduleSettle();
     }
   }
 
@@ -689,11 +724,13 @@
   function scheduleRenderMap() {
     if (_mapRafPending) return;
     _mapRafPending = true;
+    perfCount("rafRequests");
     requestAnimationFrame(function () {
       _mapRafPending = false;
       var t0 = performance.now();
       _mapHotFrame = true;
       try { renderMap(); } finally { _mapHotFrame = false; }
+      perfCount("hotPaints");
       window.__PETEK_MAP_FRAME_MS = performance.now() - t0;
       window.__PETEK_MAP_FRAME_COUNT = (window.__PETEK_MAP_FRAME_COUNT || 0) + 1;
     });
@@ -753,6 +790,7 @@
   // transform defaults to the live map view; the fill BAKE (drawMapFill) passes
   // an offscreen-window transform so the bitmap can be blitted on pan/zoom.
   function drawTriFill(ctx, fill, sc, oxx, oyy) {
+    perfCount("triFillBuilds");
     if (sc == null) { sc = mapView.scale; oxx = mapView.ox; oyy = mapView.oy; }
     var nodes = fill.nodes, tris = fill.triangles, vals = fill.values;
     var nN = nodes ? nodes.length : 0, nT = trN(tris);
@@ -796,14 +834,40 @@
   // The active value-fill rasterizes ONCE into an offscreen canvas (viewport +
   // margin, clamped to the fill bbox and the shared bake caps); pan blits the
   // bitmap (one drawImage), an in-band zoom blits it scaled (stale but instant),
-  // and a zoom out of band / a ring switch / over-the-caps falls back to the
-  // batched immediate draw and re-bakes on the shared settle. This is the exact
+  // and every hot out-of-band view keeps affine-blitting the last bitmap until
+  // the shared settle re-bakes. A non-hot over-the-caps view may still use the
+  // bounded immediate draw. This is the exact
   // baked-blit pattern the point cloud uses (same PT_* caps, band and margin, and
   // the same _mapHotFrame gate), so a 78k-triangle fill never re-triangulates per
-  // pan frame. The bake key is (colormap, range) and the ring OBJECT identity, so
-  // an LOD ring switch (full ↔ coarse) invalidates the bitmap and re-bakes.
-  var _fillCache = { canvas: null, ref: null, key: "", scale: 0, cox: 0, coy: 0,
-                     wx0: 0, wy0: 0, wx1: 0, wy1: 0 };
+  // pan frame. The bake key is (colormap, range) + ring OBJECT identity. Keep an
+  // explicit four-entry LRU: enough for A/B at full+LOD while bounding worst-
+  // case bitmap memory to four shared-cap canvases. Returning A→B→A reuses A.
+  var FILL_CACHE_LIMIT = 4;
+  var _fillCaches = [];
+  var _fillCacheClock = 0;
+  function fillCacheFor(fill, key) {
+    for (var i = 0; i < _fillCaches.length; i++) {
+      var hit = _fillCaches[i];
+      if (hit.ref === fill && hit.key === key) {
+        hit.used = ++_fillCacheClock;
+        perfCount("fillCacheHits");
+        return hit;
+      }
+    }
+    perfCount("fillCacheMisses");
+    var entry = { canvas: null, ref: fill, key: key, scale: 0, cox: 0, coy: 0,
+                  wx0: 0, wy0: 0, wx1: 0, wy1: 0, used: ++_fillCacheClock };
+    _fillCaches.push(entry);
+    if (_fillCaches.length > FILL_CACHE_LIMIT) {
+      var oldest = 0;
+      for (var q = 1; q < _fillCaches.length; q++) {
+        if (_fillCaches[q].used < _fillCaches[oldest].used) oldest = q;
+      }
+      _fillCaches.splice(oldest, 1);
+      perfCount("fillCacheEvictions");
+    }
+    return entry;
+  }
   function fillNodesBBox(ring) {
     if (ring.__bbox) return ring.__bbox;
     var N = ring.nodes, n = N ? N.length : 0;
@@ -824,9 +888,10 @@
     var ny0 = Math.max(-mapView.oy / mapView.scale, bb.y0);
     var nx1 = Math.min((cv.width - mapView.ox) / mapView.scale, bb.x1);
     var ny1 = Math.min((cv.height - mapView.oy) / mapView.scale, bb.y1);
-    var C = _fillCache;
+    var C = fillCacheFor(fill, key);
     var k = C.canvas && C.scale > 0 ? mapView.scale / C.scale : 0;
-    var usable = !!C.canvas && C.ref === fill && C.key === key &&
+    var sameBitmap = !!C.canvas;
+    var usable = sameBitmap &&
       k >= PT_BAND_LO && k <= PT_BAND_HI &&
       (nx0 >= nx1 || ny0 >= ny1 || // fill fully off-screen: any valid bake will do
         (nx0 >= C.wx0 && ny0 >= C.wy0 && nx1 <= C.wx1 && ny1 <= C.wy1));
@@ -848,17 +913,26 @@
         usable = true; k = 1;
       }
     }
-    if (usable) {
+    // Navigation transforms the last matching bitmap regardless of its normal
+    // band/window validity. The settled paint below restores full sharpness.
+    if (usable || (_mapHotFrame && sameBitmap)) {
       ctx.save();
       ctx.imageSmoothingEnabled = true;
       ctx.drawImage(C.canvas, mapView.ox - C.cox * k, mapView.oy - C.coy * k,
         C.canvas.width * k, C.canvas.height * k);
       ctx.restore();
+    } else if (_mapHotFrame) {
+      scheduleSettle();
     } else {
-      // mid-gesture (or over the caps): batched immediate draw at the live view
+      // Over the bake caps on a non-hot render: bounded immediate fallback.
       drawTriFill(ctx, fill);
-      if (_mapHotFrame) scheduleSettle();
     }
+    window.__PETEK_FILL_CACHE_STATUS = {
+      limit: FILL_CACHE_LIMIT, size: _fillCaches.length, key: key,
+      colormap: fill.colormap || S.colormap,
+      range: fill.range ? [fill.range[0], fill.range[1]] : null,
+      lod: !!S.lodActive,
+    };
   }
 
   // Mean |tie residual| (m) over a well's per-horizon ties (falls back to a
@@ -903,6 +977,9 @@
     window.__PETEK_VIS_WIRED = true;
     document.addEventListener("visibilitychange", function () {
       if (document.hidden && _settleTimer) { clearTimeout(_settleTimer); _settleTimer = 0; }
+      if (document.hidden && _settleRaf) {
+        cancelAnimationFrame(_settleRaf); _settleRaf = 0; _settleRafPending = false;
+      }
     });
   }
   function mapPanZoomHover(cv) {
@@ -932,7 +1009,7 @@
       if (!dragging) return;
       mapView.ox += (ev.clientX - last[0]) * (cv.width / cv.getBoundingClientRect().width);
       mapView.oy += (ev.clientY - last[1]) * (cv.height / cv.getBoundingClientRect().height);
-      last = [ev.clientX, ev.clientY]; scheduleRenderMap();
+      last = [ev.clientX, ev.clientY]; scheduleRenderMap(); scheduleSettle();
     };
     cv.ondblclick = function () { if (S.fence.drawing) finishFence(); };
     cv.onclick = function (ev) {

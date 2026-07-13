@@ -153,7 +153,14 @@ map picks the ring on **zoom-settle** (a ~150 ms debounce after the last wheel
 event, never per frame — no flicker), switching when a full-resolution cell falls
 below ~4 px on screen; fills, mesh grid lines and contours all switch together
 (points keep their own baked path). A small "LOD" chip shows while the coarse ring
-is active.
+is active. During wheel/drag, point and active-fill bitmaps are strictly
+composition-only: every hot frame affine-blits the last valid bitmap even after
+leaving its bake margin/zoom band; it never rebuilds point paths, triangulates a
+fill, resizes the canvas backing, mutates the legend, or reads live theme styles.
+One trailing settle selects the ring and rebuilds each invalid bitmap once. Fill
+bitmaps live in an explicit four-entry LRU keyed by fill/ring object identity plus
+colormap/range — enough for two fields at full+LOD, so A→B→A reuses A while memory
+remains bounded.
 
 **Binary blocks (additive; the `view2d` `encoding="blocks"` output — the
 default).** The map's bulk arrays optionally travel as **content-addressed typed
@@ -349,7 +356,7 @@ names + ramp/clamped range) drives the 3D tab's legend.
 |---|---|---|
 | `schema_version` | int | `1` |
 | `points` | list[PointCloud3D] | one `THREE.Points` per cloud, per-vertex ramp colours |
-| `meshes` | list[Mesh3D] | SOLID surface meshes — value-coloured (`fill=`) or neutral + a wireframe toggle. Emitted bare only by a TRUE regular surface (`kind == "surface"`) — see the classification note below |
+| `meshes` | list[Mesh3D] | SOLID surface meshes — value-coloured (`fill=`) or neutral + a wireframe toggle. Emitted bare by all value-surface roles (`surface`, `structured_mesh`, `tri_surface`) — see the classification note below |
 | `lattices` | list[Lattice3D] | flat lattice grids (`LineSegments`) — geometry grids AND bare-item flat wireframes, each at its own `z` level (`ref_z` fallback) |
 | `contours` | list[ContourSet] | the SAME shape as `map.contours`; each polyline renders at `z = level` (major levels stroke stronger) |
 | `wells` | list[Well3D] | identity-coloured bore paths + a screen-sized wellhead marker |

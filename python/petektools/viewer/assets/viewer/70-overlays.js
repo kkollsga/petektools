@@ -71,6 +71,7 @@
     return out;
   }
   function drawFieldLegend(layer, fill) {
+    perfCount("legendMutations");
     var lg = document.getElementById("legend"); lg.innerHTML = "";
     if (layer) {
       rampBlock(lg, App.tab === "map" ? typeIcon("fill") : null,

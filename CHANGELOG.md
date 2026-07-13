@@ -7,6 +7,16 @@ All notable changes to petekTools are recorded here. Format follows
 ## [Unreleased]
 
 ### Fixed
+- **Surface gesture frames are composition-only.** Wheel/drag now always
+  affine-transform the last valid point and active-fill bitmaps, including
+  outside their original bake band/margin; no point-path/fill reconstruction,
+  canvas backing resize, legend DOM mutation, or live theme-style read occurs
+  until one trailing settle. Repaints remain coalesced to at most one per rAF.
+  Fill bitmaps use a bounded four-entry LRU keyed by field/ring + ramp/range,
+  preserving A/B at full+LOD so A→B→A reuses A without re-triangulation.
+- The v3 volume panel now uses declared metadata while its asynchronous mesh
+  decode is in flight, avoiding transient triangle-count/depth-range console
+  errors before the decoded render fields become available.
 - **Surface-role navigation across petekIO's six-level seam.** Viewer dispatch
   now trusts stable `kind` metadata before overlapping method ducks: point sets
   render as points, `grid_geometry` / `structured_shell` / `mesh_shell` render

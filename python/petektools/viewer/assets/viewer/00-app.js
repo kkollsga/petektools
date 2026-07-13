@@ -18,6 +18,17 @@
   var root = document.getElementById("app");
   var App = { payload: null, mode: "file", tab: "map" };
 
+  // Cumulative map-operation counters for the browser performance contract.
+  // They are observational only: the runner snapshots deltas around a gesture.
+  var _viewerPerf = window.__PETEK_MAP_PERF || (window.__PETEK_MAP_PERF = {});
+  ["pointPathBuilds", "triFillBuilds", "canvasBackingWrites",
+   "legendMutations", "styleReads", "rafRequests", "hotPaints",
+   "settlePaints", "fillCacheHits", "fillCacheMisses",
+   "fillCacheEvictions"].forEach(function (name) {
+    if (_viewerPerf[name] == null) _viewerPerf[name] = 0;
+  });
+  function perfCount(name) { _viewerPerf[name] = (_viewerPerf[name] || 0) + 1; }
+
   // ---- boot ----------------------------------------------------------------
   function boot(payload) {
     App.payload = payload;
@@ -121,8 +132,16 @@
       }
     });
   }
+  // Theme tokens are resolved once per theme, never inside navigation frames.
+  // Theme flips invalidate the tiny cache before their explicit non-hot render.
+  var _themeTokenCache = {};
+  function invalidateThemeTokens() { _themeTokenCache = {}; }
   function cssvar(name) {
-    return getComputedStyle(root).getPropertyValue(name).trim();
+    if (Object.prototype.hasOwnProperty.call(_themeTokenCache, name)) {
+      return _themeTokenCache[name];
+    }
+    perfCount("styleReads");
+    return (_themeTokenCache[name] = getComputedStyle(root).getPropertyValue(name).trim());
   }
   function idColor(key) {
     if (!(key in idSlot)) registerId(key);

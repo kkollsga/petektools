@@ -22,6 +22,11 @@
  *                       a non-drag hover sweep. Asserts repaints coalesced to at
  *                       most one per animation frame (else exit 8)
  *   --drag-frame-cap-ms=N  assert the median drag repaint < N ms (else exit 9)
+ *   --surface-gesture      run the active point+fill navigation contract
+ *   --wheel-events=N       wheel ticks in that gesture (default 16; must be >2)
+ *   --pan-events=N         long-pan moves in that gesture (default 100)
+ *   --gesture-p95-cap-ms=N assert hot-frame p95 below N (default 8)
+ *   --gesture-max-cap-ms=N assert hot-frame max below N (default 16.7)
  *
  * Prints one JSON line with every measurement. Exit 0 = all assertions passed.
  * The viewer exposes no hook, so "decode done" is the tri-count badge appearing;
@@ -49,6 +54,11 @@ const heapCapMB = flag("heap-cap-mb", null);
 const frameCapMs = flag("frame-cap-ms", null);
 const dragEvents = flag("drag-events", null);
 const dragFrameCapMs = flag("drag-frame-cap-ms", null);
+const surfaceGesture = !!flag("surface-gesture", false);
+const wheelEvents = parseInt(flag("wheel-events", "16"), 10);
+const panEvents = parseInt(flag("pan-events", "100"), 10);
+const gestureP95CapMs = parseFloat(flag("gesture-p95-cap-ms", "8"));
+const gestureMaxCapMs = parseFloat(flag("gesture-max-cap-ms", "16.7"));
 const triBudget = flag("tri-budget", null);
 const screenshot = flag("screenshot", null);
 const endTab = flag("tab", null);
@@ -168,7 +178,124 @@ const result = await page.evaluate(async (opts) => {
     };
   }
 
-  // 5) End on the requested tab (for a screenshot).
+  // 5) Realistic active surface navigation. The initial non-hot map render has
+  // baked both the point cloud and active fill. Sixteen outward wheel ticks
+  // drive well outside the historical 0.8..1.25 cache band and cross the
+  // scale-derived point-radius threshold; the following 100-event out-and-back
+  // pan travels >1000 px and crosses the half-viewport bake margin. Hot frames
+  // must only affine-blit the retained bitmaps. One settle paint may rebuild
+  // them afterward.
+  let gesture = null;
+  if (opts.surfaceGesture) {
+    clickTab("map"); await sleep(60);
+    const cv = document.getElementById("map-canvas");
+    const rect = cv.getBoundingClientRect();
+    const raf = () => new Promise((r) => requestAnimationFrame(r));
+    const snap = () => ({ ...(window.__PETEK_MAP_PERF || {}) });
+    const delta = (a, b, names) => Object.fromEntries(names.map((n) => [n, (b[n] || 0) - (a[n] || 0)]));
+    const counterNames = ["pointPathBuilds", "triFillBuilds", "canvasBackingWrites",
+      "legendMutations", "styleReads", "rafRequests", "hotPaints", "settlePaints",
+      "fillCacheHits", "fillCacheMisses", "fillCacheEvictions"];
+    const quantile = (xs, p) => xs.length ? xs[Math.min(xs.length - 1, Math.ceil(xs.length * p) - 1)] : null;
+    const fillSnapshot = () => ({
+      cache: window.__PETEK_FILL_CACHE_STATUS ? { ...window.__PETEK_FILL_CACHE_STATUS } : null,
+      headers: [...document.querySelectorAll("#legend h3")].map((h) => h.textContent),
+      scales: [...document.querySelectorAll("#legend .scale")].map((s) =>
+        [...s.children].map((c) => c.textContent)),
+      lod: !!window.__PETEK_LOD_ACTIVE,
+    });
+    const fillSelect = () => {
+      const groups = [...document.querySelectorAll("#panel-body .group")];
+      const group = groups.find((g) => g.querySelector("h2")?.textContent === "Fill");
+      return group && group.querySelector("select");
+    };
+    const selectFill = async (index) => {
+      const select = fillSelect();
+      if (!select) throw new Error("surface gesture requires at least two selectable fills");
+      select.selectedIndex = index;
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+      await raf(); await sleep(20);
+    };
+
+    const startScale = window.__PETEK_MAP_VIEW && window.__PETEK_MAP_VIEW.scale;
+    const hotBefore = snap();
+    const samples = [];
+    let rafTurns = 0;
+    let lastPaint = hotBefore.hotPaints || 0;
+    const captureRaf = async () => {
+      await raf(); rafTurns++;
+      const now = snap();
+      if ((now.hotPaints || 0) > lastPaint && window.__PETEK_MAP_FRAME_MS != null) {
+        samples.push(window.__PETEK_MAP_FRAME_MS);
+        lastPaint = now.hotPaints || 0;
+      }
+    };
+
+    const cx0 = rect.left + rect.width * 0.5, cy0 = rect.top + rect.height * 0.5;
+    for (let i = 0; i < opts.wheelEvents; i++) {
+      cv.dispatchEvent(new WheelEvent("wheel", {
+        bubbles: true, cancelable: true, clientX: cx0, clientY: cy0, deltaY: 120,
+      }));
+      if (i % 3 === 2) await captureRaf();
+    }
+    if (opts.wheelEvents % 3) await captureRaf();
+
+    let cx = cx0, cy = cy0;
+    cv.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, clientX: cx, clientY: cy }));
+    for (let i = 0; i < opts.panEvents; i++) {
+      cx += i < opts.panEvents / 2 ? 12 : -12;
+      cy += (i % 2 ? 1 : -1);
+      cv.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: cx, clientY: cy }));
+      if (i % 3 === 2) await captureRaf();
+    }
+    if (opts.panEvents % 3) await captureRaf();
+    window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, clientX: cx, clientY: cy }));
+    await captureRaf();
+
+    const hotAfter = snap();
+    const endScale = window.__PETEK_MAP_VIEW && window.__PETEK_MAP_VIEW.scale;
+    const hotDelta = delta(hotBefore, hotAfter, counterNames);
+    samples.sort((a, b) => a - b);
+    const frameStats = {
+      n: samples.length,
+      p50: quantile(samples, 0.50),
+      p95: quantile(samples, 0.95),
+      max: samples.length ? samples[samples.length - 1] : null,
+    };
+
+    // The single trailing debounce owns all reconstruction and any LOD flip.
+    await sleep(230); await raf(); await raf();
+    const settled = snap();
+    const settleDelta = delta(hotAfter, settled, counterNames);
+
+    // Fill A was cached by the settle render; build B, then return to A. The
+    // four-entry ring-aware LRU must reuse A with its range/ramp/LOD unchanged.
+    const aBefore = fillSnapshot();
+    await selectFill(1);
+    const bState = fillSnapshot();
+    const returnBefore = snap();
+    await selectFill(0);
+    const returnAfter = snap();
+    const aAfter = fillSnapshot();
+    const returnDelta = delta(returnBefore, returnAfter, counterNames);
+    const stableFill = (s) => ({
+      key: s.cache && s.cache.key,
+      colormap: s.cache && s.cache.colormap,
+      range: s.cache && s.cache.range,
+      lod: s.lod, headers: s.headers, scales: s.scales,
+    });
+    const stableA = JSON.stringify(stableFill(aBefore)) === JSON.stringify(stableFill(aAfter));
+
+    gesture = {
+      wheelEvents: opts.wheelEvents, panEvents: opts.panEvents,
+      startScale, endScale,
+      panPixels: opts.panEvents * 12, rafTurns,
+      hotDelta, settleDelta, frameStats,
+      aBefore, bState, aAfter, returnDelta, stableA,
+    };
+  }
+
+  // 6) End on the requested tab (for a screenshot).
   if (opts.endTab) { clickTab(opts.endTab); await sleep(120); }
 
   if (window.gc) window.gc();
@@ -181,8 +308,13 @@ const result = await page.evaluate(async (opts) => {
     volBadge,
     degradedBanner,
     ...(drag || {}),
+    ...(gesture ? { surfaceGesture: gesture } : {}),
   };
-}, { endTab, dragEvents: dragEvents != null && dragEvents !== true ? parseInt(dragEvents, 10) : 0 });
+}, {
+  endTab,
+  dragEvents: dragEvents != null && dragEvents !== true ? parseInt(dragEvents, 10) : 0,
+  surfaceGesture, wheelEvents, panEvents,
+});
 
 if (screenshot && screenshot !== true) {
   await page.screenshot({ path: screenshot, fullPage: false });
@@ -210,6 +342,30 @@ if (result.dragEvents) {
   if (dragFrameCapMs != null && dragFrameCapMs !== true &&
       result.dragFrameMsMedian != null && result.dragFrameMsMedian > parseFloat(dragFrameCapMs))
     fail(9, `drag repaint median ${result.dragFrameMsMedian} ms > cap ${dragFrameCapMs} ms`);
+}
+if (result.surfaceGesture) {
+  const g = result.surfaceGesture;
+  if (g.wheelEvents <= 2) fail(10, "surface gesture must exercise more than two wheel ticks");
+  if (!(g.startScale >= 0.05 && g.endScale < 0.05))
+    fail(10, `surface gesture did not cross point-radius threshold: ${g.startScale} -> ${g.endScale}`);
+  const forbidden = ["pointPathBuilds", "triFillBuilds", "canvasBackingWrites",
+    "legendMutations", "styleReads"];
+  const hotWork = forbidden.filter((n) => (g.hotDelta[n] || 0) !== 0);
+  if (hotWork.length) fail(11, "hot gesture performed forbidden work: " + hotWork.join(", "));
+  if (g.hotDelta.rafRequests !== g.hotDelta.hotPaints || g.hotDelta.hotPaints > g.rafTurns)
+    fail(12, `gesture paint/rAF mismatch: ${g.hotDelta.hotPaints} paints, ${g.hotDelta.rafRequests} requests, ${g.rafTurns} turns`);
+  if (!g.frameStats.n || g.frameStats.p95 >= gestureP95CapMs)
+    fail(13, `gesture p95 ${g.frameStats.p95} ms >= cap ${gestureP95CapMs} ms`);
+  if (g.frameStats.max >= gestureMaxCapMs)
+    fail(14, `gesture max ${g.frameStats.max} ms >= cap ${gestureMaxCapMs} ms`);
+  if (g.settleDelta.settlePaints !== 1 || g.settleDelta.pointPathBuilds !== 1 ||
+      g.settleDelta.triFillBuilds !== 1)
+    fail(15, "gesture did not perform exactly one point/fill rebuild on settle");
+  if (g.returnDelta.pointPathBuilds !== 0 || g.returnDelta.triFillBuilds !== 0 ||
+      g.returnDelta.fillCacheHits < 1 || !g.stableA)
+    fail(16, "A→B→A did not reuse the stable fill cache");
+  if (!g.aAfter.cache || g.aAfter.cache.size > g.aAfter.cache.limit)
+    fail(17, "fill bitmap cache exceeded its explicit bound");
 }
 
 console.log(JSON.stringify(result));

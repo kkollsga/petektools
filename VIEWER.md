@@ -73,17 +73,20 @@ the current viewport are sampled, and never more than one sample per screen pixe
 reads the full-resolution value array. The **point-cloud overlay is batched + baked** the same way: points
 draw in ≤256 colormap-bin `Path2D`s (one fill per bin) into a viewport-windowed,
 memory-capped offscreen canvas that pan/zoom re-blit in one `drawImage`;
-wheel/drag repaints coalesce to at most one per animation frame, a gesture frame
-outside the baked window/zoom band draws the batched immediate path (re-baking
-only when the gesture pauses), and click-to-inspect hit-tests a coarse
+wheel/drag repaints coalesce to at most one per animation frame, and every
+gesture frame affine-transforms the last valid bitmap even outside its baked
+window/zoom band (re-baking only once when the gesture pauses); click-to-inspect hit-tests a coarse
 world-space grid bucket — so a **200k-point coloured cloud pans/zooms/inspects
 at frame rate**
-(≲10 ms worst gesture frame, sub-ms steady-state; previously ~145 ms per event).
+(the browser acceptance budget is p95 <8 ms and max <16.7 ms; previously ~145 ms per event).
 The active **value fill bakes the same way**: it rasterizes once into an
-offscreen bitmap that pan blits and an in-band zoom blits scaled, re-baking
-only on zoom-settle, so a ~78k-triangle fill never re-triangulates per gesture
-frame; a hidden tab cancels the settle timer (`visibilitychange`) and only the
-visible tab ever repaints.
+offscreen bitmap that every hot pan/zoom frame affine-blits, re-baking only on
+zoom-settle, so a ~78k-triangle fill never re-triangulates per gesture frame.
+The four-entry fill-bitmap LRU holds the two most recent fill fields at both
+full and coarse LOD, so an A→B→A switch reuses A without rebuilding. Hot frames
+also leave canvas backing size, legend DOM, and theme-style reads untouched; a
+hidden tab cancels the settle timer (`visibilitychange`) and only the visible
+tab ever repaints.
 
 The `view2d` map's bulk arrays (points, fill nodes/triangles/values, grid
 lines, contour polylines) travel as **content-addressed typed binary blocks**
