@@ -46,6 +46,8 @@ _SCENE3D_OPTIONS = frozenset(
     }
 )
 _ITEM_KEYS = frozenset({"object", "id", "label", "visible", "views", "role"})
+_PROVIDER_ITEM_KEYS = _ITEM_KEYS | frozenset({"disabled", "reason", "diagnostic"})
+_LANE_KEYS = frozenset({"id", "label"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,13 +70,18 @@ class WorkspaceGroup:
 
 @dataclass(frozen=True, slots=True)
 class WorkspaceItem:
-    """One immutable renderable leaf in a normalized workspace tree."""
+    """One immutable leaf in a normalized workspace tree."""
 
     id: str
     label: str
     views: tuple[tuple[str, tuple[tuple[str, Any], ...]], ...]
     visible: tuple[tuple[str, bool], ...]
     role: str | None = None
+    lanes: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = ()
+    active_lanes: tuple[tuple[str, str], ...] = ()
+    disabled: bool = False
+    reason: str | None = None
+    diagnostic: Any = None
 
     def view_options(self, view: str) -> dict[str, Any]:
         for name, options in self.views:
@@ -85,23 +92,42 @@ class WorkspaceItem:
     def visible_in(self, view: str) -> bool:
         return dict(self.visible).get(view, False)
 
+    def lanes_for(self, view: str) -> tuple[tuple[str, str], ...]:
+        return dict(self.lanes).get(view, ())
+
+    def active_lane(self, view: str) -> str | None:
+        return dict(self.active_lanes).get(view)
+
     def to_dict(self) -> dict[str, Any]:
-        return {
+        resources = {}
+        for name, _ in self.views:
+            spec: dict[str, Any] = {
+                "href": "./workspace-resource?item=" + quote(self.id, safe="")
+                + "&view="
+                + quote(name, safe=""),
+                "deferred": name in _DEFERRED_VIEWS,
+            }
+            lanes = self.lanes_for(name)
+            if lanes:
+                spec["lanes"] = [
+                    {"id": lane_id, "label": label} for lane_id, label in lanes
+                ]
+                spec["active_lane"] = self.active_lane(name)
+            resources[name] = spec
+        value = {
             "id": self.id,
             "label": self.label,
             "role": self.role,
             "views": [name for name, _ in self.views],
             "visible": dict(self.visible),
-            "resources": {
-                name: {
-                    "href": "./workspace-resource?item=" + quote(self.id, safe="")
-                    + "&view="
-                    + quote(name, safe=""),
-                    "deferred": name in _DEFERRED_VIEWS,
-                }
-                for name, _ in self.views
-            },
+            "resources": resources,
+            "disabled": self.disabled,
         }
+        if self.reason is not None:
+            value["reason"] = self.reason
+        if self.diagnostic is not None:
+            value["diagnostic"] = copy.deepcopy(self.diagnostic)
+        return value
 
 
 WorkspaceNode = WorkspaceGroup | WorkspaceItem
@@ -155,7 +181,41 @@ def _plain_label(obj: Any) -> str | None:
     return None
 
 
-def _normalise_views(value: Any, *, provider: bool) -> tuple[tuple[str, tuple[tuple[str, Any], ...]], ...]:
+def _normalise_lanes(
+    value: Any, *, view: str
+) -> tuple[tuple[str, str], ...]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        raise TypeError(f"workspace {view} lanes must be an ordered list")
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for index, lane in enumerate(value):
+        if not isinstance(lane, Mapping):
+            raise TypeError(f"workspace {view} lane {index} must be a mapping")
+        unknown = set(lane) - _LANE_KEYS
+        if unknown:
+            raise ValueError(f"unknown workspace lane key(s) {sorted(unknown)}")
+        lane_id = lane.get("id")
+        if not isinstance(lane_id, str) or not lane_id or lane_id != lane_id.strip():
+            raise ValueError("workspace lane IDs must be non-empty, trimmed strings")
+        if lane_id in seen:
+            raise ValueError(f"duplicate workspace {view} lane ID {lane_id!r}")
+        label = lane.get("label")
+        if not isinstance(label, str) or not label or label != label.strip():
+            raise ValueError("workspace lane labels must be non-empty, trimmed strings")
+        seen.add(lane_id)
+        out.append((lane_id, label))
+    if not out:
+        raise ValueError(f"workspace {view} lanes must not be empty")
+    return tuple(out)
+
+
+def _normalise_views(
+    value: Any, *, provider: bool
+) -> tuple[
+    tuple[tuple[str, tuple[tuple[str, Any], ...]], ...],
+    tuple[tuple[str, tuple[tuple[str, str], ...]], ...],
+    tuple[tuple[str, str], ...],
+]:
     if value is None:
         names: Mapping[str, Any] = {"map": {}, "scene3d": {}}
     elif isinstance(value, Mapping):
@@ -168,6 +228,8 @@ def _normalise_views(value: Any, *, provider: bool) -> tuple[tuple[str, tuple[tu
         raise TypeError("workspace item views must be a mapping or iterable of view names")
 
     out: list[tuple[str, tuple[tuple[str, Any], ...]]] = []
+    lanes_out: list[tuple[str, tuple[tuple[str, str], ...]]] = []
+    active_out: list[tuple[str, str]] = []
     for raw_name, raw_options in names.items():
         name = str(raw_name)
         if name not in _VIEW_NAMES:
@@ -182,6 +244,29 @@ def _normalise_views(value: Any, *, provider: bool) -> tuple[tuple[str, tuple[tu
             options = dict(raw_options)
         else:
             raise TypeError(f"workspace view {name!r} options must be a mapping or bool")
+        raw_lanes = options.pop("lanes", None)
+        active_lane = options.pop("active_lane", None)
+        default_lane = options.pop("default_lane", None)
+        if active_lane is not None and default_lane is not None and active_lane != default_lane:
+            raise ValueError(
+                f"workspace {name} active_lane and default_lane must match when both are set"
+            )
+        active_lane = active_lane if active_lane is not None else default_lane
+        if (raw_lanes is not None or active_lane is not None) and not provider:
+            raise ValueError("workspace lanes are available only on provider catalog items")
+        lanes = _normalise_lanes(raw_lanes, view=name) if raw_lanes is not None else ()
+        if active_lane is not None and not lanes:
+            raise ValueError(f"workspace {name} active_lane requires declared lanes")
+        if lanes:
+            lane_ids = {lane_id for lane_id, _ in lanes}
+            if active_lane is None:
+                active_lane = lanes[0][0]
+            if not isinstance(active_lane, str) or active_lane not in lane_ids:
+                raise ValueError(
+                    f"workspace {name} active_lane {active_lane!r} is not a declared lane"
+                )
+            lanes_out.append((name, lanes))
+            active_out.append((name, active_lane))
         allowed = _MAP_OPTIONS if name == "map" else _SCENE3D_OPTIONS if name == "scene3d" else frozenset()
         unknown = set(options) - allowed
         if unknown and not provider:
@@ -190,9 +275,9 @@ def _normalise_views(value: Any, *, provider: bool) -> tuple[tuple[str, tuple[tu
                 f"expected a subset of {sorted(allowed)}"
             )
         out.append((name, tuple(options.items())))
-    if not out:
+    if not out and not provider:
         raise ValueError("workspace item must enable at least one view")
-    return tuple(out)
+    return tuple(out), tuple(lanes_out), tuple(active_out)
 
 
 def _normalise_visible(value: Any, views: tuple[tuple[str, Any], ...]) -> tuple[tuple[str, bool], ...]:
@@ -247,7 +332,15 @@ class _Normalizer:
             for raw_label, child in value.items():
                 label = str(raw_label)
                 child_path = (*path, label)
-                if isinstance(child, Mapping) and "object" not in child and "children" not in child:
+                provider_leaf = self.provider and isinstance(child, Mapping) and bool(
+                    set(child) & (_PROVIDER_ITEM_KEYS - {"label"})
+                )
+                if (
+                    isinstance(child, Mapping)
+                    and "object" not in child
+                    and "children" not in child
+                    and not provider_leaf
+                ):
                     children = self._mapping(child, child_path)
                     out.append(
                         WorkspaceGroup(
@@ -295,7 +388,8 @@ class _Normalizer:
 
     def _leaf(self, value: Any, path: tuple[str, ...], fallback_label: str) -> WorkspaceItem:
         if isinstance(value, Mapping):
-            unknown = set(value) - _ITEM_KEYS
+            allowed_keys = _PROVIDER_ITEM_KEYS if self.provider else _ITEM_KEYS
+            unknown = set(value) - allowed_keys
             if unknown:
                 raise ValueError(f"unknown workspace item key(s) {sorted(unknown)}")
             obj = value.get("object")
@@ -306,6 +400,9 @@ class _Normalizer:
             raw_views = value.get("views")
             raw_visible = value.get("visible")
             role = value.get("role")
+            raw_disabled = value.get("disabled")
+            reason = value.get("reason")
+            diagnostic = value.get("diagnostic")
         else:
             if self.provider:
                 raise TypeError("provider catalog leaves must be explicit mappings")
@@ -315,14 +412,48 @@ class _Normalizer:
             raw_views = None
             raw_visible = None
             role = None
+            raw_disabled = None
+            reason = None
+            diagnostic = None
         if not label:
             raise ValueError("workspace leaves require a non-empty label")
         item_id = self._claim(str(explicit_id) if explicit_id is not None else _stable_path("item", path))
-        views = _normalise_views(raw_views, provider=self.provider)
+        views, lanes, active_lanes = _normalise_views(
+            raw_views, provider=self.provider
+        )
+        disabled = not views
+        if raw_disabled is not None:
+            if not isinstance(raw_disabled, bool):
+                raise TypeError("workspace disabled must be bool")
+            if raw_disabled and views:
+                raise ValueError("disabled workspace items must declare zero views")
+            if not raw_disabled and disabled:
+                raise ValueError("workspace items with zero views are disabled")
+            disabled = raw_disabled
+        if reason is not None:
+            if not isinstance(reason, str) or not reason or reason != reason.strip():
+                raise ValueError("workspace disabled reason must be a non-empty, trimmed string")
+        if diagnostic is not None:
+            try:
+                json.dumps(diagnostic)
+            except (TypeError, ValueError) as exc:
+                raise TypeError("workspace diagnostic must be JSON-serializable") from exc
+            diagnostic = copy.deepcopy(diagnostic)
         visible = _normalise_visible(raw_visible, views)
         if not self.provider:
             self.objects[item_id] = obj
-        return WorkspaceItem(item_id, label, views, visible, str(role) if role is not None else None)
+        return WorkspaceItem(
+            id=item_id,
+            label=label,
+            views=views,
+            visible=visible,
+            role=str(role) if role is not None else None,
+            lanes=lanes,
+            active_lanes=active_lanes,
+            disabled=disabled,
+            reason=reason,
+            diagnostic=diagnostic,
+        )
 
 
 def _walk_items(nodes: Iterable[WorkspaceNode]) -> Iterable[WorkspaceItem]:
@@ -372,7 +503,18 @@ def _apply_visible_override(
         if isinstance(node, WorkspaceGroup):
             return WorkspaceGroup(node.id, node.label, tuple(replace(ch) for ch in node.children), node.expanded)
         vis = tuple((view, node.id in selected.get(view, set())) for view, _ in node.visible)
-        return WorkspaceItem(node.id, node.label, node.views, vis, node.role)
+        return WorkspaceItem(
+            id=node.id,
+            label=node.label,
+            views=node.views,
+            visible=vis,
+            role=node.role,
+            lanes=node.lanes,
+            active_lanes=node.active_lanes,
+            disabled=node.disabled,
+            reason=node.reason,
+            diagnostic=copy.deepcopy(node.diagnostic),
+        )
 
     return tuple(replace(node) for node in nodes)
 
@@ -420,7 +562,7 @@ class WorkspaceSession:
         nodes = _apply_visible_override(normalizer.roots(catalog), self._visible_override)
         items = {item.id: item for item in _walk_items(nodes)}
         if not items:
-            raise ValueError("workspace catalog contains no renderable leaves")
+            raise ValueError("workspace catalog contains no leaves")
         self._nodes = nodes
         self._items = items
         self._objects = normalizer.objects
@@ -500,8 +642,16 @@ class WorkspaceSession:
         if item_id not in self._items:
             raise KeyError(f"unknown workspace item {item_id!r}")
         item = self._items[item_id]
-        if view not in dict(item.views):
+        if item.disabled or view not in dict(item.views):
             raise KeyError(f"workspace item {item_id!r} has no {view!r} resource")
+        lanes = item.lanes_for(view)
+        if lanes:
+            lane = item.active_lane(view) if lane is None else lane
+            declared = {lane_id for lane_id, _ in lanes}
+            if lane not in declared:
+                raise KeyError(
+                    f"workspace item {item_id!r} view {view!r} has no lane {lane!r}"
+                )
         key = (item_id, view, lane)
         with self._lock:
             cached = self._cache.get(key)

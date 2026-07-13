@@ -19,6 +19,13 @@ All notable changes to petekTools are recorded here. Format follows
   visibility; composed surface resources preserve their attribute selector and
   lazy content-addressed decoding. Existing single-view payloads and `view2d` /
   `view3d` / `serve` / `save_view` are unchanged.
+- **Provider workspace lanes and disabled assets.** Workspace-v1 provider
+  catalogs can retain ordered unavailable leaves with a visible reason and
+  JSON diagnostic metadata, and can declare ordered `{id, label}` lanes with an
+  active lane per view. The project tree switches lanes lazily, caches each
+  item/view/lane once, and keeps Map/3-D/Wells lane state independent. Visible
+  static exports freeze active lanes only; selected exports freeze every lane
+  for zero-network switching. Old unlaned manifests remain unchanged.
 - **Correlation view templates.** Public frozen `CorrelationTemplate` and
   `CorrelationTrack` values provide chainable curve/flag overlays, ordered and
   grouped weighted tracks, linear/log/reversed scales, styles/fills, layout,

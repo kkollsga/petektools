@@ -70,13 +70,43 @@ An omitted leaf `visible` selects all of that leaf's enabled views; use
 that materializes nothing until the user enables an item. Provider/project
 catalogs should always emit their intended initial visibility explicitly.
 
+A provider can declare ordered, independently lazy attributes on a view:
+
+```python
+{
+    "id": "surface:top-agat",
+    "label": "Top Agat",
+    "views": {"map": {
+        "lanes": [
+            {"id": "depth", "label": "Depth"},
+            {"id": "thickness", "label": "Thickness"},
+        ],
+        "active_lane": "depth",  # defaults to the first lane
+    }},
+    "visible": {"map": True},
+}
+```
+
+The tree row shows a compact selector. Opening fetches only `depth`; choosing
+Thickness calls `view_resource(item_id="surface:top-agat", view="map",
+lane="thickness")` once, and returning to Depth reuses its cache. Lane state is
+independent per view. `default_lane` is accepted as a provider input alias;
+workspace manifest v1 always emits `active_lane`.
+
+Providers can also retain unsupported assets as disabled searchable leaves:
+`{"id": ..., "label": ..., "views": {}, "disabled": True,
+"reason": "Unsupported project asset", "diagnostic": {...}}`. Zero views
+infer `disabled=True`; these records have no resource links and never fetch.
+
 The live `model.json` contains only workspace manifest v1 and any caller-supplied
 typed payload. `./workspace-resource?item=…&view=…&lane=…` constructs one
 resource on first request and caches it under a lock; failures are diagnostics
 and remain retryable. `WorkspaceSession.save(include="visible")` embeds only
 initially visible resources; `include="selected"` embeds every catalogued
-resource so the full chosen tree remains available offline. Both use the same
-zero-network, self-contained HTML export. `refresh()` is the explicit boundary
+resource and every declared lane so the full chosen tree and its attribute
+selectors remain available offline. A visible-only export embeds just each
+visible view's declared active lane. Both use the same zero-network,
+self-contained HTML export. `refresh()` is the explicit boundary
 for producer/tree mutation and clears the resource snapshot.
 
 The right-panel Project tree is searchable and collapsible. Group checkboxes

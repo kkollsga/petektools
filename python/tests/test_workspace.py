@@ -152,6 +152,182 @@ class Provider:
         return {"map": {"item_id": item_id, "lane": lane}, "schema_version": 4}
 
 
+class LaneProvider:
+    def __init__(self):
+        self.calls = []
+
+    def view_catalog(self):
+        return [
+            {
+                "id": "group:interpretation",
+                "label": "Interpretation",
+                "children": [
+                    {
+                        "id": "surface:top",
+                        "label": "Top Agat",
+                        "role": "surface",
+                        "views": {
+                            "map": {
+                                "lanes": [
+                                    {"id": "depth", "label": "Depth"},
+                                    {"id": "thickness", "label": "Thickness"},
+                                ],
+                                "active_lane": "depth",
+                            },
+                            "scene3d": {
+                                "lanes": [
+                                    {"id": "depth", "label": "Depth"},
+                                    {"id": "thickness", "label": "Thickness"},
+                                ],
+                                "active_lane": "thickness",
+                            },
+                        },
+                        "visible": {"map": True, "scene3d": False},
+                    },
+                    {
+                        "id": "unknown:legacy",
+                        "label": "Legacy mystery",
+                        "views": {},
+                        "disabled": True,
+                        "reason": "Unsupported project asset",
+                        "diagnostic": {"kind": "legacy_blob", "code": "unsupported"},
+                    },
+                ],
+            }
+        ]
+
+    def view_resource(self, *, item_id, view, lane=None):
+        self.calls.append((item_id, view, lane))
+        return {"schema_version": 4, "map": {"lane": lane}, "scene3d": None}
+
+
+def _saved_workspace(path):
+    text = path.read_text()
+    prefix = "<script>window.PETEK_VIEWER_PAYLOAD="
+    start = text.index(prefix) + len(prefix)
+    end = text.index(';window.PETEK_VIEWER_MODE="file";', start)
+    return json.loads(text[start:end])["workspace"]
+
+
+def test_provider_disabled_leaf_and_ordered_lane_manifest_are_metadata_only():
+    provider = LaneProvider()
+    session = WorkspaceSession(provider)
+    manifest = session.manifest()["workspace"]
+    surface, disabled = manifest["tree"][0]["children"]
+
+    assert provider.calls == []
+    assert surface["resources"]["map"]["lanes"] == [
+        {"id": "depth", "label": "Depth"},
+        {"id": "thickness", "label": "Thickness"},
+    ]
+    assert surface["resources"]["map"]["active_lane"] == "depth"
+    assert surface["resources"]["scene3d"]["active_lane"] == "thickness"
+    assert disabled == {
+        "id": "unknown:legacy",
+        "label": "Legacy mystery",
+        "role": None,
+        "views": [],
+        "visible": {},
+        "resources": {},
+        "disabled": True,
+        "reason": "Unsupported project asset",
+        "diagnostic": {"kind": "legacy_blob", "code": "unsupported"},
+    }
+    with pytest.raises(KeyError, match="has no 'map' resource"):
+        session.resource("unknown:legacy", "map")
+
+
+def test_provider_lane_resources_cache_once_and_static_freeze_semantics(tmp_path):
+    provider = LaneProvider()
+    session = WorkspaceSession(provider)
+
+    first = session.resource("surface:top", "map")
+    assert session.resource("surface:top", "map", "depth") == first
+    assert session.resource("surface:top", "map", "thickness")["lane"] == "thickness"
+    assert provider.calls == [
+        ("surface:top", "map", "depth"),
+        ("surface:top", "map", "thickness"),
+    ]
+    with pytest.raises(KeyError, match="has no lane 'missing'"):
+        session.resource("surface:top", "map", "missing")
+
+    provider = LaneProvider()
+    session = WorkspaceSession(provider)
+    visible = tmp_path / "lanes-visible.html"
+    session.save(visible)
+    frozen = _saved_workspace(visible)
+    assert provider.calls == [("surface:top", "map", "depth")]
+    assert [resource["lane"] for resource in frozen["resources"]["surface:top"]["map"]] == ["depth"]
+    assert "unknown:legacy" not in frozen["resources"]
+
+    selected = tmp_path / "lanes-selected.html"
+    session.save(selected, include="selected")
+    frozen = _saved_workspace(selected)
+    assert provider.calls == [
+        ("surface:top", "map", "depth"),
+        ("surface:top", "map", "thickness"),
+        ("surface:top", "scene3d", "depth"),
+        ("surface:top", "scene3d", "thickness"),
+    ]
+    assert [resource["lane"] for resource in frozen["resources"]["surface:top"]["map"]] == [
+        "depth",
+        "thickness",
+    ]
+    assert [resource["lane"] for resource in frozen["resources"]["surface:top"]["scene3d"]] == [
+        "depth",
+        "thickness",
+    ]
+
+
+def test_workspace_server_forwards_declared_lane_and_caches_it_once():
+    provider = LaneProvider()
+    session = WorkspaceSession(provider).serve(open_browser=False)
+    try:
+        manifest = session.manifest()["workspace"]
+        href = manifest["tree"][0]["children"][0]["resources"]["map"]["href"]
+        url = session.url + href[1:] + "&lane=thickness"
+        with urllib.request.urlopen(url) as response:
+            first = json.load(response)
+        with urllib.request.urlopen(url) as response:
+            second = json.load(response)
+        assert first == second
+        assert first["lane"] == "thickness"
+        assert provider.calls == [("surface:top", "map", "thickness")]
+    finally:
+        session._server.shutdown()
+        session._server.server_close()
+
+
+@pytest.mark.parametrize(
+    "leaf, message",
+    [
+        ({"id": "x", "views": {"map": {}}, "disabled": True}, "zero views"),
+        ({"id": "x", "views": {"map": {"lanes": []}}}, "must not be empty"),
+        (
+            {
+                "id": "x",
+                "views": {"map": {"lanes": [{"id": "z", "label": "Z"}, {"id": "z", "label": "Again"}]}},
+            },
+            "duplicate workspace map lane ID",
+        ),
+        (
+            {
+                "id": "x",
+                "views": {"map": {"lanes": [{"id": "z", "label": "Z"}], "active_lane": "missing"}},
+            },
+            "is not a declared lane",
+        ),
+    ],
+)
+def test_provider_invalid_disabled_and_lane_catalogs_fail(leaf, message):
+    class Invalid(Provider):
+        def view_catalog(self):
+            return [leaf]
+
+    with pytest.raises((TypeError, ValueError), match=message):
+        WorkspaceSession(Invalid())
+
+
 def test_provider_catalog_and_resource_duck_are_lazy_once_under_concurrency():
     provider = Provider()
     session = WorkspaceSession(provider)
@@ -255,4 +431,39 @@ def test_2000_leaf_manifest_only_startup_budget():
     session = pto.view(catalog, serve=False)
     elapsed_ms = (time.perf_counter() - started) * 1000.0
     assert len(session.tree()[0]["children"]) == 2000
+    assert elapsed_ms < 500.0
+
+
+def test_2000_leaf_provider_catalog_with_disabled_assets_stays_metadata_only():
+    class CatalogProvider(Provider):
+        def __init__(self):
+            super().__init__()
+            self.catalog = [
+                {
+                    "id": "group:assets",
+                    "label": "Assets",
+                    "children": [
+                        {
+                            "id": f"unknown:{i}",
+                            "label": f"Unknown {i}",
+                            "views": {},
+                            "reason": "Unsupported asset",
+                        }
+                        for i in range(2000)
+                    ],
+                }
+            ]
+
+        def view_catalog(self):
+            self.catalog_calls += 1
+            return self.catalog
+
+    provider = CatalogProvider()
+    started = time.perf_counter()
+    session = pto.view(provider, serve=False)
+    elapsed_ms = (time.perf_counter() - started) * 1000.0
+    leaves = session.tree()[0]["children"]
+    assert len(leaves) == 2000
+    assert all(leaf["disabled"] and leaf["resources"] == {} for leaf in leaves)
+    assert provider.resource_calls == 0
     assert elapsed_ms < 500.0

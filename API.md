@@ -881,7 +881,13 @@ session.save("visible.html")
 session.save("selected.html", include="selected")
 
 # A producer may instead expose:
-#   view_catalog() -> ordered mapping/list of explicit group/item records
+#   view_catalog() -> ordered mapping/list of explicit group/item records.
+# A view record may declare ordered lazy lanes:
+#   {"map": {"lanes": [{"id": "depth", "label": "Depth"},
+#                       {"id": "thickness", "label": "Thickness"}],
+#            "active_lane": "depth"}}
+# A disabled provider leaf is retained with views={}, optional reason and
+# JSON-shaped diagnostic metadata, and no resource link.
 #   view_resource(*, item_id, view, lane=None) -> typed JSON render mini-bundle
 viewer.view(tree_or_source, *, title="Project workspace", visible=None,
             tab="auto", payload=None, save=None, serve=True, port=0, block=False,

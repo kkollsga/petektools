@@ -37,6 +37,7 @@ _WELLS_JS = Path(__file__).parent / "viewer_perf" / "wells_bench.mjs"
 _WELL_RENDER_JS = Path(__file__).parent / "viewer_perf" / "well_render_bench.mjs"
 _WORKSPACE_JS = Path(__file__).parent / "viewer_perf" / "workspace_bench.mjs"
 _WORKSPACE_SCALE_JS = Path(__file__).parent / "viewer_perf" / "workspace_scale_bench.mjs"
+_WORKSPACE_LANE_JS = Path(__file__).parent / "viewer_perf" / "workspace_lane_bench.mjs"
 _NODE = shutil.which("node")
 
 
@@ -241,6 +242,112 @@ def test_workspace_tree_2000_leaf_interaction_budget(tmp_path):
     assert result["renderedRows"] <= 40
     assert result["treeBuildP95Ms"] < 16.7
     assert result["groupToggleP95Ms"] < 16.7
+
+
+@pytest.mark.skipif(not _HAVE_PW, reason="playwright/chromium not installed")
+@pytest.mark.parametrize("mode", ["live", "static_selected", "static_visible"])
+def test_workspace_provider_lanes_fetch_once_cache_and_switch_offline(tmp_path, mode):
+    import petektools as pto
+    from petektools import viewer
+
+    class LanePoints:
+        kind = "point_set"
+
+        def __init__(self, lane):
+            self.name = lane
+            self.lane = lane
+
+        def xyz(self):
+            z = -100.0 if self.lane == "depth" else 25.0
+            return [[0.0, 0.0, z], [50.0, 25.0, z + 1.0], [20.0, 70.0, z + 2.0]]
+
+    class LaneBrowserProvider:
+        def __init__(self):
+            self.calls = []
+
+        def view_catalog(self):
+            return [
+                {
+                    "id": "group:interpretation",
+                    "label": "Interpretation",
+                    "children": [
+                        {
+                            "id": "surface:top",
+                            "label": "Top Agat",
+                            "views": {
+                                "map": {
+                                    "lanes": [
+                                        {"id": "depth", "label": "Depth"},
+                                        {"id": "thickness", "label": "Thickness"},
+                                    ],
+                                    "active_lane": "depth",
+                                }
+                            },
+                            "visible": {"map": True},
+                        },
+                        {
+                            "id": "unknown:legacy",
+                            "label": "Legacy mystery",
+                            "views": {},
+                            "reason": "Unsupported project asset",
+                            "diagnostic": {"kind": "legacy_blob"},
+                        },
+                    ],
+                }
+            ]
+
+        def view_resource(self, *, item_id, view, lane=None):
+            self.calls.append((item_id, view, lane))
+            return viewer.view2d_payload(
+                [{"object": LanePoints(lane), "id": item_id, "name": lane}],
+                encoding="json",
+            )
+
+    provider = LaneBrowserProvider()
+    session = pto.view(provider, serve=False)
+    if mode == "live":
+        session.serve(open_browser=False)
+        target = session.url
+    else:
+        target = tmp_path / f"workspace-lanes-{mode}.html"
+        session.save(
+            target,
+            include="selected" if mode == "static_selected" else "visible",
+        )
+    try:
+        command = [_NODE, str(_WORKSPACE_LANE_JS), str(target)]
+        if mode == "static_visible":
+            command.append("--expect-omitted")
+        out = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    finally:
+        if mode == "live":
+            session._server.shutdown()
+            session._server.server_close()
+    assert out.returncode == 0, out.stdout + out.stderr
+    result = json.loads(out.stdout.strip().splitlines()[-1])
+    assert result["consoleErrors"] == []
+    if mode == "live":
+        assert result["initial"]["fetches"] == 1
+        assert result["thickness"]["fetches"] == 2
+        assert result["depthAgain"]["fetches"] == 2
+    elif mode == "static_selected":
+        assert result["initial"]["fetches"] == 0
+        assert result["thickness"]["fetches"] == 0
+        assert result["depthAgain"]["fetches"] == 0
+    else:
+        assert result["initial"]["fetches"] == 0
+        assert result["thickness"]["fetches"] == 0
+        assert result["thickness"]["errors"] == 1
+        assert result["depthAgain"]["fetches"] == 0
+    expected_calls = [("surface:top", "map", "depth")]
+    if mode != "static_visible":
+        expected_calls.append(("surface:top", "map", "thickness"))
+    assert provider.calls == expected_calls
 
 
 def _build_scale_view(scale: str, tmp_path: Path) -> Path:

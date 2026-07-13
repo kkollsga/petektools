@@ -16,6 +16,22 @@
   function workspaceItemVisible(id, view) {
     return !W || !id || !!(W.visible[id] && W.visible[id][view]);
   }
+  function workspaceLane(id, view) {
+    return W && W.activeLane[id] ? (W.activeLane[id][view] == null ? null : W.activeLane[id][view]) : null;
+  }
+  function workspaceResourceSlot(view, lane) {
+    return view + "\u0000" + (lane == null ? "" : String(lane));
+  }
+  function workspaceRequestKey(id, view, lane) {
+    return id + "\u0000" + workspaceResourceSlot(view, lane);
+  }
+  function workspaceResource(id, view, lane) {
+    return W && W.resources[id] && W.resources[id][workspaceResourceSlot(view, lane)];
+  }
+  function storeWorkspaceResource(id, view, resource) {
+    if (!W.resources[id]) return;
+    W.resources[id][workspaceResourceSlot(view, resource.lane)] = resource;
+  }
 
   function initWorkspace(payload) {
     var manifest = payload && payload.workspace;
@@ -23,18 +39,28 @@
     if (manifest.schema_version !== 1) throw new Error("unsupported workspace schema_version " + manifest.schema_version);
     W = {
       manifest: manifest, available: (manifest.available_views || []).slice(),
-      order: [], items: {}, visible: {}, resources: {}, loading: {}, errors: {},
+      order: [], items: {}, visible: {}, activeLane: {}, resources: {}, loading: {}, errors: {}, searchText: {},
       query: "", expanded: {}, fetches: 0, compositions: 0, searchTimer: null,
       treeBuildMs: [], groupToggleMs: [], panelTimer: null, composeTimers: {},
     };
     function visit(nodes) {
       (nodes || []).forEach(function (node) {
+        var searchable = String(node.label || "") + " " + String(node.reason || "");
+        if (node.diagnostic) {
+          try { searchable += " " + JSON.stringify(node.diagnostic); } catch (_) {}
+        }
+        W.searchText[node.id] = searchable.toLowerCase();
         if (node.children) {
           W.expanded[node.id] = node.expanded !== false;
           visit(node.children);
         } else {
           W.order.push(node.id); W.items[node.id] = node;
           W.visible[node.id] = Object.assign({}, node.visible || {});
+          W.activeLane[node.id] = {};
+          Object.keys(node.resources || {}).forEach(function (view) {
+            var spec = node.resources[view];
+            if (spec && spec.lanes && spec.lanes.length) W.activeLane[node.id][view] = spec.active_lane || spec.lanes[0].id;
+          });
           W.resources[node.id] = {};
         }
       });
@@ -44,7 +70,10 @@
     Object.keys(embedded).forEach(function (id) {
       if (!W.resources[id]) return;
       Object.keys(embedded[id] || {}).forEach(function (view) {
-        W.resources[id][view] = embedded[id][view];
+        var values = Array.isArray(embedded[id][view]) ? embedded[id][view] : [embedded[id][view]];
+        values.forEach(function (resource) {
+          if (resource && resource.kind === "workspace_resource") storeWorkspaceResource(id, view, resource);
+        });
       });
     });
     exposeWorkspaceState();
@@ -55,6 +84,7 @@
     window.__PETEK_WORKSPACE_STATE = {
       itemCount: W.order.length, activeView: workspaceViewName(App.tab),
       visible: JSON.parse(JSON.stringify(W.visible)),
+      activeLane: JSON.parse(JSON.stringify(W.activeLane)),
       loaded: W.order.reduce(function (n, id) { return n + Object.keys(W.resources[id]).length; }, 0),
       loading: Object.keys(W.loading).length, errors: Object.keys(W.errors).length,
       fetches: W.fetches, compositions: W.compositions,
@@ -64,7 +94,7 @@
 
   function workspaceLoadingHint(view) {
     if (!W || !workspaceHasView(view)) return "";
-    var pending = Object.keys(W.loading).some(function (key) { return key.slice(key.indexOf("::") + 2) === view; });
+    var pending = Object.keys(W.loading).some(function (key) { return W.loading[key].view === view; });
     return pending ? "Loading selected workspace resources…" : "Select an item in the project tree.";
   }
 
@@ -75,8 +105,9 @@
     var hasLoaded = false;
     W.order.forEach(function (id) {
       if (!workspaceItemVisible(id, view) || !workspaceItemHasView(id, view)) return;
-      if (W.resources[id][view]) hasLoaded = true;
-      else loadWorkspaceResource(id, view);
+      var lane = workspaceLane(id, view);
+      if (workspaceResource(id, view, lane)) hasLoaded = true;
+      else loadWorkspaceResource(id, view, lane);
     });
     if (hasLoaded) composeWorkspaceView(view);
     exposeWorkspaceState();
@@ -87,9 +118,10 @@
     return !!(item && (item.views || []).indexOf(view) >= 0);
   }
 
-  function resourceHref(id, view) {
+  function resourceHref(id, view, lane) {
     var item = W.items[id], spec = item.resources && item.resources[view];
-    return spec && spec.href;
+    if (!spec || !spec.href) return null;
+    return spec.href + (lane == null ? "" : "&lane=" + encodeURIComponent(lane));
   }
 
   function scheduleWorkspacePanel() {
@@ -106,32 +138,37 @@
     }, 0);
   }
 
-  function loadWorkspaceResource(id, view, retry) {
+  function loadWorkspaceResource(id, view, lane, retry, fallbackLane) {
     if (!W || !workspaceItemHasView(id, view)) return;
-    var key = id + "::" + view;
-    if (W.resources[id][view] && !retry) { composeWorkspaceView(view); return; }
+    var key = workspaceRequestKey(id, view, lane);
+    if (workspaceResource(id, view, lane) && !retry) { composeWorkspaceView(view); return; }
     if (W.loading[key]) return;
     delete W.errors[key];
     if (App.mode === "file") {
-      if (!W.resources[id][view]) {
+      if (!workspaceResource(id, view, lane)) {
         W.errors[key] = (W.manifest.snapshot && W.manifest.snapshot.message) || "Resource was not embedded in this static snapshot.";
+        if (fallbackLane != null && workspaceLane(id, view) === lane) W.activeLane[id][view] = fallbackLane;
         scheduleWorkspacePanel();
       } else composeWorkspaceView(view);
       return;
     }
-    var href = resourceHref(id, view);
+    var href = resourceHref(id, view, lane);
     if (!href) { W.errors[key] = "No resource link declared."; scheduleWorkspacePanel(); return; }
-    W.loading[key] = true; W.fetches++; scheduleWorkspacePanel();
+    W.loading[key] = { view: view, lane: lane }; W.fetches++; scheduleWorkspacePanel();
     fetch(href)
       .then(function (r) { if (!r.ok) return r.text().then(function (t) { throw new Error(t || ("HTTP " + r.status)); }); return r.json(); })
       .then(function (resource) {
         if (!resource || resource.kind !== "workspace_resource") throw new Error("invalid workspace resource envelope");
-        W.resources[id][view] = resource;
+        if (resource.item_id !== id || resource.view !== view || (resource.lane == null ? null : resource.lane) !== lane) {
+          throw new Error("workspace resource identity/lane mismatch");
+        }
+        storeWorkspaceResource(id, view, resource);
         delete W.loading[key];
         scheduleWorkspaceCompose(view);
       })
       .catch(function (e) {
         delete W.loading[key]; W.errors[key] = String((e && e.message) || e);
+        if (fallbackLane != null && workspaceLane(id, view) === lane) W.activeLane[id][view] = fallbackLane;
         scheduleWorkspacePanel();
       });
   }
@@ -167,7 +204,7 @@
     var entries = [];
     W.order.forEach(function (id) {
       if (!workspaceItemVisible(id, "map")) return;
-      var r = W.resources[id].map;
+      var r = workspaceResource(id, "map", workspaceLane(id, "map"));
       if (r && r.payload && r.payload.map) entries.push({ id: id, payload: r.payload });
     });
     if (!entries.length) {
@@ -256,7 +293,7 @@
   function composeWorkspaceScene3d() {
     var entries = [];
     W.order.forEach(function (id) {
-      var r = W.resources[id].scene3d;
+      var r = workspaceResource(id, "scene3d", workspaceLane(id, "scene3d"));
       if (r && r.payload && r.payload.scene3d) entries.push({ id: id, scene: r.payload.scene3d });
     });
     if (!entries.length) { App.payload.scene3d = null; return; }
@@ -283,7 +320,7 @@
   function composeWorkspaceWells() {
     var bundles = [];
     W.order.forEach(function (id) {
-      var r = W.resources[id].wells;
+      var r = workspaceResource(id, "wells", workspaceLane(id, "wells"));
       if (r && r.payload && r.payload.wells_logs) bundles.push({ id: id, bundle: r.payload.wells_logs });
     });
     if (!bundles.length) return;
@@ -306,7 +343,8 @@
   function setWorkspaceVisible(id, view, visible) {
     if (!W || !W.visible[id]) return;
     W.visible[id][view] = visible;
-    if (visible && !W.resources[id][view]) loadWorkspaceResource(id, view);
+    var lane = workspaceLane(id, view);
+    if (visible && !workspaceResource(id, view, lane)) loadWorkspaceResource(id, view, lane);
     else if (view === "map") composeWorkspaceMap();
     else if (view === "scene3d") { applyScene3dVisibility(); if (s3d) s3d.render(); }
     else if (view === "wells" && S.wl) {
@@ -316,9 +354,24 @@
     exposeWorkspaceState(); buildPanel();
   }
 
+  function setWorkspaceLane(id, view, lane) {
+    if (!W || !W.activeLane[id] || workspaceLane(id, view) === lane) return;
+    var previous = workspaceLane(id, view);
+    W.activeLane[id][view] = lane;
+    if (workspaceItemVisible(id, view)) {
+      if (workspaceResource(id, view, lane)) composeWorkspaceView(view);
+      else loadWorkspaceResource(id, view, lane, false, previous);
+    }
+    exposeWorkspaceState(); buildPanel();
+  }
+
   function workspaceDescendantItems(node, view, out) {
     if (node.children) node.children.forEach(function (child) { workspaceDescendantItems(child, view, out); });
     else if ((node.views || []).indexOf(view) >= 0) out.push(node.id);
+  }
+
+  function workspaceSearchText(node) {
+    return W.searchText[node.id] || String(node.label || "").toLowerCase();
   }
 
   function buildWorkspaceTree(body) {
@@ -341,7 +394,7 @@
     var tree = el("div", "workspace-tree");
     var flat = [];
     function flatten(node, depth) {
-      var matches = !W.query || String(node.label || "").toLowerCase().indexOf(W.query) >= 0;
+      var matches = !W.query || workspaceSearchText(node).indexOf(W.query) >= 0;
       if (node.children) {
         var childMatches = node.children.some(function (child) { return subtreeMatches(child); });
         if (!matches && !childMatches) return;
@@ -352,7 +405,7 @@
       }
     }
     function subtreeMatches(node) {
-      if (!W.query || String(node.label || "").toLowerCase().indexOf(W.query) >= 0) return true;
+      if (!W.query || workspaceSearchText(node).indexOf(W.query) >= 0) return true;
       return !!(node.children && node.children.some(subtreeMatches));
     }
     function draw(entry, target) {
@@ -384,17 +437,34 @@
         row.appendChild(twist); row.appendChild(cb); row.appendChild(el("span", null, node.label));
         row.appendChild(el("span", "workspace-count", checked + "/" + ids.length)); target.appendChild(row);
       } else {
-        var has = (node.views || []).indexOf(view) >= 0, key = node.id + "::" + view;
+        var has = (node.views || []).indexOf(view) >= 0, lane = workspaceLane(node.id, view);
+        var key = workspaceRequestKey(node.id, view, lane);
         var row = el("div", "workspace-row"); row.style.paddingLeft = (depth * 12 + 22) + "px";
         var cb = el("input"); cb.type = "checkbox"; cb.checked = has && workspaceItemVisible(node.id, view); cb.disabled = !has;
         cb.dataset.workspaceItem = node.id;
         cb.onchange = function () { setWorkspaceVisible(node.id, view, cb.checked); };
         row.appendChild(cb); row.appendChild(el("span", "workspace-role", node.role ? "◆" : "•"));
-        row.appendChild(el("span", !has ? "workspace-disabled" : null, node.label));
+        var label = el("span", !has ? "workspace-disabled" : null, node.label);
+        if (node.reason) label.title = node.reason;
+        row.appendChild(label);
+        var spec = node.resources && node.resources[view];
+        if (has && spec && spec.lanes && spec.lanes.length > 1) {
+          var select = el("select", "workspace-lane-select");
+          spec.lanes.forEach(function (entry) {
+            var option = el("option", null, entry.label); option.value = entry.id; select.appendChild(option);
+          });
+          select.value = lane;
+          select.title = "Attribute for " + node.label;
+          select.onchange = function () { setWorkspaceLane(node.id, view, select.value); };
+          row.appendChild(select);
+        }
         if (W.loading[key]) row.appendChild(el("span", "workspace-status", "…"));
         if (W.errors[key]) {
           var retry = el("button", "workspace-retry", "retry"); retry.title = W.errors[key];
-          retry.onclick = function () { loadWorkspaceResource(node.id, view, true); }; row.appendChild(retry);
+          retry.onclick = function () { loadWorkspaceResource(node.id, view, lane, true); }; row.appendChild(retry);
+        } else if (!has && node.reason) {
+          var unavailable = el("span", "workspace-status", "unavailable");
+          unavailable.title = node.reason; row.appendChild(unavailable);
         }
         target.appendChild(row);
       }

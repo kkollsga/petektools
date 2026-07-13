@@ -98,8 +98,23 @@ def save_workspace(session, path: Union[str, Path], *, include: str = "visible")
         for view, _ in item.views:
             if include == "visible" and not item.visible_in(view):
                 continue
-            resources.setdefault(item.id, {})[view] = session.resource(item.id, view)
-            embedded.append(f"{item.id}::{view}")
+            lanes = item.lanes_for(view)
+            if lanes:
+                lane_ids = (
+                    [item.active_lane(view)]
+                    if include == "visible"
+                    else [lane_id for lane_id, _ in lanes]
+                )
+                packed = [
+                    session.resource(item.id, view, lane)
+                    for lane in lane_ids
+                    if lane is not None
+                ]
+                resources.setdefault(item.id, {})[view] = packed
+                embedded.extend(f"{item.id}::{view}::{lane}" for lane in lane_ids)
+            else:
+                resources.setdefault(item.id, {})[view] = session.resource(item.id, view)
+                embedded.append(f"{item.id}::{view}")
     workspace["resources"] = resources
     workspace["snapshot"] = {
         "include": include,
@@ -107,7 +122,7 @@ def save_workspace(session, path: Union[str, Path], *, include: str = "visible")
         "message": (
             "This static snapshot embeds initially visible resources only."
             if include == "visible"
-            else "This static snapshot embeds every selected workspace resource."
+            else "This static snapshot embeds every selected workspace resource and declared lane."
         ),
     }
     save_view(payload, path)

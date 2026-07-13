@@ -56,17 +56,32 @@ resources?, snapshot?}`.
 
 `tree` is an ordered list of groups and items. A group is
 `{id, label, expanded, children}`. An item is `{id, label, role?, views,
-visible, resources}` where `views` is a list of compatible view names,
-`visible` is an independent `view → bool` initial state, and each resource is
-`{href, deferred}`. IDs are globally unique immutable identity keys; labels are
-display-only. Live mode fetches a resource link at most once per item/view/lane.
-Static mode embeds `resources[item_id][view]` and `snapshot` describes whether
-the file contains initially `visible` or all `selected` resources.
+visible, resources, disabled?, reason?, diagnostic?}` where `views` is a list
+of compatible view names and `visible` is an independent `view → bool` initial
+state. A normal resource spec is `{href, deferred}`. A provider may add ordered
+interactive attributes as `{href, deferred, lanes: [{id, label}, ...],
+active_lane}`; lane IDs are stable producer keys and labels are display-only.
+IDs are globally unique immutable identity keys.
+
+A provider may preserve an unavailable/unknown catalog leaf with `views: []`,
+`resources: {}`, `visible: {}`, and `disabled: true`; `reason` is a short user
+explanation and `diagnostic` is arbitrary JSON-shaped producer metadata. Such a
+leaf remains ordered, searchable, and visible in the tree but can never issue a
+resource request. Fields are additive; old item records remain valid.
+
+Live mode fetches a resource link at most once per item/view/lane and appends
+`lane=<id>` only for a declared active lane. Static mode embeds the old single
+envelope at `resources[item_id][view]` for unlaned views; a laned view stores an
+ordered list of resource envelopes. A `visible` snapshot contains only the
+declared active lane of each initially visible view. A `selected` snapshot
+contains every declared lane so its selector remains fully offline. `snapshot`
+records the included resource keys.
 
 A resource response is `{schema_version: 1, kind: "workspace_resource",
 item_id, view, lane?, payload}`. `payload` is an ordinary typed render envelope;
 bulk blocks keep their existing content-addressed representation and global
-browser digest cache. Resource failure is local to that item and retryable.
+browser digest cache. Resource failure is local to that item/view/lane and
+retryable. Switching back to a cached lane performs no fetch or producer call.
 
 **Item bindings (additive).** Workspace-produced primitives may carry
 `item_id`. `MapBundle.items` compactly binds one item to ranges in the existing
