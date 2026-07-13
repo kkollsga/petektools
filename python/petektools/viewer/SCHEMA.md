@@ -101,7 +101,7 @@ carry it. Payloads without bindings retain category-level visibility.
 | `outline` | list[Ring] | boundary rings; `Ring` = list of `[x, y]` |
 | `grid_lines` | list[Line] | optional 2-D QA overlay; `Line` = list of `[x, y]` |
 | `points` | list[Point] | optional 2-D QA overlay; `Point` = `[x, y, z?]` |
-| `fills` | list[TriFill] | **additive:** selectable value-coloured trimesh fills, drawn UNDER `grid_lines`/`outline`/`points`; omitted-fill `view2d` auto mode emits primary + named attributes as ordinary entries for value-surface roles only |
+| `fills` | list[TriFill \| AffineGridFill] | **additive:** selectable value-coloured fills, drawn UNDER `grid_lines`/`outline`/`points`; omitted-fill `view2d` auto mode emits primary + named attributes as ordinary entries for value-surface roles only. Exact affine structured layers use the compact form below; legacy/non-affine layers retain TriFill |
 | `contours` | list[ContourSet] | **additive:** iso-lines; all levels stroke as one batched path, stronger than grid lines |
 | `grid_lines_lod` | list[Line] \| absent | **additive (LOD):** the coarse (strided) `grid_lines` ring — present only when a mesh producer supplied one; see **Stride-ladder LOD** |
 | `point_color` | PointColor \| null | **additive:** `{by: "z", range: [min, max]}` — the GLOBAL fallback for point colouring (per-layer fields on `layers` win; see below). Present when at least one points layer colours: the user's explicit call-level `color=` clamp range, else the union of the coloured layers' data. Points with a finite third component colour through the colormap (non-finite z falls back to the accent); values outside the range clamp to the ramp ends |
@@ -149,6 +149,19 @@ roles (`grid_geometry`, `structured_shell`, `mesh_shell`) emit wireframes only.
 Explicit `fill=False` emits none, `fill=True` emits only primary, and
 `fill="name"` emits exactly that lane from any producer offering
 `value_layer()`.
+
+**AffineGridFill (additive compact regular-grid alternative):** `{name,
+display_name?, range:[min,max], colormap?, regular_grid:{dimensions:[ncol,nrow],
+origin:[x,y], step_i:[dx,dy], step_j:[dx,dy], values, mask}}`. `values` and
+`mask` are row-major (`j*ncol+i`) typed arrays or block markers: `f32
+[ncol*nrow]` with canonical NaN for missing values and `u8 [ncol*nrow]` with
+zero marking a hole. The world-coordinate step vectors preserve rotation and a
+flipped J axis exactly. This form intentionally has no `nodes` or `triangles`.
+The renderer colours an index-space raster and applies the affine directly;
+click inspection inverts the same affine. Only a producer layer whose nodes
+exactly cover its affine `node_xy/ncol/nrow` geometry qualifies. Non-affine and
+legacy payloads remain ordinary TriFill.
+
 One fill is active at a time (a panel selector when
 several are present); a "Fill" toggle controls visibility, and the active fill
 drives a legend entry (type icon + display name + ramp + min/max). Both
@@ -241,6 +254,9 @@ stays JSON regardless (the block envelope is not worth it).
     Used for `grid_lines` and each `contours[i].lines`.
   - `contacts[i].crossing` uses `u8 [ncol*nrow]` (0/1), avoiding a million JSON
     booleans for a 1M-cell mask.
+  - `fills[i].regular_grid.values` uses `f32 [ncol*nrow]` and `.mask` uses
+    `u8 [ncol*nrow]`; its geometry is the small affine metadata and needs no
+    expanded node or triangle blocks.
   - The additive LOD rings encode identically — `fills[i].lod` `nodes`/`triangles`/
     `values` as `__block__`, `grid_lines_lod` and each `contours[i].lines_lod` as
     `__csr__` — all sharing the one `blocks` table (a coarse ring identical to any

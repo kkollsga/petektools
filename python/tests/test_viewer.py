@@ -48,8 +48,8 @@ VOLUME_KEYS = {
     "value_range", "encoding", "blocks",
 }
 VOLUME_BLOCK_KEYS = {"positions", "indices", "tri_cell", "cell_values", "zone_ids"}
-_DTYPE_FMT = {"f32": "f", "u32": "I", "u16": "H"}
-_DTYPE_SIZE = {"f32": 4, "u32": 4, "u16": 2}
+_DTYPE_FMT = {"f32": "f", "u32": "I", "u16": "H", "u8": "B"}
+_DTYPE_SIZE = {"f32": 4, "u32": 4, "u16": 2, "u8": 1}
 
 
 def _decode_block(block: dict) -> tuple:
@@ -1011,6 +1011,95 @@ class _TriAttributedSurfaceDuck(_AttributedSurfaceDuck):
 
     def wireframe_edges(self, stride=None):
         return [(0, 1), (1, 3), (3, 2), (2, 0)]
+
+
+class _RotatedFlippedRegularSurface:
+    kind = "structured_mesh"
+    name = "Rotated top"
+    ncol = 3
+    nrow = 2
+    origin = [431_123.0, 6_521_456.0]
+    angle = 30.0
+    step_i = [25.0 * 0.8660254037844386, 25.0 * 0.5]
+    # y-flip before rotation: local (0, -40) -> world (+20, -34.641...)
+    step_j = [40.0 * 0.5, -40.0 * 0.8660254037844386]
+
+    def node_xy(self, i, j):
+        return (
+            self.origin[0] + i * self.step_i[0] + j * self.step_j[0],
+            self.origin[1] + i * self.step_i[1] + j * self.step_j[1],
+        )
+
+    def value_layer(self, attr=None):
+        # Producer order is column-major; the compact contract normalizes values
+        # and mask to explicit row-major without changing world coordinates.
+        nodes = [self.node_xy(i, j) for i in range(self.ncol) for j in range(self.nrow)]
+        return {
+            "name": "z",
+            "nodes": nodes,
+            "triangles": [[0, 2, 1], [1, 2, 3], [2, 4, 3], [3, 4, 5]],
+            "values": [10.0, 40.0, None, 50.0, 30.0, 60.0],
+            "range": [10.0, 60.0],
+        }
+
+
+def test_view2d_affine_regular_grid_is_compact_row_major_and_static(tmp_path):
+    surface = _RotatedFlippedRegularSurface()
+    payload = viewer.view2d_payload(surface, fill=True, lod=False, encoding="json")
+    fill = payload["map"]["fills"][0]
+    assert "nodes" not in fill and "triangles" not in fill and "values" not in fill
+    grid = fill["regular_grid"]
+    assert grid["dimensions"] == [3, 2]
+    assert grid["origin"] == surface.origin
+    assert grid["step_i"] == pytest.approx(surface.step_i)
+    assert grid["step_j"] == pytest.approx(surface.step_j)
+    assert grid["values"] == [10.0, None, 30.0, 40.0, 50.0, 60.0]
+    assert grid["mask"] == [True, False, True, True, True, True]
+
+    out = tmp_path / "regular-grid.html"
+    viewer.save_view(payload, out)
+    html = out.read_text()
+    match = re.search(r"window\.PETEK_VIEWER_PAYLOAD=(.*?);window\.PETEK_VIEWER_MODE", html)
+    frozen_fill = json.loads(match.group(1))["map"]["fills"][0]
+    assert frozen_fill["regular_grid"] == grid
+    assert "nodes" not in frozen_fill and "triangles" not in frozen_fill
+
+
+def test_view2d_affine_regular_grid_values_and_mask_use_typed_blocks():
+    payload = viewer.view2d_payload(
+        _RotatedFlippedRegularSurface(),
+        fill=True,
+        lod=False,
+        encoding="blocks",
+        block_threshold_bytes=0,
+    )
+    fill = payload["map"]["fills"][0]
+    assert "nodes" not in fill and "triangles" not in fill
+    grid, table = fill["regular_grid"], payload["map"]["blocks"]
+    values = _decode_block(table[grid["values"]["__block__"]])
+    mask = _decode_block(table[grid["mask"]["__block__"]])
+    assert values[0] == 10.0 and values[1] != values[1] and values[2:] == (30.0, 40.0, 50.0, 60.0)
+    assert mask == (1, 0, 1, 1, 1, 1)
+    assert table[grid["values"]["__block__"]]["dtype"] == "f32"
+    assert table[grid["mask"]["__block__"]]["dtype"] == "u8"
+
+
+def test_view2d_affine_regular_grid_via_surface_geometry_sets_frame():
+    geometry = _RotatedFlippedRegularSurface()
+
+    class Surface:
+        kind = "surface"
+        name = "Wrapped top"
+
+        def __init__(self, geometry):
+            self.geometry = geometry
+
+        def value_layer(self, attr=None):
+            return self.geometry.value_layer(attr)
+
+    payload = viewer.view2d_payload(Surface(geometry), fill=True, lod=False, encoding="json")
+    assert payload["map"]["fills"][0]["regular_grid"]["dimensions"] == [3, 2]
+    assert payload["map"]["frame"]["origin_x"] > 400_000
 
 
 @pytest.mark.parametrize(

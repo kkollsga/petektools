@@ -905,6 +905,8 @@ viewer.view(tree_or_source, *, title="Project workspace", visible=None,
 # Automatic lanes retain/pack their common full+LOD mesh once. Block payloads
 # initially decode shared geometry + the active values only; another lane's
 # values decode on first selection and remain cached (A -> B -> A is stable).
+# Exact affine structured layers instead emit dimensions/origin/I+J step vectors
+# plus typed row-major values/mask, with no expanded mesh nodes or triangles.
 # During wheel/drag the renderer affine-composites point/fill plus split
 # grid/contour/outline/contact bitmaps (one paint/rAF); data-sized paths rebuild
 # at most once after settle without moving the user camera. First fit uses only

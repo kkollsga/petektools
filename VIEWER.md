@@ -224,6 +224,14 @@ coarse is up, and swaps back at full detail — geometry truth is never
 decimated. Payload shapes for both are in `SCHEMA.md` (MapBundle →
 **Binary blocks** / **Stride-ladder LOD**).
 
+An exact affine structured value layer uses the compact Map fill form:
+dimensions, origin, two world-coordinate step vectors, and row-major typed
+values/mask, with no expanded mesh nodes or triangles. Rotation and a flipped J
+axis are preserved by the vectors; NaN holes remain transparent and
+uninspectable. The browser rasterizes in grid index space and applies the affine
+once. Non-affine surfaces and existing ScalarLayer/TriFill JSON or block
+payloads keep their established renderer paths.
+
 For the `view2d` QA path, `color=` and `fill=` are **separate semantics**
 (owner rulings 2026-07-10 / 2026-07-13): `color=` colours **points** (and picks
 the colormap for whatever is value-coloured) — it never triggers fills, and it

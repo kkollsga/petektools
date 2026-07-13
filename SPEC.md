@@ -66,6 +66,11 @@ attribute lanes over identical topology share one normalized full/LOD mesh in
 memory and one content-addressed geometry block on the wire. The viewer decodes
 only the active lane's values initially and resolves inactive value blocks on
 first selection; the complete table remains embedded in offline saved views.
+An exact affine structured fill uses `regular_grid` metadata plus row-major
+typed values/mask and never expands nodes or triangles. The renderer maps its
+index raster through `origin + i*step_i + j*step_j`, uses the inverse affine for
+inspection, and treats a false mask or NaN as a hole. Existing ScalarLayer and
+TriFill payloads remain compatibility paths.
 Its optional project-workspace shell is equally generic: an insertion-ordered
 tree, or a producer's `view_catalog()` / `view_resource()` duck, supplies stable
 render-item IDs and typed resources. petekTools never traverses a project,

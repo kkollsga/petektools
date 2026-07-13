@@ -7,6 +7,11 @@ All notable changes to petekTools are recorded here. Format follows
 ## [Unreleased]
 
 ### Added
+- **Compact affine Map grids.** Exact structured surface layers now travel as
+  dimensions, origin, affine I/J step vectors, and typed row-major values/mask,
+  with no expanded mesh nodes or triangles. Direct Canvas rasterization and
+  inverse-affine click inspection preserve rotated grids, flipped J axes, and
+  NaN holes; legacy ScalarLayer/TriFill JSON and block payloads remain valid.
 - **Parallel workspace materialization.** Lazy workspace resources now use
   per-item/view/lane single-flight caching: duplicate concurrent requests share
   one producer call while distinct resources materialize in parallel. Failures

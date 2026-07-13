@@ -51,8 +51,18 @@
     }
     var activeFill = S.showFills && (m.fills || [])[S.mapFillIdx];
     if (activeFill) {
-      var N = fillRingFor(activeFill).nodes;
-      for (var q = 0; q < (N ? N.length : 0); q++) ext(ndX(N, q), ndY(N, q));
+      var ring = fillRingFor(activeFill), G = ring.regular_grid;
+      if (G) {
+        var ni = G.dimensions[0] - 1, nj = G.dimensions[1] - 1;
+        ext(G.origin[0], G.origin[1]);
+        ext(G.origin[0] + ni * G.step_i[0], G.origin[1] + ni * G.step_i[1]);
+        ext(G.origin[0] + nj * G.step_j[0], G.origin[1] + nj * G.step_j[1]);
+        ext(G.origin[0] + ni * G.step_i[0] + nj * G.step_j[0],
+            G.origin[1] + ni * G.step_i[1] + nj * G.step_j[1]);
+      } else {
+        var N = ring.nodes;
+        for (var q = 0; q < (N ? N.length : 0); q++) ext(ndX(N, q), ndY(N, q));
+      }
     }
     if (S.showContours) (m.contours || []).forEach(function (c) { extLineSet(lineSetRing(c.lines, c.lines_lod)); });
     (App.payload.wells || []).forEach(function (w, wi) {
@@ -103,6 +113,11 @@
   // right before the typed data even arrives.
   // Normalize a fill's (or a fill LOD ring's) nodes/triangles/values markers.
   function prepFillArrays(f, t) {
+    if (f.regular_grid) {
+      if (isBlockMarker(f.regular_grid.values)) f.regular_grid.values = prepBlock(f.regular_grid.values, t);
+      if (isBlockMarker(f.regular_grid.mask)) f.regular_grid.mask = prepBlock(f.regular_grid.mask, t);
+      return;
+    }
     if (isBlockMarker(f.nodes)) f.nodes = prepBlock(f.nodes, t);
     if (isBlockMarker(f.triangles)) f.triangles = prepBlock(f.triangles, t);
     if (isBlockMarker(f.values)) f.values = prepBlock(f.values, t);
@@ -131,6 +146,7 @@
   function fillMap2dBase(m, cache) {
     fillOne(m.points, cache);
     (m.fills || []).forEach(function (f) {
+      if (f.regular_grid) return;
       fillOne(f.nodes, cache); fillOne(f.triangles, cache);
       if (f.lod) { fillOne(f.lod.nodes, cache); fillOne(f.lod.triangles, cache); }
     });
@@ -141,6 +157,10 @@
   }
   function fillMap2dValues(fill, cache) {
     if (!fill) return;
+    if (fill.regular_grid) {
+      fillOne(fill.regular_grid.values, cache); fillOne(fill.regular_grid.mask, cache);
+      return;
+    }
     fillOne(fill.values, cache);
     if (fill.lod) fillOne(fill.lod.values, cache);
   }
@@ -161,6 +181,7 @@
     var out = {};
     addDigest(out, m.points);
     (m.fills || []).forEach(function (f) {
+      if (f.regular_grid) return;
       addDigest(out, f.nodes); addDigest(out, f.triangles);
       if (f.lod) { addDigest(out, f.lod.nodes); addDigest(out, f.lod.triangles); }
     });
@@ -171,6 +192,10 @@
   }
   function valueDigests(fill) {
     var out = {}; if (!fill) return out;
+    if (fill.regular_grid) {
+      addDigest(out, fill.regular_grid.values); addDigest(out, fill.regular_grid.mask);
+      return out;
+    }
     addDigest(out, fill.values); if (fill.lod) addDigest(out, fill.lod.values);
     return out;
   }
@@ -413,6 +438,10 @@
   // frame lattice spacing. The fill's cell size is cached per fill identity
   // (settle is rare, so the one bbox scan is cheap).
   function fillCellWorld(fill) {
+    if (fill.regular_grid) {
+      var G = fill.regular_grid;
+      return Math.min(Math.hypot(G.step_i[0], G.step_i[1]), Math.hypot(G.step_j[0], G.step_j[1]));
+    }
     var N = fill.nodes, n = N.length || 0;
     if (!n) return 0;
     var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
@@ -425,6 +454,7 @@
   function fullCellPx() {
     var m = App.payload.map;
     var fill = (m.fills || [])[S.mapFillIdx];
+    if (fill && fill.regular_grid) return fillCellWorld(fill) * mapView.scale;
     if (fill && fill.lod && fill.nodes && fill.nodes.length) {
       if (fill.__cellWorld == null) fill.__cellWorld = fillCellWorld(fill);
       return fill.__cellWorld * mapView.scale;
@@ -994,6 +1024,7 @@
   function drawTriFill(ctx, fill, sc, oxx, oyy) {
     perfCount("triFillBuilds");
     if (sc == null) { sc = mapView.scale; oxx = mapView.ox; oyy = mapView.oy; }
+    if (fill.regular_grid) { drawRegularGridFill(ctx, fill, sc, oxx, oyy); return; }
     var nodes = fill.nodes, tris = fill.triangles, vals = fill.values;
     var nN = nodes ? nodes.length : 0, nT = trN(tris);
     if (!nN || !nT) return;
@@ -1030,6 +1061,46 @@
       // adjacent flat-filled triangles (per bin, not per triangle).
       ctx.strokeStyle = css; ctx.lineWidth = 1; ctx.stroke(paths[i]);
     }
+  }
+
+  // Compact affine grid: colour one source cell per pixel, then use one Canvas
+  // transform from index coordinates to world/screen coordinates. This path
+  // never expands mesh nodes/triangles or creates per-triangle Path2D objects.
+  function drawRegularGridFill(ctx, fill, sc, oxx, oyy) {
+    var G = fill.regular_grid, dims = G.dimensions;
+    var nc = dims[0], nr = dims[1], wc = nc - 1, hc = nr - 1;
+    if (wc <= 0 || hc <= 0 || !G.values) return;
+    var off = document.createElement("canvas"); off.width = wc; off.height = hc;
+    var ox = off.getContext("2d"), image = ox.createImageData(wc, hc), out = image.data;
+    var range = fill.range, lo = range && range.length === 2 ? range[0] : Infinity;
+    var hi = range && range.length === 2 ? range[1] : -Infinity;
+    if (!isFinite(lo) || !isFinite(hi)) {
+      for (var q = 0; q < G.values.length; q++) {
+        var qv = vlAt(G.values, q);
+        if (maskAt(G.mask, q) && isFinite(qv)) { if (qv < lo) lo = qv; if (qv > hi) hi = qv; }
+      }
+    }
+    if (!isFinite(lo) || !isFinite(hi)) return;
+    var span = (hi - lo) || 1, lut = colormapLUT(fill.colormap || S.colormap);
+    for (var j = 0; j < hc; j++) for (var i = 0; i < wc; i++) {
+      var a = j * nc + i, b = a + 1, c = a + nc, d = c + 1;
+      if (!maskAt(G.mask, a) || !maskAt(G.mask, b) || !maskAt(G.mask, c) || !maskAt(G.mask, d)) continue;
+      var va = vlAt(G.values, a), vb = vlAt(G.values, b), vc = vlAt(G.values, c), vd = vlAt(G.values, d);
+      if (!isFinite(va) || !isFinite(vb) || !isFinite(vc) || !isFinite(vd)) continue;
+      var t = ((va + vb + vc + vd) * .25 - lo) / span;
+      if (t < 0) t = 0; else if (t > 1) t = 1;
+      var li = Math.round(t * 255) * 3, p = (j * wc + i) * 4;
+      out[p] = lut[li]; out[p + 1] = lut[li + 1]; out[p + 2] = lut[li + 2]; out[p + 3] = 255;
+    }
+    ox.putImageData(image, 0, 0);
+    ctx.save(); ctx.imageSmoothingEnabled = false;
+    ctx.setTransform(
+      G.step_i[0] * sc, G.step_i[1] * sc,
+      G.step_j[0] * sc, G.step_j[1] * sc,
+      G.origin[0] * sc + oxx, G.origin[1] * sc + oyy
+    );
+    ctx.drawImage(off, 0, 0, wc, hc);
+    ctx.restore();
   }
 
   // ---- fill baking: offscreen bitmap blitted on pan, re-baked on settle -------
@@ -1072,6 +1143,12 @@
   }
   function fillNodesBBox(ring) {
     if (ring.__bbox) return ring.__bbox;
+    if (ring.regular_grid) {
+      var G = ring.regular_grid, ni = G.dimensions[0] - 1, nj = G.dimensions[1] - 1;
+      var xs = [G.origin[0], G.origin[0] + ni * G.step_i[0], G.origin[0] + nj * G.step_j[0], G.origin[0] + ni * G.step_i[0] + nj * G.step_j[0]];
+      var ys = [G.origin[1], G.origin[1] + ni * G.step_i[1], G.origin[1] + nj * G.step_j[1], G.origin[1] + ni * G.step_i[1] + nj * G.step_j[1]];
+      return (ring.__bbox = { x0: Math.min.apply(null, xs), y0: Math.min.apply(null, ys), x1: Math.max.apply(null, xs), y1: Math.max.apply(null, ys) });
+    }
     var N = ring.nodes, n = N ? N.length : 0;
     var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
     for (var q = 0; q < n; q++) {
@@ -1081,7 +1158,7 @@
     return (ring.__bbox = { x0: x0, y0: y0, x1: x1, y1: y1 });
   }
   function drawMapFill(ctx, cv, fill) {
-    if (!fill || !fill.nodes || !fill.nodes.length) return;
+    if (!fill || (!fill.regular_grid && (!fill.nodes || !fill.nodes.length))) return;
     var key = (fill.colormap || S.colormap) + "|" + (fill.range ? fill.range[0] + "," + fill.range[1] : "-");
     var bb = fillNodesBBox(fill);
     // the viewport in world coords, clamped to the fill bbox — the region a blit
@@ -1250,6 +1327,18 @@
     }
     return first ? first.name : null;
   }
+  function regularGridValueAt(fill, world) {
+    var G = fill && fill.regular_grid; if (!G) return null;
+    var ax = G.step_i[0], ay = G.step_i[1], bx = G.step_j[0], by = G.step_j[1];
+    var det = ax * by - ay * bx; if (!isFinite(det) || Math.abs(det) < 1e-15) return null;
+    var dx = world[0] - G.origin[0], dy = world[1] - G.origin[1];
+    var fi = (dx * by - dy * bx) / det, fj = (ax * dy - ay * dx) / det;
+    var i = Math.round(fi), j = Math.round(fj), nc = G.dimensions[0], nr = G.dimensions[1];
+    if (i < 0 || j < 0 || i >= nc || j >= nr) return null;
+    var index = j * nc + i, value = vlAt(G.values, index);
+    if (!maskAt(G.mask, index) || !isFinite(value)) return null;
+    return { i: i, j: j, value: value, x: G.origin[0] + i * ax + j * bx, y: G.origin[1] + i * ay + j * by };
+  }
   function mapClickInspect(cv, ev) {
     var px = canvasPx(cv, ev);
     // a well marker keeps its click semantics: section along the bore
@@ -1269,6 +1358,19 @@
         rows = [["", (nm ? pretty(nm) : "point") + " · " + hitP.index],
                 ["x", fmt(hitP.x, "m")], ["y", fmt(hitP.y, "m")]];
         if (hitP.z != null && isFinite(hitP.z)) rows.push(["z", fmt(hitP.z, "m")]);
+      }
+    }
+    if (!rows) {
+      var activeFill = S.showFills && (App.payload.map.fills || [])[S.mapFillIdx];
+      var fillHit = regularGridValueAt(activeFill, s2w(px[0], px[1]));
+      if (fillHit) {
+        key = "grid:" + S.mapFillIdx + ":" + fillHit.i + "," + fillHit.j;
+        rows = [
+          ["", disp(activeFill, activeFill.name) || "surface"],
+          [activeFill.name || "value", fmt(fillHit.value)],
+          ["node", "i " + fillHit.i + " · j " + fillHit.j],
+          ["x", fmt(fillHit.x, "m")], ["y", fmt(fillHit.y, "m")],
+        ];
       }
     }
     if (!rows) {

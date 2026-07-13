@@ -261,7 +261,7 @@ def view2d_payload(
                     )
                 emitted_fill_names.add(fill_entry["name"])
                 if auto_attrs is not None:
-                    if canonical_mesh is None:
+                    if canonical_mesh is None and "nodes" in fill_entry:
                         canonical_mesh = (fill_entry["nodes"], fill_entry["triangles"])
                 fill_entry["display_name"] = name
                 if item_id is not None:
@@ -271,7 +271,7 @@ def view2d_payload(
                 if f_explicit and fspec["cmap"]:
                     fill_entry["colormap"] = fspec["cmap"]  # per-object pin
                     item_cmap = item_cmap or fspec["cmap"]
-                if lod_cfg["enabled"]:
+                if lod_cfg["enabled"] and "regular_grid" not in fill_entry:
                     ring = _value_fill_lod(
                         item,
                         requested_attr,
@@ -804,7 +804,110 @@ def _value_fill(
     layer = fn(attr=attr) if attr is not None else fn()
     if layer is None:
         return None
+    regular = _coerce_regular_grid_fill(item, layer, type(item).__name__)
+    if regular is not None:
+        return regular
     return _coerce_fill(layer, type(item).__name__, shared_geometry)
+
+
+def _coerce_regular_grid_fill(
+    item: Any, layer: Any, name: str
+) -> dict[str, Any] | None:
+    """Compact an affine structured value layer without mesh expansion.
+
+    This is feature detection, not a new producer duck: a layer qualifies only
+    when its nodes exactly cover an affine ``node_xy/ncol/nrow`` geometry in
+    row- or column-major order. Everything else keeps the historical TriFill.
+    """
+    if not isinstance(layer, dict):
+        return None
+    if any(
+        key not in layer
+        for key in ("name", "nodes", "triangles", "values", "range")
+    ):
+        return None
+    geom = item if _is_geometry(item) else getattr(item, "geometry", None)
+    if geom is None or not _is_geometry(geom):
+        return None
+    try:
+        ncol = int(getattr(geom, "ncol"))
+        nrow = int(getattr(geom, "nrow"))
+        raw_nodes = layer["nodes"]
+        raw_values = layer["values"]
+    except (KeyError, TypeError, ValueError):
+        return None
+    if ncol < 2 or nrow < 2 or len(raw_nodes) != ncol * nrow:
+        return None
+    if len(raw_values) != ncol * nrow:
+        return None
+
+    origin = _xy(geom.node_xy(0, 0))
+    node_i = _xy(geom.node_xy(1, 0))
+    node_j = _xy(geom.node_xy(0, 1))
+    step_i = [node_i[0] - origin[0], node_i[1] - origin[1]]
+    step_j = [node_j[0] - origin[0], node_j[1] - origin[1]]
+    if not all(math.isfinite(v) for v in (*origin, *step_i, *step_j)):
+        return None
+    det = step_i[0] * step_j[1] - step_i[1] * step_j[0]
+    if abs(det) <= 1e-15:
+        return None
+
+    def close_xy(raw: Any, expected: list[float]) -> bool:
+        try:
+            point = _xy(raw)
+        except (IndexError, TypeError, ValueError):
+            return False
+        return math.isclose(point[0], expected[0], rel_tol=1e-9, abs_tol=1e-6) and math.isclose(
+            point[1], expected[1], rel_tol=1e-9, abs_tol=1e-6
+        )
+
+    def expected_at(i: int, j: int) -> list[float]:
+        return [
+            origin[0] + i * step_i[0] + j * step_j[0],
+            origin[1] + i * step_i[1] + j * step_j[1],
+        ]
+
+    row_major = all(
+        close_xy(raw_nodes[j * ncol + i], expected_at(i, j))
+        for j in range(nrow)
+        for i in range(ncol)
+    )
+    column_major = False
+    if not row_major:
+        column_major = all(
+            close_xy(raw_nodes[i * nrow + j], expected_at(i, j))
+            for j in range(nrow)
+            for i in range(ncol)
+        )
+    if not row_major and not column_major:
+        return None
+
+    ordered = (
+        list(raw_values)
+        if row_major
+        else [raw_values[i * nrow + j] for j in range(nrow) for i in range(ncol)]
+    )
+    values = [
+        float(value)
+        if value is not None and math.isfinite(float(value))
+        else None
+        for value in ordered
+    ]
+    rng = list(layer.get("range", ()))
+    if len(rng) != 2:
+        raise TypeError(f"value_layer() on {name}: range must be [min, max], got {rng!r}")
+    return {
+        "name": str(layer["name"]),
+        "regular_grid": {
+            "dimensions": [ncol, nrow],
+            "origin": origin,
+            "step_i": step_i,
+            "step_j": step_j,
+            "values": values,
+            "mask": [value is not None for value in values],
+        },
+        "range": [float(rng[0]), float(rng[1])],
+    }
 
 
 def _auto_fill_attrs(item: Any) -> list[str] | None:
@@ -1477,6 +1580,20 @@ def _extent(
             xs.append(p[0])
             ys.append(p[1])
     for fill in fills or []:
+        regular = fill.get("regular_grid")
+        if regular:
+            ncol, nrow = regular["dimensions"]
+            origin = regular["origin"]
+            step_i = regular["step_i"]
+            step_j = regular["step_j"]
+            for i, j in (
+                (0, 0),
+                (ncol - 1, 0),
+                (0, nrow - 1),
+                (ncol - 1, nrow - 1),
+            ):
+                xs.append(origin[0] + i * step_i[0] + j * step_j[0])
+                ys.append(origin[1] + i * step_i[1] + j * step_j[1])
         for p in fill.get("nodes", []):
             xs.append(float(p[0]))
             ys.append(float(p[1]))

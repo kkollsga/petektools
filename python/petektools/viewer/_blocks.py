@@ -127,9 +127,14 @@ def _map_bulk_bytes(m: Dict[str, Any]) -> int:
     total = 0
     total += len(m.get("points") or []) * 3
     for f in m.get("fills") or []:
-        total += len(f.get("nodes") or []) * 2
-        total += len(f.get("triangles") or []) * 3
-        total += len(f.get("values") or [])
+        regular = f.get("regular_grid")
+        if regular:
+            total += len(regular.get("values") or [])
+            total += (len(regular.get("mask") or []) + 3) // 4
+        else:
+            total += len(f.get("nodes") or []) * 2
+            total += len(f.get("triangles") or []) * 3
+            total += len(f.get("values") or [])
         lod = f.get("lod")
         if lod:
             total += len(lod.get("nodes") or []) * 2
@@ -219,6 +224,26 @@ def encode_map(m: Dict[str, Any], *, threshold_bytes: int = DEFAULT_THRESHOLD_BY
 def _encode_fill_arrays(tbl: "BlockTable", f: Dict[str, Any]) -> None:
     """Block-encode a fill's (or a fill LOD ring's) ``nodes``/``triangles``/
     ``values`` in place — the shared shape of a full and a coarse ring."""
+    regular = f.get("regular_grid")
+    if regular:
+        values = regular.get("values") or []
+        mask = regular.get("mask") or []
+        if values:
+            regular["values"] = tbl.source_marker(
+                values,
+                "f32",
+                [len(values)],
+                lambda values=values: [_nan_if_none(value) for value in values],
+            )
+        if mask:
+            regular["mask"] = tbl.source_marker(
+                mask,
+                "u8",
+                [len(mask)],
+                lambda mask=mask: [1 if value else 0 for value in mask],
+            )
+        return
+
     nodes = f.get("nodes") or []
     if nodes:
         def node_values() -> List[float]:
