@@ -352,6 +352,58 @@ def test_scene3d_detail_tiers_cache_independently_and_static_freezes_full(tmp_pa
     assert provider.calls == [("surface:top", "scene3d", None, "full")]
 
 
+def test_static_block_map_preserves_contextual_well_overlay_records(tmp_path):
+    from petektools.viewer import _blocks
+
+    trajectory = [[1.125, 2.25, 3.5], [4.75, 5.875, -6.0]]
+    intersection = {"md": 1234.56789, "xyz": [4.75, 5.875, -6.0]}
+    overlay = {
+        "context_item_id": "surface:top",
+        "well_item_id": "well:one",
+        "trajectory": trajectory,
+        "intersection": intersection,
+        "status": "hit",
+    }
+
+    class OverlayProvider:
+        def view_catalog(self):
+            return [{
+                "id": "surface:top",
+                "views": {"map": {}},
+                "visible": {"map": True},
+            }]
+
+        def view_resource(self, *, item_id, view, lane=None):
+            map_bundle = {
+                "schema_version": 2,
+                "frame": {"origin_x": 0.0, "origin_y": 0.0, "spacing_x": 1.0,
+                          "spacing_y": 1.0, "ncol": 2, "nrow": 2},
+                "outline": [], "grid_lines": [], "points": [], "point_color": None,
+                "colormap": "viridis", "layers": [],
+                "fills": [{"name": "z", "nodes": [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+                           "triangles": [[0, 1, 2]], "values": [1.0, 2.0, 3.0],
+                           "range": [1.0, 3.0]}],
+                "contours": [], "horizons": [], "zone_averages": [], "k_slices": [],
+                "contacts": [], "well_overlays": [overlay],
+            }
+            assert _blocks.encode_map(map_bundle, threshold_bytes=0)
+            return {
+                "schema_version": 4,
+                "map": map_bundle,
+                "wells": [{"id": "One", "item_id": "well:one", "x": 1.125, "y": 2.25,
+                           "trajectory": [[1.125, 2.25, 3.5], [9.0, 9.0, -900.0]]}],
+            }
+
+    path = tmp_path / "overlay-block-static.html"
+    WorkspaceSession(OverlayProvider()).save(path)
+    frozen = _saved_workspace(path)
+    resource = frozen["resources"]["surface:top"]["map"]
+    assert resource["payload"]["map"]["well_overlays"] == [overlay]
+    assert resource["payload"]["map"]["well_overlays"][0]["trajectory"] == trajectory
+    assert resource["payload"]["map"]["well_overlays"][0]["intersection"] == intersection
+    assert resource["payload"]["map"]["blocks"]
+
+
 def test_workspace_server_forwards_declared_lane_and_caches_it_once():
     provider = LaneProvider()
     session = WorkspaceSession(provider).serve(open_browser=False)

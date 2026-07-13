@@ -41,6 +41,9 @@ _WORKSPACE_JS = Path(__file__).parent / "viewer_perf" / "workspace_bench.mjs"
 _WORKSPACE_SCALE_JS = Path(__file__).parent / "viewer_perf" / "workspace_scale_bench.mjs"
 _WORKSPACE_LANE_JS = Path(__file__).parent / "viewer_perf" / "workspace_lane_bench.mjs"
 _WORKSPACE_STATE_JS = Path(__file__).parent / "viewer_perf" / "workspace_state_bench.mjs"
+_WORKSPACE_WELL_OVERLAY_JS = (
+    Path(__file__).parent / "viewer_perf" / "workspace_well_overlay_bench.mjs"
+)
 _REGULAR_SURFACE_JS = Path(__file__).parent / "viewer_perf" / "regular_surface_build_bench.js"
 _NODE = shutil.which("node")
 
@@ -62,6 +65,155 @@ def _playwright_available() -> bool:
 
 
 _HAVE_PW = _playwright_available()
+
+
+def _overlay_map(name, fills, overlays):
+    from petektools.viewer import _blocks
+
+    nodes = [[0.0, 0.0], [100.0, 0.0], [0.0, 100.0]]
+    mapped_fills = [{
+        "name": attr,
+        "display_name": name,
+        "nodes": nodes,
+        "triangles": [[0, 1, 2]],
+        "values": values,
+        "range": [min(values), max(values)],
+    } for attr, values in fills]
+    bundle = {
+        "schema_version": 2,
+        "frame": {"origin_x": 0.0, "origin_y": 0.0, "spacing_x": 100.0,
+                  "spacing_y": 100.0, "ncol": 2, "nrow": 2},
+        "outline": [], "grid_lines": [], "points": [], "point_color": None,
+        "colormap": "viridis", "layers": [], "fills": mapped_fills,
+        "contours": [], "horizons": [], "zone_averages": [], "k_slices": [],
+        "contacts": [], "well_overlays": overlays,
+    }
+    assert _blocks.encode_map(bundle, threshold_bytes=0)
+    return bundle
+
+
+class _OverlayWorkspaceProvider:
+    base_wells = [
+        {"id": "Hit", "item_id": "well:hit", "display_name": "Hit well", "x": 0.0,
+         "y": 0.0, "trajectory": [[0.0, 0.0, 0.0], [90_000.0, 0.0, -900.0]],
+         "style": {"path": {"color": "#123456", "width": 3}}, "label": True},
+        {"id": "No hit", "item_id": "well:no-hit", "x": 0.0, "y": 10.0,
+         "trajectory": [[0.0, 10.0, 0.0], [80.0, 10.0, -800.0]], "label": False},
+        {"id": "Ambiguous", "item_id": "well:ambiguous", "x": 0.0, "y": 20.0,
+         "trajectory": [[0.0, 20.0, 0.0], [70.0, 20.0, -700.0]], "label": False},
+        {"id": "Error", "item_id": "well:error", "x": 0.0, "y": 30.0,
+         "trajectory": [[0.0, 30.0, 0.0], [60.0, 30.0, -600.0]], "label": False},
+        {"id": "Bad", "item_id": "well:bad", "x": 0.0, "y": 40.0,
+         "trajectory": [[0.0, 40.0, 0.0], [50.0, 40.0, -500.0]], "label": False},
+    ]
+    hit_a = [[0.0, 0.0, 0.0], [12.5, 0.0, -125.0]]
+    hit_b = [[0.0, 0.0, 0.0], [37.5, 0.0, -375.0]]
+    hit_a_intersection = {"md": 125.25, "xyz": [12.5, 0.0, -125.0]}
+
+    def view_catalog(self):
+        return [
+            {"id": "surface:a", "label": "Surface A", "views": {"map": {}},
+             "visible": {"map": True}},
+            {"id": "surface:b", "label": "Surface B", "views": {"map": {}},
+             "visible": {"map": True}},
+            {"id": "surface:legacy", "label": "Legacy Surface", "views": {"map": {}},
+             "visible": {"map": True}},
+        ]
+
+    def view_resource(self, *, item_id, view, lane=None):
+        if item_id == "surface:a":
+            overlays = [
+                {"context_item_id": item_id, "well_item_id": "well:hit",
+                 "trajectory": self.hit_a, "intersection": self.hit_a_intersection,
+                 "status": "hit"},
+                {"context_item_id": item_id, "well_item_id": "well:no-hit",
+                 "trajectory": self.base_wells[1]["trajectory"], "intersection": None,
+                 "status": "no_hit"},
+                {"context_item_id": item_id, "well_item_id": "well:ambiguous",
+                 "trajectory": [], "intersection": None, "status": "ambiguous",
+                 "message": "two crossings"},
+                {"context_item_id": item_id, "well_item_id": "well:error",
+                 "trajectory": [[0.0, 30.0, 0.0], [22.0, 30.0, -220.0]],
+                 "intersection": None, "status": "error", "message": "producer failed"},
+                {"context_item_id": item_id, "well_item_id": "well:bad",
+                 "trajectory": [[0.0, 40.0, 0.0], [9.0, 40.0, -90.0]],
+                 "intersection": None, "status": "banana"},
+                {"context_item_id": item_id, "well_item_id": "missing:well",
+                 "trajectory": [[0.0, 0.0, 0.0]], "intersection": None, "status": "no_hit"},
+                {"context_item_id": 7, "well_item_id": "well:hit",
+                 "trajectory": [], "intersection": None, "status": "error"},
+            ]
+            map_bundle = _overlay_map("Surface A", [
+                ("depth", [1.0, 2.0, 3.0]),
+                ("thickness", [10.0, 20.0, 30.0]),
+            ], overlays)
+            wells = self.base_wells
+        elif item_id == "surface:b":
+            overlays = [{
+                "context_item_id": item_id, "well_item_id": "well:hit",
+                "trajectory": self.hit_b, "intersection": {"md": 375.5,
+                "xyz": [37.5, 0.0, -375.0]}, "status": "hit",
+            }]
+            map_bundle = _overlay_map("Surface B", [("depth", [4.0, 5.0, 6.0])], overlays)
+            wells = []
+        else:
+            map_bundle = _overlay_map(
+                "Legacy Surface", [("depth", [7.0, 8.0, 9.0])], []
+            )
+            map_bundle.pop("well_overlays")
+            wells = []
+        return {"schema_version": 4, "kind": "2D", "map": map_bundle, "wells": wells}
+
+
+@pytest.mark.skipif(not _HAVE_PW, reason="playwright + chromium not available (browser leg)")
+def test_workspace_map_contextual_well_overlays_switch_atomically(tmp_path):
+    from petektools import WorkspaceSession
+
+    path = tmp_path / "contextual-well-overlays.html"
+    WorkspaceSession(_OverlayWorkspaceProvider()).save(path)
+    out = subprocess.run(
+        [_NODE, str(_WORKSPACE_WELL_OVERLAY_JS), str(path)],
+        capture_output=True, text=True, timeout=120,
+    )
+    assert out.returncode == 0, out.stderr
+    result = json.loads((out.stdout.strip().splitlines() or ["{}"])[-1])
+    assert not result.get("consoleErrors"), result.get("consoleErrors")
+    initial = result["initial"]
+    toggled = result["toggled"]
+    attr = result["aAttribute"]
+    selected_b = result["b"]
+    legacy = result["legacy"]
+    assert initial["overlay"]["contextItemId"] == "surface:a"
+    assert attr["overlay"]["contextItemId"] == "surface:a"
+    assert selected_b["overlay"]["contextItemId"] == "surface:b"
+    assert legacy["overlay"]["contextItemId"] == "surface:legacy"
+    assert initial["overlay"]["wells"][0]["trajectory"] == _OverlayWorkspaceProvider.hit_a
+    assert attr["overlay"]["wells"][0]["trajectory"] == _OverlayWorkspaceProvider.hit_a
+    assert selected_b["overlay"]["wells"][0]["trajectory"] == _OverlayWorkspaceProvider.hit_b
+    assert legacy["overlay"]["wells"][0]["source"] == "base"
+    assert legacy["overlay"]["wells"][0]["trajectory"] == _OverlayWorkspaceProvider.base_wells[0]["trajectory"]
+    assert initial["overlay"]["wells"][0]["intersection"] == _OverlayWorkspaceProvider.hit_a_intersection
+    assert initial["overlay"]["wells"][0]["displayName"] == "Hit well"
+    assert initial["overlay"]["wells"][0]["head"] == [0.0, 0.0]
+    assert initial["overlay"]["wells"][0]["style"] == {"path": {"color": "#123456", "width": 3}}
+    assert toggled["overlay"]["contextItemId"] == "surface:a"
+    assert toggled["overlay"]["wells"][0]["visible"] is False
+    assert toggled["overlay"]["wells"][0]["trajectory"] == _OverlayWorkspaceProvider.hit_a
+    assert toggled["camera"] == initial["camera"]
+    assert initial["overlay"]["wells"][1]["status"] == "no_hit"
+    assert initial["overlay"]["wells"][1]["trajectory"] == _OverlayWorkspaceProvider.base_wells[1]["trajectory"]
+    assert initial["overlay"]["wells"][2]["source"] == "base"
+    assert initial["overlay"]["wells"][2]["message"] == "two crossings"
+    assert initial["overlay"]["wells"][3]["source"] == "overlay"
+    assert initial["overlay"]["wells"][3]["message"] == "producer failed"
+    assert initial["overlay"]["wells"][4]["source"] == "base"
+    codes = {diagnostic["code"] for diagnostic in initial["overlay"]["diagnostics"]}
+    assert {"ambiguous", "error", "malformed_status", "malformed_identity",
+            "unknown_well_identity"} <= codes
+    assert "two crossings" in initial["panelText"]
+    assert initial["camera"]["horizontalSpan"] < 20_000
+    for snapshot in (attr, selected_b, legacy):
+        assert snapshot["camera"] == initial["camera"]
 
 
 @pytest.mark.skipif(not _HAVE_PW, reason="playwright + chromium not available (browser leg)")

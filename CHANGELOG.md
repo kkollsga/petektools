@@ -7,6 +7,12 @@ All notable changes to petekTools are recorded here. Format follows
 ## [Unreleased]
 
 ### Added
+- **Contextual Map well overlays.** Workspace Map resources may carry
+  producer-declared trajectories keyed by stable surface/fill and base-well
+  item identities. Surface switches select draw/fit paths atomically without
+  moving the camera; attribute fills retain their surface context, base
+  wellhead/style/visibility remain unchanged, and legacy or malformed records
+  fall back locally without any new provider request or depth/MD computation.
 - **Progressive compact 3-D surfaces.** Workspace scene resources may advertise
   preview/full detail tiers. Preview becomes usable first; full affine-surface
   elevation/mask/value blocks build transferable render buffers in the shared

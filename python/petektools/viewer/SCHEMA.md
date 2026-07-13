@@ -116,6 +116,7 @@ carry it. Payloads without bindings retain category-level visibility.
 | `zone_averages` | list[ScalarLayer] | selectable property layers |
 | `k_slices` | list[ScalarLayer] | optional per-k property slices |
 | `contacts` | list[Contact] | translucent subcrop-mask overlays |
+| `well_overlays` | list[WellOverlay] \| absent | **additive workspace context:** producer-declared display trajectories selected by the active fill's stable `item_id`; absent keeps base top-level wells unchanged |
 | `blocks` | dict[digest → Block] | **additive:** the content-addressed typed-block table when `points`/fill arrays/`grid_lines`/`contours[i].lines` ship as binary blocks (see **Binary blocks** below); absent for a plain-JSON map |
 | `items` | list[ItemBinding] \| absent | **additive workspace binding:** compact item-to-range metadata described above; no geometry duplication |
 
@@ -294,6 +295,21 @@ use historical defaults. The raster is
 unclipped raster for QC). Co-located wells that share a wellhead (sidetracks)
 render as **one shared marker with a bore-count badge** and radially-offset,
 leader-lined bore labels.
+
+**WellOverlay (additive workspace context):**
+`{context_item_id: str, well_item_id: str, trajectory: [[x, y, z | null], …],
+intersection: {md: float, xyz: [x, y, z]} | null,
+status: "hit" | "no_hit" | "ambiguous" | "error", message?: str}`.
+`context_item_id` matches a fill's stable workspace `item_id`; all attribute
+fills from that item therefore share the same context. `well_item_id` matches a
+base top-level well `item_id`. The trajectory is authoritative producer display
+geometry: petekTools neither clips it nor computes/interprets depth or MD. A
+`hit` trajectory is expected to end at the exact intersection; `no_hit` carries
+the full trajectory. `ambiguous`/`error` use a supplied non-empty trajectory or
+fall back to the base path and expose the diagnostic. Missing overlays and
+legacy bundles always use the base path. The selected path participates in Map
+fit, while head, label and style remain those of the base well. Malformed
+identity/status records are skipped locally and never fail the Map renderer.
 
 **Click-to-inspect (owner ruling 2026-07-11).** Hover shows nothing on the
 map. A still **click** on/near a point (the grid-bucket hit-test) or a raster

@@ -25,6 +25,85 @@
       y1: f.origin_y + (f.nrow - 1) * f.spacing_y,
     };
   }
+  function activeMapContextItemId() {
+    var fill = (App.payload.map.fills || [])[S.mapFillIdx];
+    return fill && typeof fill.item_id === "string" ? fill.item_id : null;
+  }
+  function validOverlayTrajectory(value) {
+    return Array.isArray(value) && value.every(function (p) {
+      return Array.isArray(p) && p.length >= 3 && isFinite(p[0]) && isFinite(p[1]) &&
+        (p[2] == null || isFinite(p[2]));
+    });
+  }
+  function resolveMapWellGeometry() {
+    var m = App.payload.map, context = activeMapContextItemId();
+    var wells = App.payload.wells || [], overlays = m.well_overlays;
+    var state = { contextItemId: context, wells: [], diagnostics: [] };
+    var candidates = {};
+    if (overlays != null && !Array.isArray(overlays)) {
+      state.diagnostics.push({ code: "malformed_overlays", message: "well_overlays must be a list" });
+      overlays = [];
+    }
+    (overlays || []).forEach(function (overlay, index) {
+      var sourceContext = (m.__wellOverlaySources || [])[index];
+      if (!overlay || typeof overlay !== "object" ||
+          typeof overlay.context_item_id !== "string" || !overlay.context_item_id ||
+          typeof overlay.well_item_id !== "string" || !overlay.well_item_id) {
+        if (sourceContext != null && sourceContext !== context) return;
+        state.diagnostics.push({ code: "malformed_identity", index: index,
+          message: "well overlay requires non-empty context_item_id and well_item_id" });
+        return;
+      }
+      if (overlay.context_item_id !== context) return;
+      var key = overlay.well_item_id;
+      if (Object.prototype.hasOwnProperty.call(candidates, key)) {
+        state.diagnostics.push({ code: "duplicate_identity", index: index,
+          context_item_id: context, well_item_id: key,
+          message: "duplicate well overlay identity" });
+        candidates[key] = null; return;
+      }
+      candidates[key] = overlay;
+    });
+    wells.forEach(function (well) {
+      var wellItemId = typeof well.item_id === "string" ? well.item_id : null;
+      var base = Array.isArray(well.trajectory) ? well.trajectory : [];
+      var overlay = wellItemId ? candidates[wellItemId] : null;
+      var trajectory = base, source = "base", status = null, message = null, intersection = null;
+      if (overlay) {
+        status = overlay.status; message = overlay.message || null;
+        intersection = overlay.intersection == null ? null : overlay.intersection;
+        if (["hit", "no_hit", "ambiguous", "error"].indexOf(status) < 0) {
+          state.diagnostics.push({ code: "malformed_status", context_item_id: context,
+            well_item_id: wellItemId, message: "unknown well overlay status " + String(status) });
+          status = "error"; message = "Unknown well overlay status";
+        } else if (validOverlayTrajectory(overlay.trajectory) && overlay.trajectory.length) {
+          trajectory = overlay.trajectory; source = "overlay";
+        } else {
+          state.diagnostics.push({ code: "malformed_trajectory", context_item_id: context,
+            well_item_id: wellItemId, message: "well overlay trajectory is empty or malformed; using base trajectory" });
+        }
+        if (status === "ambiguous" || status === "error") {
+          state.diagnostics.push({ code: status, context_item_id: context,
+            well_item_id: wellItemId, message: message || (status === "ambiguous" ? "Ambiguous intersection" : "Overlay error") });
+        }
+      }
+      state.wells.push({ wellItemId: wellItemId, id: well.id,
+        displayName: well.display_name || null, head: [well.x, well.y],
+        style: well.style || null, visible: S.wellVis[state.wells.length] !== false,
+        status: status, source: source, trajectory: trajectory,
+        intersection: intersection, message: message });
+    });
+    Object.keys(candidates).forEach(function (wellItemId) {
+      if (candidates[wellItemId] && !wells.some(function (well) { return well.item_id === wellItemId; })) {
+        state.diagnostics.push({ code: "unknown_well_identity", context_item_id: context,
+          well_item_id: wellItemId, message: "well overlay does not match a base well item_id" });
+      }
+    });
+    window.__PETEK_MAP_WELL_OVERLAY_STATE = state;
+    return wells.map(function (well, index) {
+      return { w: well, trajectory: state.wells[index].trajectory, overlay: state.wells[index] };
+    });
+  }
   // Fit visible drawable content only. A frame is drawable when it backs a
   // raster/contact field; a fill-only resource contributes its actual nodes,
   // not a manufactured frame rectangle. The active fill alone participates,
@@ -65,10 +144,11 @@
       }
     }
     if (S.showContours) (m.contours || []).forEach(function (c) { extLineSet(lineSetRing(c.lines, c.lines_lod)); });
-    (App.payload.wells || []).forEach(function (w, wi) {
+    resolveMapWellGeometry().forEach(function (entry, wi) {
       if (!S.wellVis[wi]) return;
+      var w = entry.w;
       ext(w.x, w.y);
-      (w.trajectory || []).forEach(function (p) { ext(p[0], p[1]); });
+      entry.trajectory.forEach(function (p) { ext(p[0], p[1]); });
     });
     if (!isFinite(xlo)) return null;
     return { x0: xlo, y0: ylo, x1: xhi, y1: yhi };
@@ -654,9 +734,12 @@
     // Wells: projected XY trajectories + polished screen-space heads. Labels
     // use a deterministic bounded candidate ledger; no hover path is installed.
     var visWells = [];
-    (App.payload.wells || []).forEach(function (well, wi) { if (S.wellVis[wi]) visWells.push({ w: well, s: w2s(well.x, well.y) }); });
+    resolveMapWellGeometry().forEach(function (entry, wi) {
+      if (S.wellVis[wi]) visWells.push({ w: entry.w, trajectory: entry.trajectory,
+        overlay: entry.overlay, s: w2s(entry.w.x, entry.w.y) });
+    });
     visWells.forEach(function (v) {
-      var ps = (v.w.style && v.w.style.path) || {}, tr = v.w.trajectory || [];
+      var ps = (v.w.style && v.w.style.path) || {}, tr = v.trajectory;
       if (tr.length < 2) return;
       ctx.save(); ctx.strokeStyle = ps.color || idColor("well:" + v.w.id);
       ctx.lineWidth = ps.width || 2; ctx.globalAlpha = ps.opacity == null ? .9 : ps.opacity;

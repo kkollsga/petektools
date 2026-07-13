@@ -76,6 +76,12 @@ blocks. A provider may advertise ordered preview/full scene tiers; preview is
 rendered first, full builds transferable GPU-ready arrays in the existing decode
 worker, and the renderer swaps it without clearing preview state, moving the
 camera, or re-entering global Loading. Static export embeds full directly.
+Map resources may also carry additive contextual well overlays keyed by stable
+surface/fill and base-well item identities. Selection is local to the already
+materialized bundle: the active fill atomically chooses the producer-declared
+trajectory for draw and fit, while base wellhead/style/visibility remain
+unchanged. petekTools does not compute intersections, measured depth, clipping,
+or depth conversion; missing and invalid records degrade locally to base paths.
 Its optional project-workspace shell is equally generic: an insertion-ordered
 tree, or a producer's `view_catalog()` / `view_resource()` duck, supplies stable
 render-item IDs and typed resources. petekTools never traverses a project,

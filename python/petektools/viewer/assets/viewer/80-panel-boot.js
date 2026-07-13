@@ -41,6 +41,15 @@
       body.appendChild(pg);
     }
 
+    var overlayState = window.__PETEK_MAP_WELL_OVERLAY_STATE;
+    if (overlayState && overlayState.diagnostics && overlayState.diagnostics.length) {
+      var og = group("Well overlay");
+      overlayState.diagnostics.forEach(function (diagnostic) {
+        og.appendChild(el("div", "hint", diagnostic.message || diagnostic.code));
+      });
+      body.appendChild(og);
+    }
+
     var t = group("Layers");
     t.appendChild(toggleRow("Outline", S.showOutline, token("--text-secondary"), true, function (v) { S.showOutline = v; renderMap(); }));
     if (fills.length) {

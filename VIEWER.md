@@ -186,7 +186,19 @@ content, never a generated frame/empty-resource rectangle, and the first fit
 shows at least 10 km horizontally. After that first fit, resize, deferred decode,
 LOD and idle paints preserve the camera; pan/wheel owns it until an explicit `F`
 refit. Filled surfaces start with grid/lattice lines off; a standalone geometry
-starts with them on, and either manual choice persists. The raster is
+starts with them on, and either manual choice persists.
+
+In a workspace, a Map resource may carry producer-declared `well_overlays` for
+its stable surface/item identity. The active fill selects that context
+atomically, so switching surfaces changes projected well paths in the same
+paint; attribute fills belonging to one surface keep the same paths. The
+selected overlay—not the base full trajectory—participates in fit. Wellhead,
+label and style remain from the base well, and well visibility stays an
+independent toggle. Missing/legacy records fall back to the base trajectory;
+ambiguous/error/malformed records remain localized diagnostics. The viewer does
+not calculate clipping, intersections, measured depth or depth conversion.
+
+The raster is
 **windowed + resolution-capped** — only the grid cells in
 the current viewport are sampled, and never more than one sample per screen pixel
 (subsampled beyond that) — so a repaint costs a screenful regardless of ncol×nrow

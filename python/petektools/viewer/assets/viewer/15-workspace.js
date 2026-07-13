@@ -322,7 +322,8 @@
     var map = {
       schema_version: 2, frame: null, outline: [], grid_lines: [], points: [],
       point_color: null, colormap: null, layers: [], fills: [], contours: [],
-      horizons: [], zone_averages: [], k_slices: [], contacts: [], wells: [], items: [],
+      horizons: [], zone_averages: [], k_slices: [], contacts: [], wells: [],
+      well_overlays: [], __wellOverlaySources: [], items: [],
       __blocksReady: true,
     };
     var wells = [], pointOffset = 0;
@@ -342,6 +343,12 @@
         map.fills.push(fill);
       });
       (m.contours || []).forEach(function (v) { map.contours.push(cloneStamped(v, id)); });
+      // Context identities are producer-declared stable workspace IDs. Keep
+      // overlay records byte-for-byte; the Map renderer validates and selects
+      // them against the active fill without another provider request.
+      (m.well_overlays || []).forEach(function (v) {
+        map.well_overlays.push(v); map.__wellOverlaySources.push(id);
+      });
       ["horizons", "zone_averages", "k_slices", "contacts"].forEach(function (name) {
         (m[name] || []).forEach(function (v) { map[name].push(cloneStamped(v, id)); });
       });

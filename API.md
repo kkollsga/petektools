@@ -896,6 +896,10 @@ session.save("selected.html", include="selected")
 #   view_resource(*, item_id, view, lane=None) -> typed JSON render mini-bundle
 # Progressive 3-D providers may declare ordered preview/full `tiers` in the
 # scene3d view spec; their resource duck additionally receives detail=.
+# A Map mini-bundle may add producer-computed `well_overlays`, keyed by the
+# surface fill's stable item_id and a base top-level well item_id. The active
+# fill chooses the display trajectory; petekTools performs no intersection/MD
+# calculation and introduces no additional provider request.
 viewer.view(tree_or_source, *, title="Project workspace", visible=None,
             tab="auto", payload=None, save=None, serve=True, port=0, block=False,
             open_browser=True) -> viewer.WorkspaceSession
