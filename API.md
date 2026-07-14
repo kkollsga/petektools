@@ -935,6 +935,10 @@ session.save("selected.html", include="selected")
 # a center-aware key. Full evicts only that item/geometry's preview; other items
 # may remain preview until their own full response. Null mask is implicit-valid
 # and allocates no synthesized mask. Late obsolete paint may cache but not attach.
+# The diagnostic shared-mode ledger counts source bytes, unique retained CPU
+# buffers (cache, pending chunks, and attached/retiring objects), and attached
+# GPU attributes. Its total includes all three and drops retiring/pending bytes
+# only when disposal/cancellation actually releases them.
 # If WebGL is unavailable the selected 3-D request truthfully falls back to usable
 # 2-D without provider access or an error latch.
 # Visible/selected static exports include one such envelope per item (the full

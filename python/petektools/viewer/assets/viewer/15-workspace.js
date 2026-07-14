@@ -612,6 +612,7 @@
       var geometryView = fill.__workspaceGeometry && (fill.__workspaceGeometry.a || fill.__workspaceGeometry);
       if (geometryView && geometrySeen.indexOf(geometryView) < 0) geometrySeen.push(geometryView);
       ledgerEntries.push({ item_id: entry.id, detail: detail,
+        eviction_group: mesh.__sharedEvictionGroup,
         geometry_identity: typeof displayId === "function" ? displayId(fill.__workspaceGeometry) : 0,
         paint_identity: typeof displayId === "function" ? displayId(fill.__paintIdentity) : 0,
         source_decoded_bytes: itemBytes, derived_position_bytes: 0, derived_topology_bytes: 0,
@@ -649,6 +650,7 @@
       mode_switches: W.modeSwitches, geometry_builds: 0, paint_builds: 0,
       entries: ledgerEntries,
     };
+    if (typeof refreshSharedModeLedger === "function") refreshSharedModeLedger();
   }
 
   function composeWorkspaceMapReady(entries) {

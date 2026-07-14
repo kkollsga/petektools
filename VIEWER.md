@@ -132,7 +132,11 @@ the stable scene. Null mask is implicit all-valid and allocates no synthesized
 byte raster. Paint-only composition preserves the scene, orbit camera, framed
 state, and GPU position/index attributes; a late paint completion is cached but
 cannot attach over a newer paint key. `window.__PETEK_SHARED_MODE_LEDGER` reports source,
-derived, retained-paint, GPU-upload, fetch/decode/build, and mode-switch counts.
+identity-deduplicated derived/pending/attached CPU buffers, attached GPU
+position/topology/paint, fetch/decode/build, and mode-switch counts. Its retained
+total includes source + CPU + GPU. Atomic full refinement therefore reports the
+temporary retiring-preview/full-build overlap until the old GPU object is
+disposed; 2-D composition cannot zero still-live 3-D allocations.
 If Three.js or WebGL is unavailable, the requested mode remains selected but the
 viewport truthfully renders the still-usable 2-D surface without a provider call
 or an error latch. Saved HTML carries the same control and embedded full resource.

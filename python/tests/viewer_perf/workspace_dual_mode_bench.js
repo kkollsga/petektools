@@ -131,7 +131,8 @@ context.syncWorkspaceMapModeHosts = context.syncWorkspaceMapModeHosts;
   "s3dMeshPaintKey", "scene3dPaintSignature", "runSharedRegularBuild", "s3dCenterKey",
   "sharedDerivedKey", "sharedRequestSupersedes", "cancelSupersededSharedWork",
   "evictSupersededSharedDerived", "supersedeWorkspaceSharedPreview",
-  "updateSharedModeLedger", "queueRegularSurface", "recolorScene3d", "renderScene3d",
+  "refreshSharedModeLedger", "updateSharedModeLedger", "queueRegularSurface",
+  "recolorScene3d", "renderScene3d",
 ].forEach(name => vm.runInContext(extractFunction(sceneSource, name), context));
 
 context.composeWorkspaceSharedMapScene(
@@ -384,6 +385,10 @@ context.setTimeout = fn => { fn(); return 1; };
 // completed item atomically replaces only its preview mesh/cache; the other
 // preview stays interactive until its own full resource arrives.
 context.W.visible["surface:b"].map = true;
+context._s3dSharedDerived = {};
+context._s3dRegularPending = {};
+context._s3dSharedPaintPending = {};
+context._s3dSharedBuildTotals = {};
 context.resourceById = {
   "surface:a": { detail: "preview" }, "surface:b": { detail: "preview" },
 };
@@ -402,9 +407,13 @@ const previewKeys = Object.fromEntries(refinementScene.meshes.map(candidate =>
   [candidate.item_id, candidate.__sharedLedgerKey]
 ));
 function oldGpuEntry(candidate) {
+  const cached = context._s3dSharedDerived[context.sharedDerivedKey(candidate, refinementCenter)];
+  const paint = cached.paints[context.s3dMeshPaintKey(candidate)];
   return { m: candidate, sourceKey: previewKeys[candidate.item_id], triangleCount: 2,
+    evictionGroup: candidate.__sharedEvictionGroup, detail: "preview",
     mesh: { material: { disposed: false, dispose() { this.disposed = true; } } },
-    geo: { disposed: false, dispose() { this.disposed = true; } } };
+    geo: { attributes: { position: { array: cached.pos }, color: { array: paint } },
+      index: { array: cached.index }, disposed: false, dispose() { this.disposed = true; } } };
 }
 const oldA = oldGpuEntry(refinementScene.meshes.find(candidate => candidate.item_id === "surface:a"));
 const oldB = oldGpuEntry(refinementScene.meshes.find(candidate => candidate.item_id === "surface:b"));
@@ -438,6 +447,17 @@ context.s3dBuilt = {
   _center: { cx: refinementCenter[0], cy: refinementCenter[1], cz: refinementCenter[2] },
   meshObjs: [oldA, oldB], pointObjs: [], triangleCount: 4, _maxAttachMs: 0,
 };
+function ledgerSnapshot() {
+  context.refreshSharedModeLedger();
+  const live = context.window.__PETEK_SHARED_MODE_LEDGER;
+  return { source: live.source_decoded_bytes,
+    cpu: live.derived_position_bytes + live.derived_topology_bytes + live.retained_paint_bytes,
+    gpu: live.gpu_upload_bytes, total: live.retained_bytes };
+}
+const previewAttachedLedger = ledgerSnapshot();
+if (JSON.stringify(previewAttachedLedger) !== JSON.stringify({ source: 52, cpu: 240, gpu: 240, total: 532 })) {
+  throw new Error("preview-attached live ledger mismatch: " + JSON.stringify(previewAttachedLedger));
+}
 context.paintCompletionState = (actualRequest, expectedRequest, actualPaint, expectedPaint) =>
   actualRequest !== expectedRequest ? "stale-request" :
     actualPaint !== expectedPaint ? "stale-paint" : "current";
@@ -453,7 +473,21 @@ context.composeWorkspaceSharedMapScene([
 if (context.App.payload.__workspaceMapScene3d !== refinementScene || refinementScene.detail !== "preview") {
   throw new Error("first item full replaced the mixed-detail scene");
 }
+let heldFullA = null;
+const attachFull = context.onRegularSurfaceBuilt;
+context.onRegularSurfaceBuilt = data => { heldFullA = data; };
 context.reconcileSharedRegularScene(refinementScene);
+if (!heldFullA) throw new Error("full A did not reach the atomic pre-attach stage");
+const fullPendingLedger = ledgerSnapshot();
+if (JSON.stringify(fullPendingLedger) !== JSON.stringify({ source: 52, cpu: 360, gpu: 240, total: 652 })) {
+  throw new Error("full-pending overlap ledger mismatch: " + JSON.stringify(fullPendingLedger));
+}
+context.onRegularSurfaceBuilt = attachFull;
+context.onRegularSurfaceBuilt(heldFullA);
+const fullAttachedLedger = ledgerSnapshot();
+if (JSON.stringify(fullAttachedLedger) !== JSON.stringify({ source: 52, cpu: 240, gpu: 240, total: 532 })) {
+  throw new Error("post-disposal full ledger mismatch: " + JSON.stringify(fullAttachedLedger));
+}
 let aPreviewRetained = Object.values(context._s3dSharedDerived).filter(candidate =>
   candidate.evictionGroup === "surface:a|depth" && candidate.detail === "preview").length;
 let bPreviewRetained = Object.values(context._s3dSharedDerived).filter(candidate =>
@@ -503,10 +537,11 @@ context.composeWorkspaceView = () => {
 };
 context.composeWorkspaceView("map");
 const paintScene = context.App.payload.__workspaceMapScene3d;
-const paintMesh = paintScene.meshes[0], paintCenter = [110, 195, -12];
-const paintBuiltSeed = { _detail: "full", _regularPending: 0 };
-context.s3dBuilt = paintBuiltSeed;
-context.queueRegularSurface(paintMesh, paintBuiltSeed, paintCenter, false, null);
+const paintComposedLedger = ledgerSnapshot();
+if (JSON.stringify(paintComposedLedger) !== JSON.stringify({ source: 160036, cpu: 240, gpu: 240, total: 160516 })) {
+  throw new Error("2-D paint composition zeroed live ledger: " + JSON.stringify(paintComposedLedger));
+}
+const paintMesh = paintScene.meshes[0], paintCenter = refinementCenter;
 const paintDerived = context._s3dSharedDerived[context.sharedDerivedKey(paintMesh, paintCenter)];
 class BufferAttribute {
   constructor(array, itemSize) { this.array = array; this.itemSize = itemSize; }
@@ -563,6 +598,47 @@ if (!cachedSlow || gpuObject.paintKey !== slowKey || gpuObject.geo.attributes.co
   throw new Error("return-to-A missed cache or changed scene/camera/GPU topology identity");
 }
 const stablePaintScene = context.App.payload.__workspaceMapScene3d === paintScene;
+context.setTimeout = fn => { fn(); return 1; };
+
+// Pending chunk allocations remain truthful through cancellation marking and
+// disappear only when the scheduled continuation releases its closure/state.
+const cancelBaseline = ledgerSnapshot();
+const cancelCount = 20000, cancelElevations = { length: cancelCount,
+  a: new Float32Array(cancelCount) };
+cancelElevations.a.fill(10);
+const cancelMesh = {
+  item_id: "surface:cancel", name: "depth", range: null,
+  regular_surface: { shared_decoded: true, dimensions: [200, 100], origin: [0, 0],
+    step_i: [1, 0], step_j: [0, 1], elevations: cancelElevations,
+    values: null, mask: null, positive: "down" },
+  __sharedDetail: "preview", __sharedEvictionGroup: "surface:cancel|depth",
+  __sharedCacheGroup: "surface:cancel|depth|preview",
+  __sharedLedgerKey: "surface:cancel|depth|preview|depth|900|901|0",
+  __sharedPaintIdentity: null,
+};
+const cancelTasks2 = [];
+context.setTimeout = fn => { cancelTasks2.push(fn); return cancelTasks2.length; };
+context.queueRegularSurface(cancelMesh, context.s3dBuilt, [0, 0, 0], false, null);
+cancelTasks2.shift()();
+const cancelPending = ledgerSnapshot();
+const cancelAllocationBytes = 240000 + 472824;
+if (cancelPending.cpu !== cancelBaseline.cpu + cancelAllocationBytes ||
+    cancelPending.gpu !== cancelBaseline.gpu ||
+    cancelPending.total !== cancelBaseline.total + cancelAllocationBytes) {
+  throw new Error("pending allocation ledger delta mismatch: " + JSON.stringify({ cancelBaseline, cancelPending }));
+}
+context.supersedeWorkspaceSharedPreview({ __sharedEvictionGroup: "surface:cancel|depth" });
+const cancelMarked = ledgerSnapshot();
+if (JSON.stringify(cancelMarked) !== JSON.stringify(cancelPending)) {
+  throw new Error("cancel marking hid still-retained chunk allocation");
+}
+while (cancelTasks2.length) cancelTasks2.shift()();
+const cancelReleased = ledgerSnapshot();
+if (JSON.stringify(cancelReleased) !== JSON.stringify(cancelBaseline) ||
+    Object.values(context._s3dRegularPending).some(request =>
+      request.evictionGroup === "surface:cancel|depth")) {
+  throw new Error("cancelled allocation remained after continuation cleanup");
+}
 context.setTimeout = fn => { fn(); return 1; };
 
 // A null mask is implicit all-valid. No hidden ncol*nrow byte array may be

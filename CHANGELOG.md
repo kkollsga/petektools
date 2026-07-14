@@ -18,7 +18,10 @@ All notable changes to petekTools are recorded here. Format follows
   request. Center-aware positions prevent visibility recomposition drift; null
   masks allocate no hidden raster; full detail evicts only the matching preview;
   and paint-only or staggered per-item refinement preserves the stable scene,
-  orbit camera, and GPU topology. Legacy separate Map/3-D resources remain unchanged.
+  orbit camera, and GPU topology. The lifetime ledger now counts pending,
+  attached, and retiring CPU/GPU allocations through atomic overlap and
+  cancellation instead of reporting cache ownership as memory release. Legacy
+  separate Map/3-D resources remain unchanged.
 - **Truthful behavioral Map rendering.** The fixed screen-space HUD now exposes
   exact inverse cursor world/i/j/value state, fit-relative zoom, known-only
   CRS/units, a constant 2-D scale bar, and camera-aware north; perspective/3-D

@@ -104,7 +104,9 @@ change reuses the stable scene and GPU topology, while a mask or scene-center
 change invalidates positions. Full evicts that item's superseded preview without
 disturbing another still-preview item; null mask remains implicit all-valid and
 allocates no hidden raster. Static export embeds the full tier once when it is
-advertised.
+advertised. Diagnostic memory accounting follows actual lifetime: cache,
+pending, attached, and retiring CPU buffers are identity-deduplicated separately
+from attached GPU attributes, so atomic overlap remains visible until disposal.
 Map resources may also carry additive contextual well overlays keyed by stable
 surface/fill and base-well item identities. Selection is local to the already
 materialized bundle: the active fill atomically chooses the producer-declared

@@ -194,6 +194,14 @@ MUST NOT attach unless its exact paint/derived key is still current. Full
 completion cannot create separate 2-D and 3-D copies. Without Three.js/WebGL, requested `mode:"3d"`
 is retained while the viewport reports `requested:"3d", rendered:"2d"` and
 renders the 2-D fallback. This is a usable fallback, not a resource error.
+The diagnostic shared-mode ledger is lifetime-based rather than cache-only:
+source bytes; unique CPU buffers retained by caches, pending chunks, attached
+objects, or retiring preview objects; and attached GPU attributes are distinct
+categories, with identity deduplication inside each category. `retained_bytes`
+is their sum. Preview bytes remain present during an atomic full overlap and
+drop only on disposal; cancelled pending bytes drop only when the continuation
+releases its state. A 2-D-only paint composition preserves all still-live 3-D
+counts until the renderer actually changes them.
 Legacy separate Map + `scene3d` catalogs and schema-v1 bundles retain their
 existing resource, worker, tab, and rendering behavior.
 
