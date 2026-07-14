@@ -11,6 +11,14 @@
   }
   function buildMapPanel(body) {
     if (!App.payload.map) { body.appendChild(el("div", "hint", workspaceLoadingHint("map") || "No map bundle in this payload.")); return; }
+    var camera = group("Camera");
+    camera.appendChild(sliderRow("Rotation", -180, 180, 1, mapView.rotationDeg, function (value) {
+      setMapCameraRotation(value);
+    }));
+    var northUp = el("button", "btn secondary", "North up");
+    northUp.onclick = function () { setMapCameraRotation(0); buildPanel(); };
+    camera.appendChild(northUp);
+    body.appendChild(camera);
     if (S.mapLayers.length) {
       var g = group("Field");
       g.appendChild(selectRow("Layer", S.mapLayers.map(function (l) { return l.display; }), S.mapLayerIdx, function (i) { S.mapLayerIdx = i; renderMap(); }));

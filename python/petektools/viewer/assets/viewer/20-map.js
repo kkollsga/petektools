@@ -5,7 +5,7 @@
   // resources and LOD settles therefore repaint without moving the camera.
   var mapView = {
     scale: 1, ox: 0, oy: 0, fitted: false,
-    fitRequest: "initial", state: "pending",
+    rotationDeg: 0, fitRequest: "initial", state: "pending",
   };
   function requestMapFit(reason) {
     mapView.fitRequest = reason || "explicit";
@@ -18,12 +18,9 @@
   }
   function mapFrame() { return App.payload.map.frame; }
   function worldExtent() {
-    var f = mapFrame(), angle = (Number(f.rotation_deg) || 0) * Math.PI / 180;
-    var c = Math.cos(angle), s = Math.sin(angle), sign = f.yflip ? -1 : 1;
-    var di = [(f.ncol - 1) * f.spacing_x * c, (f.ncol - 1) * f.spacing_x * s];
-    var dj = [-(f.nrow - 1) * sign * f.spacing_y * s, (f.nrow - 1) * sign * f.spacing_y * c];
-    var xs = [f.origin_x, f.origin_x + di[0], f.origin_x + dj[0], f.origin_x + di[0] + dj[0]];
-    var ys = [f.origin_y, f.origin_y + di[1], f.origin_y + dj[1], f.origin_y + di[1] + dj[1]];
+    var corners = frameCorners(mapFrame(), false);
+    var xs = corners.map(function (p) { return p[0]; });
+    var ys = corners.map(function (p) { return p[1]; });
     return { x0: Math.min.apply(null, xs), y0: Math.min.apply(null, ys),
       x1: Math.max.apply(null, xs), y1: Math.max.apply(null, ys) };
   }
@@ -133,16 +130,18 @@
   function contentExtent() {
     var m = App.payload.map;
     var xlo = Infinity, xhi = -Infinity, ylo = Infinity, yhi = -Infinity;
+    var camera = mapCameraMatrix(mapView.rotationDeg, 1, 0, 0);
     function ext(x, y) {
       if (!isFinite(x) || !isFinite(y)) return;
-      if (x < xlo) xlo = x; if (x > xhi) xhi = x;
-      if (y < ylo) ylo = y; if (y > yhi) yhi = y;
+      var px = camera[0] * x + camera[2] * y, py = camera[1] * x + camera[3] * y;
+      if (px < xlo) xlo = px; if (px > xhi) xhi = px;
+      if (py < ylo) ylo = py; if (py > yhi) yhi = py;
     }
     function extLineSet(L) { for (var k = 0; k < lsN(L); k++) { var n = lineLen(L, k); for (var i = 0; i < n; i++) ext(lineX(L, k, i), lineY(L, k, i)); } }
     var hasFrameField = !!(S.mapLayers && S.mapLayers[S.mapLayerIdx]) ||
       (m.contacts || []).some(function (_, i) { return S.contactVis[i]; });
     if (hasFrameField) {
-      var e = worldExtent(); ext(e.x0, e.y0); ext(e.x1, e.y1);
+      frameCorners(mapFrame(), true).forEach(function (p) { ext(p[0], p[1]); });
     }
     if (S.showOutline) (m.outline || []).forEach(function (ring) { ring.forEach(function (pt) { ext(pt[0], pt[1]); }); });
     if (S.showGridLines) extLineSet(lineSetRing(m.grid_lines, m.grid_lines_lod));
@@ -154,12 +153,11 @@
     if (activeFill) {
       var ring = fillRingFor(activeFill), G = ring.regular_grid;
       if (G) {
-        var ni = G.dimensions[0] - 1, nj = G.dimensions[1] - 1;
-        ext(G.origin[0], G.origin[1]);
-        ext(G.origin[0] + ni * G.step_i[0], G.origin[1] + ni * G.step_i[1]);
-        ext(G.origin[0] + nj * G.step_j[0], G.origin[1] + nj * G.step_j[1]);
-        ext(G.origin[0] + ni * G.step_i[0] + nj * G.step_j[0],
-            G.origin[1] + ni * G.step_i[1] + nj * G.step_j[1]);
+        var i0 = -.5, j0 = -.5, i1 = G.dimensions[0] - .5, j1 = G.dimensions[1] - .5;
+        [[i0, j0], [i1, j0], [i1, j1], [i0, j1]].forEach(function (ij) {
+          ext(G.origin[0] + ij[0] * G.step_i[0] + ij[1] * G.step_j[0],
+            G.origin[1] + ij[0] * G.step_i[1] + ij[1] * G.step_j[1]);
+        });
       } else {
         var N = ring.nodes;
         for (var q = 0; q < (N ? N.length : 0); q++) ext(ndX(N, q), ndY(N, q));
@@ -195,8 +193,23 @@
     if (typeof S !== "undefined") S.lodActive = computeLodActive();
     return true;
   }
-  function w2s(x, y) { return [x * mapView.scale + mapView.ox, y * mapView.scale + mapView.oy]; }
-  function s2w(px, py) { return [(px - mapView.ox) / mapView.scale, (py - mapView.oy) / mapView.scale]; }
+  function w2s(x, y) {
+    return mapWorldToScreen(mapView.rotationDeg, x, y, mapView.scale, mapView.ox, mapView.oy);
+  }
+  function s2w(px, py) {
+    return mapScreenToWorld(mapView.rotationDeg, px, py, mapView.scale, mapView.ox, mapView.oy);
+  }
+  function setMapCameraRotation(degrees, cv) {
+    cv = cv || document.getElementById("map-canvas");
+    var cx = cv ? cv.width / 2 : 0, cy = cv ? cv.height / 2 : 0;
+    var world = s2w(cx, cy);
+    mapView.rotationDeg = normalizeMapRotation(degrees);
+    var projected = mapCameraProject(mapView.rotationDeg, world[0], world[1]);
+    mapView.ox = cx - projected[0] * mapView.scale;
+    mapView.oy = cy - projected[1] * mapView.scale;
+    markMapCameraAdjusted();
+    renderMap();
+  }
 
   // ---- 2-D map binary blocks (typed arrays) + plain-array fallback -----------
   // A blocks-encoded payload (SCHEMA.md) ships the bulk arrays as content-
@@ -426,11 +439,14 @@
   // Stroke one line set (typed or plain) into the current path.
   function strokeLineSet(ctx, L, sc, ox, oy) {
     if (sc == null) { sc = mapView.scale; ox = mapView.ox; oy = mapView.oy; }
+    var matrix = mapCameraMatrix(mapView.rotationDeg, sc, ox, oy);
     for (var k = 0; k < lsN(L); k++) {
       var n = lineLen(L, k);
       for (var i = 0; i < n; i++) {
-        var x = lineX(L, k, i) * sc + ox, y = lineY(L, k, i) * sc + oy;
-        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        var x = lineX(L, k, i), y = lineY(L, k, i);
+        var px = matrix[0] * x + matrix[2] * y + matrix[4];
+        var py = matrix[1] * x + matrix[3] * y + matrix[5];
+        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
       }
     }
   }
@@ -477,12 +493,17 @@
   }
   function drawWindowedRaster(ctx, cv, f, layer) {
     var sx = f.spacing_x, sy = f.spacing_y;
-    // visible world rect (canvas corners -> world), padded a cell each side.
-    var a = s2w(0, 0), b = s2w(cv.width, cv.height);
-    var i0 = Math.floor((Math.min(a[0], b[0]) - f.origin_x) / sx) - 1;
-    var i1 = Math.ceil((Math.max(a[0], b[0]) - f.origin_x) / sx) + 1;
-    var j0 = Math.floor((Math.min(a[1], b[1]) - f.origin_y) / sy) - 1;
-    var j1 = Math.ceil((Math.max(a[1], b[1]) - f.origin_y) / sy) + 1;
+    // Project all four viewport corners through the exact inverse camera and
+    // frame transforms. A two-corner world AABB is wrong for either rotation.
+    var intrinsic = [[0, 0], [cv.width, 0], [cv.width, cv.height], [0, cv.height]].map(function (p) {
+      var world = s2w(p[0], p[1]); return frameWorldToIntrinsic(f, world[0], world[1]);
+    }).filter(Boolean);
+    if (!intrinsic.length) return;
+    var fis = intrinsic.map(function (p) { return p[0]; }), fjs = intrinsic.map(function (p) { return p[1]; });
+    var i0 = Math.floor(Math.min.apply(null, fis)) - 1;
+    var i1 = Math.ceil(Math.max.apply(null, fis)) + 1;
+    var j0 = Math.floor(Math.min.apply(null, fjs)) - 1;
+    var j1 = Math.ceil(Math.max.apply(null, fjs)) + 1;
     if (i0 < 0) i0 = 0;
     if (j0 < 0) j0 = 0;
     if (i1 > f.ncol - 1) i1 = f.ncol - 1;
@@ -524,19 +545,22 @@
     octx.putImageData(img, 0, 0);
     // Each raster pixel covers an stI×stJ cell block starting at node (i0,j0); its
     // block's top-left world corner is that node minus half a cell.
-    var p = w2s(f.origin_x + i0 * sx - sx / 2, f.origin_y + j0 * sy - sy / 2);
+    var origin = frameIntrinsicToWorld(f, i0 - stI / 2, j0 - stJ / 2);
+    var steps = frameStepVectors(f);
+    var matrix = mapAffineScreenMatrix(mapView.rotationDeg, origin,
+      [steps.i[0] * stI, steps.i[1] * stI], [steps.j[0] * stJ, steps.j[1] * stJ],
+      mapView.scale, mapView.ox, mapView.oy);
     ctx.imageSmoothingEnabled = false;
     ctx.save();
     // Clip to the outline polygon so the field paints only inside the mapped
     // footprint (the "Unclipped raster" QC toggle disables this).
     var clipPath = outlineWorldPath();
     if (S.clipRaster && clipPath) {
-      ctx.setTransform(mapView.scale, 0, 0, mapView.scale, mapView.ox, mapView.oy);
+      ctx.setTransform.apply(ctx, mapCameraMatrix(mapView.rotationDeg, mapView.scale, mapView.ox, mapView.oy));
       ctx.clip(clipPath);
       ctx.setTransform(1, 0, 0, 1, 0, 0);
     }
-    ctx.translate(p[0], p[1]);
-    ctx.scale(mapView.scale * sx * stI, mapView.scale * sy * stJ);
+    ctx.setTransform.apply(ctx, matrix);
     ctx.drawImage(off, 0, 0, rc, rr);
     ctx.restore();
   }
@@ -657,10 +681,12 @@
     var m = App.payload.map;
     if (kind === "under") return [displayId(lineSetRing(m.grid_lines, m.grid_lines_lod)),
       displayId(m.contours), displayId(m.outline), S.showGridLines, S.showContours,
-      S.showOutline, S.lodActive, token("--muted"), token("--text-secondary")].join("|");
+      S.showOutline, S.lodActive, mapGeometryCacheKey(mapFrame(), mapView.rotationDeg),
+      token("--muted"), token("--text-secondary")].join("|");
     return [displayId(m.contacts), (S.contactVis || []).join(","), S.lodActive,
       document.documentElement.getAttribute("data-theme") || "",
-      displayId(mapFrame())].join("|");
+      mapGeometryCacheKey(mapFrame(), mapView.rotationDeg),
+      (m.contacts || []).map(function (c) { return frameSignature(c.__workspaceFrame || mapFrame()); }).join(";")].join("|");
   }
   function paintUnderlays(ctx, sc, ox, oy) {
     var m = App.payload.map;
@@ -681,7 +707,7 @@
     }
     var outline = outlineWorldPath();
     if (S.showOutline && outline) {
-      ctx.save(); ctx.setTransform(sc, 0, 0, sc, ox, oy); ctx.strokeStyle = token("--text-secondary");
+      ctx.save(); ctx.setTransform.apply(ctx, mapCameraMatrix(mapView.rotationDeg, sc, ox, oy)); ctx.strokeStyle = token("--text-secondary");
       ctx.lineWidth = 2 / sc; ctx.lineJoin = "round"; ctx.stroke(outline); ctx.restore();
     }
   }
@@ -691,15 +717,25 @@
       var f = c.__workspaceFrame || mapFrame();
       if (!f) return;
       perfCount("contactMaskBuilds");
-      var col = idColor("ct:" + c.kind), ss = Math.max(2, sc * Math.min(f.spacing_x, f.spacing_y));
+      var col = idColor("ct:" + c.kind);
+      var frameSteps = frameStepVectors(f);
+      var frameMatrix = mapAffineScreenMatrix(mapView.rotationDeg, [f.origin_x, f.origin_y],
+        frameSteps.i, frameSteps.j, sc, ox, oy);
       var region = new Path2D(), minx = Infinity, miny = Infinity, maxx = -Infinity, maxy = -Infinity, any = false;
       for (var j = 0; j < f.nrow; j++) for (var i = 0; i < f.ncol; i++) {
         if (!maskAt(c.crossing, j * f.ncol + i)) continue;
-        any = true; var sx = (f.origin_x + i * f.spacing_x) * sc + ox;
-        var sy = (f.origin_y + j * f.spacing_y) * sc + oy;
-        var x0 = sx - ss / 2, y0 = sy - ss / 2; region.rect(x0, y0, ss, ss);
-        if (x0 < minx) minx = x0; if (y0 < miny) miny = y0;
-        if (x0 + ss > maxx) maxx = x0 + ss; if (y0 + ss > maxy) maxy = y0 + ss;
+        any = true;
+        var quad = [[i - .5, j - .5], [i + .5, j - .5], [i + .5, j + .5], [i - .5, j + .5]].map(function (ij) {
+          return [frameMatrix[0] * ij[0] + frameMatrix[2] * ij[1] + frameMatrix[4],
+            frameMatrix[1] * ij[0] + frameMatrix[3] * ij[1] + frameMatrix[5]];
+        });
+        region.moveTo(quad[0][0], quad[0][1]);
+        for (var qi = 1; qi < quad.length; qi++) region.lineTo(quad[qi][0], quad[qi][1]);
+        region.closePath();
+        quad.forEach(function (p) {
+          if (p[0] < minx) minx = p[0]; if (p[1] < miny) miny = p[1];
+          if (p[0] > maxx) maxx = p[0]; if (p[1] > maxy) maxy = p[1];
+        });
       }
       if (!any) return;
       ctx.save(); ctx.globalAlpha = 0.22; ctx.fillStyle = col; ctx.fill(region);
@@ -713,6 +749,20 @@
       }
       ctx.restore(); ctx.globalAlpha = 0.9; ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.stroke(region); ctx.restore();
     });
+  }
+  function drawMapNorthIndicator(ctx, cv) {
+    var north = mapNorthVector(mapView.rotationDeg), x = cv.width - 30, y = 30;
+    var tip = [x + north[0] * 15, y + north[1] * 15];
+    var left = [x + north[1] * 4, y - north[0] * 4];
+    var right = [x - north[1] * 4, y + north[0] * 4];
+    ctx.save(); ctx.globalAlpha = .9; ctx.strokeStyle = token("--text-secondary");
+    ctx.fillStyle = token("--text-secondary"); ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(tip[0], tip[1]); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(tip[0], tip[1]); ctx.lineTo(left[0], left[1]);
+    ctx.lineTo(right[0], right[1]); ctx.closePath(); ctx.fill();
+    ctx.font = "600 10px system-ui"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText("N", tip[0] + north[0] * 9, tip[1] + north[1] * 9);
+    ctx.restore();
   }
   function drawOverlayCache(ctx, cv, kind) {
     var C = kind === "under" ? _overlayUnder : _overlayOver, key = overlayKey(kind);
@@ -885,10 +935,17 @@
       ctx.restore();
     }
 
+    // HUD stays in screen space. Only the user camera rotates north; the
+    // producer's frame azimuth/yflip never changes this compass.
+    drawMapNorthIndicator(ctx, cv);
+
     // world→screen transform + LOD state, exposed for the browser test harness
     window.__PETEK_MAP_VIEW = {
       scale: mapView.scale, ox: mapView.ox, oy: mapView.oy,
-      state: mapView.state,
+      state: mapView.state, camera_rotation_deg: mapView.rotationDeg,
+      north_vector: mapNorthVector(mapView.rotationDeg),
+      frame_rotation_deg: normalizeMapRotation((f && f.rotation_deg) || 0),
+      frame_yflip: !!(f && f.yflip), frame_signature: frameSignature(f),
       horizontalSpan: cv.width / mapView.scale,
     };
     window.__PETEK_LOD_ACTIVE = !!S.lodActive;
@@ -937,6 +994,7 @@
   // q0/q1 bound the point-index slice (a per-layer segment; default: all).
   function buildPointPaths(pts, sc, oxx, oyy, r, pc, cull, cw, ch, q0, q1) {
     perfCount("pointPathBuilds");
+    var matrix = mapCameraMatrix(mapView.rotationDeg, sc, oxx, oyy);
     var square = r <= 2.5; // tiny marks: rects batch far faster than arcs
     var paths = new Array(257);
     var colored = !!(pc && pc.range), plo = 0, pf = 0;
@@ -944,7 +1002,9 @@
     var d = 2 * r;
     var qa = q0 || 0, qb = q1 == null ? ptN(pts) : q1;
     for (var q = qa; q < qb; q++) {
-      var sx = ptX(pts, q) * sc + oxx, sy = ptY(pts, q) * sc + oyy;
+      var x = ptX(pts, q), y = ptY(pts, q);
+      var sx = matrix[0] * x + matrix[2] * y + matrix[4];
+      var sy = matrix[1] * x + matrix[3] * y + matrix[5];
       if (cull && (sx < -r || sy < -r || sx > cw + r || sy > ch + r)) continue;
       var bin = PT_ACCENT_BIN;
       if (colored) {
@@ -997,7 +1057,22 @@
   // size drifts ≤ ~25% momentarily); outside it re-renders/re-bakes.
   var PT_BAND_LO = 0.8, PT_BAND_HI = 1.25;
   var _ptCache = { canvas: null, ref: null, key: "", styleKey: "", scale: 0, cox: 0, coy: 0,
-                   wx0: 0, wy0: 0, wx1: 0, wy1: 0 }; // w* = baked window, world coords
+                   wx0: 0, wy0: 0, wx1: 0, wy1: 0 }; // w* = baked window, camera coords
+  function pointSlicesCameraExtent(points, slices) {
+    var matrix = mapCameraMatrix(mapView.rotationDeg, 1, 0, 0);
+    var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    (slices || []).forEach(function (slice) {
+      var end = Math.min(ptN(points), slice.start + slice.n);
+      for (var index = slice.start; index < end; index++) {
+        var x = ptX(points, index), y = ptY(points, index);
+        var px = matrix[0] * x + matrix[2] * y, py = matrix[1] * x + matrix[3] * y;
+        if (!isFinite(px) || !isFinite(py)) continue;
+        if (px < x0) x0 = px; if (px > x1) x1 = px;
+        if (py < y0) y0 = py; if (py > y1) y1 = py;
+      }
+    });
+    return isFinite(x0) ? { x0: x0, y0: y0, x1: x1, y1: y1 } : null;
+  }
   // Trailing re-bake: a hot frame that couldn't blit schedules the shared settle
   // (scheduleSettle), which after the gesture pauses does one non-hot render that
   // bakes the point cloud (and the active fill) synchronously.
@@ -1008,12 +1083,14 @@
     var plan = pointLayerPlan(); // per-layer colour segments (global fallback)
     if (!plan.length) return;
     // everything the baked pixels depend on, except geometry/scale/window
-    var styleKey = token("--accent") + "|" + alpha + "|" +
+    var styleKey = mapGeometryCacheKey(mapFrame(), mapView.rotationDeg) + "|" +
+      token("--accent") + "|" + alpha + "|" +
       plan.map(function (sg) {
         return sg.start + ":" + sg.n + ":" + sg.cmap + ":" + sg.reversed + ":" + (sg.range ? sg.range[0] + "," + sg.range[1] : "-");
       }).join(";");
     var key = styleKey + "|" + r;
-    var bb = pointSlicesExtent(pts, plan, ptX, ptY); if (!bb) return;
+    var bb = pointSlicesCameraExtent(pts, plan);
+    if (!bb) return;
     var pad = r + 2, padW = pad / mapView.scale;
     // the viewport in world coords, clamped to the (padded) cloud bbox — the
     // part the baked window must cover for a blit to be valid
@@ -1103,9 +1180,10 @@
   // per points array, ~4 points/bucket) — the cursor queries only the buckets its
   // 8-px pick radius touches, never the whole cloud. Same hit rule as the old
   // O(n) scan: nearest point within 8 screen px.
-  var _ptGrid = { ref: null };
+  var _ptGrid = { ref: null, key: "" };
   function pointGrid(pts) {
-    if (_ptGrid.ref === pts) return _ptGrid;
+    var key = mapGeometryCacheKey(mapFrame(), mapView.rotationDeg);
+    if (_ptGrid.ref === pts && _ptGrid.key === key) return _ptGrid;
     var bb = pointBBox(pts);
     var nb = Math.max(1, Math.min(256, Math.ceil(Math.sqrt(ptN(pts) / 4))));
     var fx = nb / ((bb.x1 - bb.x0) || 1), fy = nb / ((bb.y1 - bb.y0) || 1);
@@ -1116,7 +1194,7 @@
       var b = cj * nb + ci;
       (buckets[b] || (buckets[b] = [])).push(q);
     }
-    _ptGrid = { ref: pts, x0: bb.x0, y0: bb.y0, fx: fx, fy: fy, nb: nb, buckets: buckets };
+    _ptGrid = { ref: pts, key: key, x0: bb.x0, y0: bb.y0, fx: fx, fy: fy, nb: nb, buckets: buckets };
     return _ptGrid;
   }
   function hitTestPoint(pts, px, py, slices) {
@@ -1135,7 +1213,8 @@
         for (var q = 0; q < bucket.length; q++) {
           var pi = bucket[q];
           if (!pointIndexInVisibleSlices(pi, slices)) continue;
-          var d = Math.hypot(ptX(pts, pi) * mapView.scale + mapView.ox - px, ptY(pts, pi) * mapView.scale + mapView.oy - py);
+          var screen = w2s(ptX(pts, pi), ptY(pts, pi));
+          var d = Math.hypot(screen[0] - px, screen[1] - py);
           if (d <= 8 && d < bestD) { bestD = d; best = { index: pi, x: ptX(pts, pi), y: ptY(pts, pi), z: ptZ(pts, pi) }; }
         }
       }
@@ -1170,7 +1249,12 @@
     }
     // project every node once (not 3× per triangle) under the given affine
     var sx = new Float64Array(nN), sy = new Float64Array(nN);
-    for (var k = 0; k < nN; k++) { sx[k] = ndX(nodes, k) * sc + oxx; sy[k] = ndY(nodes, k) * sc + oyy; }
+    var matrix = mapCameraMatrix(mapView.rotationDeg, sc, oxx, oyy);
+    for (var k = 0; k < nN; k++) {
+      var x = ndX(nodes, k), y = ndY(nodes, k);
+      sx[k] = matrix[0] * x + matrix[2] * y + matrix[4];
+      sy[k] = matrix[1] * x + matrix[3] * y + matrix[5];
+    }
     var paths = new Array(FILL_BINS);
     for (var t = 0; t < nT; t++) {
       var a = trAt(tris, t, 0), b = trAt(tris, t, 1), c = trAt(tris, t, 2);
@@ -1200,7 +1284,7 @@
   // never expands mesh nodes/triangles or creates per-triangle Path2D objects.
   function drawRegularGridFill(ctx, fill, sc, oxx, oyy) {
     var G = fill.regular_grid, dims = G.dimensions;
-    var nc = dims[0], nr = dims[1], wc = nc - 1, hc = nr - 1;
+    var nc = dims[0], nr = dims[1], wc = nc, hc = nr;
     if (wc <= 0 || hc <= 0 || !G.values) return;
     var off = document.createElement("canvas"); off.width = wc; off.height = hc;
     var ox = off.getContext("2d"), image = ox.createImageData(wc, hc), out = image.data;
@@ -1223,28 +1307,27 @@
       return rgb ? [Number(rgb[1]), Number(rgb[2]), Number(rgb[3])] : [127, 127, 127];
     }
     for (var j = 0; j < hc; j++) for (var i = 0; i < wc; i++) {
-      var a = j * nc + i, b = a + 1, c = a + nc, d = c + 1;
-      if (!maskAt(G.mask, a) || !maskAt(G.mask, b) || !maskAt(G.mask, c) || !maskAt(G.mask, d)) continue;
-      var va = vlAt(G.values, a), vb = vlAt(G.values, b), vc = vlAt(G.values, c), vd = vlAt(G.values, d);
-      if (!isFinite(va) || !isFinite(vb) || !isFinite(vc) || !isFinite(vd)) continue;
+      var a = j * nc + i;
+      if (G.mask && !maskAt(G.mask, a)) continue;
+      var va = vlAt(G.values, a);
+      if (!isFinite(va)) continue;
       var p = (j * wc + i) * 4;
       if (fill.categorical) {
-        var category = categoricalCellCode(va, vb, vc, vd), color = categoricalRgb(category);
+        var color = categoricalRgb(va);
         out[p] = color[0]; out[p + 1] = color[1]; out[p + 2] = color[2]; out[p + 3] = 255;
       } else {
-        var t = ((va + vb + vc + vd) * .25 - lo) / span;
+        var t = (va - lo) / span;
         if (t < 0) t = 0; else if (t > 1) t = 1;
-        var li = Math.round(t * 255) * 3;
+        var li = ((t * 255) | 0) * 3;
         out[p] = lut[li]; out[p + 1] = lut[li + 1]; out[p + 2] = lut[li + 2]; out[p + 3] = 255;
       }
     }
     ox.putImageData(image, 0, 0);
     ctx.save(); ctx.imageSmoothingEnabled = false;
-    ctx.setTransform(
-      G.step_i[0] * sc, G.step_i[1] * sc,
-      G.step_j[0] * sc, G.step_j[1] * sc,
-      G.origin[0] * sc + oxx, G.origin[1] * sc + oyy
-    );
+    var rasterOrigin = [G.origin[0] - .5 * G.step_i[0] - .5 * G.step_j[0],
+      G.origin[1] - .5 * G.step_i[1] - .5 * G.step_j[1]];
+    ctx.setTransform.apply(ctx, mapAffineScreenMatrix(mapView.rotationDeg, rasterOrigin,
+      G.step_i, G.step_j, sc, oxx, oyy));
     ctx.drawImage(off, 0, 0, wc, hc);
     ctx.restore();
   }
@@ -1288,24 +1371,37 @@
     return entry;
   }
   function fillNodesBBox(ring) {
-    if (ring.__bbox) return ring.__bbox;
+    var bboxKey = mapGeometryCacheKey(mapFrame(), mapView.rotationDeg);
+    if (ring.__cameraBBox && ring.__cameraBBoxKey === bboxKey) return ring.__cameraBBox;
+    var camera = mapCameraMatrix(mapView.rotationDeg, 1, 0, 0);
+    function project(x, y) {
+      return [camera[0] * x + camera[2] * y, camera[1] * x + camera[3] * y];
+    }
     if (ring.regular_grid) {
-      var G = ring.regular_grid, ni = G.dimensions[0] - 1, nj = G.dimensions[1] - 1;
-      var xs = [G.origin[0], G.origin[0] + ni * G.step_i[0], G.origin[0] + nj * G.step_j[0], G.origin[0] + ni * G.step_i[0] + nj * G.step_j[0]];
-      var ys = [G.origin[1], G.origin[1] + ni * G.step_i[1], G.origin[1] + nj * G.step_j[1], G.origin[1] + ni * G.step_i[1] + nj * G.step_j[1]];
-      return (ring.__bbox = { x0: Math.min.apply(null, xs), y0: Math.min.apply(null, ys), x1: Math.max.apply(null, xs), y1: Math.max.apply(null, ys) });
+      var G = ring.regular_grid, i0 = -.5, j0 = -.5;
+      var i1 = G.dimensions[0] - .5, j1 = G.dimensions[1] - .5;
+      var corners = [[i0, j0], [i1, j0], [i1, j1], [i0, j1]].map(function (ij) {
+        return [G.origin[0] + ij[0] * G.step_i[0] + ij[1] * G.step_j[0],
+          G.origin[1] + ij[0] * G.step_i[1] + ij[1] * G.step_j[1]];
+      })
+        .map(function (p) { return project(p[0], p[1]); });
+      var xs = corners.map(function (p) { return p[0]; }), ys = corners.map(function (p) { return p[1]; });
+      ring.__cameraBBoxKey = bboxKey;
+      return (ring.__cameraBBox = { x0: Math.min.apply(null, xs), y0: Math.min.apply(null, ys), x1: Math.max.apply(null, xs), y1: Math.max.apply(null, ys) });
     }
     var N = ring.nodes, n = N ? N.length : 0;
     var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
     for (var q = 0; q < n; q++) {
-      var x = ndX(N, q), y = ndY(N, q);
+      var p = project(ndX(N, q), ndY(N, q)), x = p[0], y = p[1];
       if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
     }
-    return (ring.__bbox = { x0: x0, y0: y0, x1: x1, y1: y1 });
+    ring.__cameraBBoxKey = bboxKey;
+    return (ring.__cameraBBox = { x0: x0, y0: y0, x1: x1, y1: y1 });
   }
   function drawMapFill(ctx, cv, fill) {
     if (!fill || (!fill.regular_grid && (!fill.nodes || !fill.nodes.length))) return;
-    var key = paintColormap(fill) + "|" + paintReversed(fill) + "|" + (fill.range ? fill.range[0] + "," + fill.range[1] : "-");
+    var key = mapGeometryCacheKey(mapFrame(), mapView.rotationDeg) + "|" +
+      paintColormap(fill) + "|" + paintReversed(fill) + "|" + (fill.range ? fill.range[0] + "," + fill.range[1] : "-");
     var bb = fillNodesBBox(fill);
     // the viewport in world coords, clamped to the fill bbox — the region a blit
     // must cover to be valid
@@ -1418,8 +1514,9 @@
       var w = s2w(mx, my);
       var k = ev.deltaY < 0 ? 1.15 : 1 / 1.15;
       mapView.scale *= k;
-      mapView.ox = mx - w[0] * mapView.scale;
-      mapView.oy = my - w[1] * mapView.scale;
+      var projected = mapCameraProject(mapView.rotationDeg, w[0], w[1]);
+      mapView.ox = mx - projected[0] * mapView.scale;
+      mapView.oy = my - projected[1] * mapView.scale;
       markMapCameraAdjusted();
       scheduleRenderMap();
       scheduleSettle(); // flip the LOD ring + re-bake once the zoom settles
@@ -1482,8 +1579,18 @@
     var i = Math.round(fi), j = Math.round(fj), nc = G.dimensions[0], nr = G.dimensions[1];
     if (i < 0 || j < 0 || i >= nc || j >= nr) return null;
     var index = j * nc + i, value = vlAt(G.values, index);
-    if (!maskAt(G.mask, index) || !isFinite(value)) return null;
+    if ((G.mask && !maskAt(G.mask, index)) || !isFinite(value)) return null;
     return { i: i, j: j, value: value, x: G.origin[0] + i * ax + j * bx, y: G.origin[1] + i * ay + j * by };
+  }
+  function frameValueAt(layer, frame, world) {
+    if (!layer || !frame) return null;
+    var intrinsic = frameWorldToIntrinsic(frame, world[0], world[1]);
+    if (!intrinsic) return null;
+    var i = Math.round(intrinsic[0]), j = Math.round(intrinsic[1]);
+    if (i < 0 || j < 0 || i >= frame.ncol || j >= frame.nrow) return null;
+    var value = layer.values[j * frame.ncol + i];
+    var xy = frameIntrinsicToWorld(frame, i, j);
+    return { i: i, j: j, value: value, x: xy[0], y: xy[1] };
   }
   function mapClickInspect(cv, ev) {
     var px = canvasPx(cv, ev);
@@ -1522,14 +1629,13 @@
     if (!rows) {
       var f = mapFrame(), layer = S.mapLayers[S.mapLayerIdx];
       var w = s2w(px[0], px[1]);
-      var i = Math.round((w[0] - f.origin_x) / f.spacing_x);
-      var j = Math.round((w[1] - f.origin_y) / f.spacing_y);
-      if (layer && i >= 0 && j >= 0 && i < f.ncol && j < f.nrow) {
-        key = "cell:" + i + "," + j;
+      var frameHit = frameValueAt(layer, f, w);
+      if (frameHit) {
+        key = "cell:" + frameHit.i + "," + frameHit.j;
         rows = [
           ["", layer.display],
-          ["value", fmt(layer.values[j * f.ncol + i], layer.units)],
-          ["cell", "i " + i + " · j " + j],
+          ["value", fmt(frameHit.value, layer.units)],
+          ["cell", "i " + frameHit.i + " · j " + frameHit.j],
         ];
       }
     }

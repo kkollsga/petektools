@@ -52,7 +52,29 @@ _WORKSPACE_WELL_OVERLAY_JS = (
     Path(__file__).parent / "viewer_perf" / "workspace_well_overlay_bench.mjs"
 )
 _REGULAR_SURFACE_JS = Path(__file__).parent / "viewer_perf" / "regular_surface_build_bench.js"
+_MAP_ROTATION_JS = Path(__file__).parent / "viewer_perf" / "map_rotation_bench.js"
 _NODE = shutil.which("node")
+
+
+@pytest.mark.skipif(_NODE is None, reason="node not installed")
+def test_rotated_map_frame_camera_and_direct_shared_raster_parity():
+    viewer = Path(__file__).parents[1] / "petektools" / "viewer" / "assets" / "viewer"
+    out = subprocess.run(
+        [
+            _NODE,
+            str(_MAP_ROTATION_JS),
+            str(viewer / "05-paint-state.js"),
+            str(viewer / "20-map.js"),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert out.returncode == 0, out.stdout + out.stderr
+    result = json.loads(out.stdout.strip().splitlines()[-1])
+    assert result["rasterBytes"] == 4 * 3 * 4
+    assert result["north0"] == [0, -1]
+    assert result["cacheSeparated"] is True
 
 
 def _playwright_available() -> bool:

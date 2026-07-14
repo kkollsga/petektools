@@ -82,6 +82,7 @@ let rasterPixel = null;
 const context = {
   console, Math, Number, Object, Array, Uint8Array, Float32Array, WeakMap, isFinite,
   App: { payload: {}, tab: "map" },
+  mapView: { scale: 1, ox: 0, oy: 0, rotationDeg: 0 },
   S: {
     mapFillIdx: 1, mapLayerIdx: 0, pointLayerVis: [], contactVis: [true, true],
     wellVis: [], showGridLines: false, showContours: false, showOutline: false,
@@ -158,14 +159,18 @@ const extent = context.worldExtent();
 const cursor = context.regularGridValueAt(composed.fills[1], [frameB.origin_x, frameB.origin_y]);
 if (!key || !Object.values(extent).every(Number.isFinite)) throw new Error("shared-only render path is not finite");
 if (!cursor || cursor.value !== 3) throw new Error("shared affine cursor lookup used the wrong frame");
-const category = context.categoricalCellCode(1, 1, 3, 3);
-if (category !== 1 || ![1, 3].includes(category)) throw new Error("categorical raster synthesized a code");
+const category = composed.fills[0].regular_grid.values.a[0];
+if (category !== 1) throw new Error("categorical source node changed before paint");
 const targetContext = {
   save: () => {}, restore: () => {}, setTransform: () => {}, drawImage: () => {},
   imageSmoothingEnabled: true,
 };
 context.drawRegularGridFill(targetContext, composed.fills[0], 1, 0, 0);
-if (JSON.stringify(rasterPixel) !== JSON.stringify([17, 17, 17, 255])) {
+const expectedPixels = [
+  17, 17, 17, 255, 17, 17, 17, 255,
+  51, 51, 51, 255, 51, 51, 51, 255,
+];
+if (JSON.stringify(rasterPixel) !== JSON.stringify(expectedPixels)) {
   throw new Error("categorical draw path did not paint a declared source code: " + rasterPixel);
 }
 
