@@ -125,8 +125,8 @@
     if (S.showOutline) (m.outline || []).forEach(function (ring) { ring.forEach(function (pt) { ext(pt[0], pt[1]); }); });
     if (S.showGridLines) extLineSet(lineSetRing(m.grid_lines, m.grid_lines_lod));
     if (S.showPoints && m.points && m.points.length) {
-      var bb = pointBBox(m.points); // cached — never rescan the cloud
-      ext(bb.x0, bb.y0); ext(bb.x1, bb.y1);
+      var bb = pointSlicesExtent(m.points, visiblePointSlices(), ptX, ptY);
+      if (bb) { ext(bb.x0, bb.y0); ext(bb.x1, bb.y1); }
     }
     var activeFill = S.showFills && (m.fills || [])[S.mapFillIdx];
     if (activeFill) {
@@ -874,19 +874,19 @@
   // entries may carry {start, n, range, colormap, colored} — the JS reads the
   // per-layer fields FIRST, falling back to the global point_color/colormap
   // (older payloads render exactly as before through the one legacy segment).
+  function visiblePointSlices() {
+    var m = App.payload.map;
+    return visiblePointSlicePlan(m.layers || [], ptN(m.points), S.pointLayerVis);
+  }
   function pointLayerPlan() {
     var m = App.payload.map, pc = m.point_color;
-    var segs = [];
-    (m.layers || []).forEach(function (ly) {
-      if (ly.kind === "points" && ly.start != null && ly.n != null) segs.push(ly);
-    });
-    if (!segs.length) segs.push({ start: 0, n: ptN(m.points) }); // legacy: one segment
-    return segs.map(function (ly, i) {
+    return visiblePointSlices().map(function (slice) {
+      var ly = slice.layer || {};
       var colored = ly.colored !== false;
       var range = colored ? (ly.range || (pc && pc.range) || null) : null;
-      return { start: ly.start || 0, n: ly.n, range: range,
-        cmap: paintColormap(ly), reversed: paintReversed(ly), visible: !S.pointLayerVis || S.pointLayerVis[i] !== false };
-    }).filter(function (segment) { return segment.visible; });
+      return { start: slice.start, n: slice.n, range: range,
+        cmap: paintColormap(ly), reversed: paintReversed(ly) };
+    });
   }
   // Build the binned Path2D set under an affine transform sx = x*sc + oxx.
   // cull=true skips points outside the [0..cw, 0..ch] rect (immediate mode).
@@ -962,13 +962,15 @@
     var r = pointRadius();
     var alpha = pts.length > 20000 ? 0.45 : 0.7;
     var plan = pointLayerPlan(); // per-layer colour segments (global fallback)
+    if (!plan.length) return;
     // everything the baked pixels depend on, except geometry/scale/window
     var styleKey = token("--accent") + "|" + alpha + "|" +
       plan.map(function (sg) {
-        return sg.cmap + ":" + sg.reversed + ":" + (sg.range ? sg.range[0] + "," + sg.range[1] : "-");
+        return sg.start + ":" + sg.n + ":" + sg.cmap + ":" + sg.reversed + ":" + (sg.range ? sg.range[0] + "," + sg.range[1] : "-");
       }).join(";");
     var key = styleKey + "|" + r;
-    var bb = pointBBox(pts), pad = r + 2, padW = pad / mapView.scale;
+    var bb = pointSlicesExtent(pts, plan, ptX, ptY); if (!bb) return;
+    var pad = r + 2, padW = pad / mapView.scale;
     // the viewport in world coords, clamped to the (padded) cloud bbox — the
     // part the baked window must cover for a blit to be valid
     var nx0 = Math.max(-mapView.ox / mapView.scale, bb.x0 - padW);
@@ -1073,7 +1075,7 @@
     _ptGrid = { ref: pts, x0: bb.x0, y0: bb.y0, fx: fx, fy: fy, nb: nb, buckets: buckets };
     return _ptGrid;
   }
-  function hitTestPoint(pts, px, py) {
+  function hitTestPoint(pts, px, py, slices) {
     var g = pointGrid(pts);
     var w = s2w(px, py), rw = 8 / mapView.scale; // 8-px pick radius in world units
     var i0 = ((w[0] - rw - g.x0) * g.fx) | 0, i1 = ((w[0] + rw - g.x0) * g.fx) | 0;
@@ -1088,6 +1090,7 @@
         if (!bucket) continue;
         for (var q = 0; q < bucket.length; q++) {
           var pi = bucket[q];
+          if (!pointIndexInVisibleSlices(pi, slices)) continue;
           var d = Math.hypot(ptX(pts, pi) * mapView.scale + mapView.ox - px, ptY(pts, pi) * mapView.scale + mapView.oy - py);
           if (d <= 8 && d < bestD) { bestD = d; best = { index: pi, x: ptX(pts, pi), y: ptY(pts, pi), z: ptZ(pts, pi) }; }
         }
@@ -1436,7 +1439,7 @@
     if (hitW) { hideReadout(); _inspectKey = null; sectionForWell(hitW); return; }
     var rows = null, key = null;
     if (S.showPoints && App.payload.map.points && App.payload.map.points.length) {
-      var hitP = hitTestPoint(App.payload.map.points, px[0], px[1]);
+      var hitP = hitTestPoint(App.payload.map.points, px[0], px[1], visiblePointSlices());
       if (hitP) {
         key = "pt:" + hitP.index;
         var nm = pointsLayerNameAt(hitP.index);

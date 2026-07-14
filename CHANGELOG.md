@@ -38,7 +38,9 @@ All notable changes to petekTools are recorded here. Format follows
   renderer state; and categorical availability uses the renderer's exact data
   predicate. Blank exact-range endpoints are rejected, undeclared section units
   stay absent, and request-keyed Volume/3-D completions cannot attach stale
-  colours under a newer material or cache identity.
+  colours under a newer material or cache identity. Point-segment visibility now
+  governs drawing, fit extents, and picking through one slice plan, and discarded
+  recolours clear their pending identity before a later request is considered.
 - **Truthful workspace visibility controls.** Project rows, groups, isolate
   actions, and the visibility footer are interactive only in Map, 3-D, and Wells,
   the views with complete composition paths. Intersection, Volume, and Charts

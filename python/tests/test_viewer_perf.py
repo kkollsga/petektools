@@ -44,6 +44,7 @@ _WORKSPACE_STATE_JS = Path(__file__).parent / "viewer_perf" / "workspace_state_b
 _WORKSPACE_TREE_DESIGN_JS = Path(__file__).parent / "viewer_perf" / "workspace_tree_design_bench.mjs"
 _INSPECTOR_LEGEND_JS = Path(__file__).parent / "viewer_perf" / "inspector_legend_bench.mjs"
 _PAINT_RACE_JS = Path(__file__).parent / "viewer_perf" / "paint_race_bench.js"
+_INSPECTOR_STATE_JS = Path(__file__).parent / "viewer_perf" / "inspector_state_bench.js"
 _WORKSPACE_WELL_OVERLAY_JS = (
     Path(__file__).parent / "viewer_perf" / "workspace_well_overlay_bench.mjs"
 )
@@ -79,9 +80,23 @@ def test_async_paint_flip_discards_stale_pixels_and_requeues():
     )
     assert out.returncode == 0, out.stdout + out.stderr
     result = json.loads(out.stdout.strip().splitlines()[-1])
-    for state in result.values():
+    for name, state in result.items():
         assert state["materialKey"] == state["pixelKey"] == "inferno|true"
-        assert state["requeues"] == 1
+        assert state["requeues"] == (0 if name == "volumeRecolor" else 1)
+
+
+@pytest.mark.skipif(_NODE is None, reason="node not installed")
+def test_hidden_point_slices_and_exact_section_horizon_geometry():
+    helpers = Path(__file__).parents[1] / "petektools" / "viewer" / "assets" / "viewer" / "05-paint-state.js"
+    out = subprocess.run(
+        [_NODE, str(_INSPECTOR_STATE_JS), str(helpers)],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert out.returncode == 0, out.stdout + out.stderr
+    result = json.loads(out.stdout.strip().splitlines()[-1])
+    assert result["extent"] == {"x0": 0.5, "y0": 0, "x1": 1, "y1": 0}
+    assert result["winner"] == 0
+    assert result["innerOnly"] is False and result["outer"] is True
 
 
 def _overlay_map(name, fills, overlays):

@@ -265,9 +265,13 @@
   }
   function exposeInspectorLegendState() {
     if (typeof window === "undefined") return;
+    var activeMapLayer = S.mapLayers && S.mapLayers[S.mapLayerIdx];
     window.__PETEK_COLORMAP_STATE = {
       names: COLORMAP_NAMES.slice(), name: S.colormap, reversed: !!S.colormapReversed,
       lutKeys: Object.keys(_lutCache || {}), entityCap: INSPECTOR_ENTITY_CAP,
       pointVisibility: (S.pointLayerVis || []).slice(),
+      activeMapLayerPaint: activeMapLayer ? {
+        name: paintColormap(activeMapLayer), reversed: paintReversed(activeMapLayer),
+      } : null,
     };
   }

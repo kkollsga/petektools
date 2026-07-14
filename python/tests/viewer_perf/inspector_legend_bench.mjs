@@ -77,7 +77,7 @@ if (!initial.labels.includes("Cloud A · z") || !initial.labels.includes("Cloud 
     || !initial.labels.includes("Contours · Iso A")) throw new Error(JSON.stringify(result));
 if (!/^\+\d+ more$/.test(initial.more)) throw new Error(JSON.stringify(result));
 if (!picker.visible || picker.role !== "listbox" || picker.selected !== 1) throw new Error(JSON.stringify(result));
-if (!reversed.reversed || reversed.names.length !== 8) throw new Error(JSON.stringify(result));
+if (reversed.reversed || !reversed.activeMapLayerPaint.reversed || reversed.names.length !== 8) throw new Error(JSON.stringify(result));
 if (pointVisibility[0] !== false || pointVisibility[1] !== true) throw new Error(JSON.stringify(result));
 if (!blankRejected[0].includes("0") || !blankRejected[0].includes("30")) throw new Error(JSON.stringify(result));
 if (!committed[0].includes("0") || !committed[0].includes("30") || cancelled[0] !== committed[0]) throw new Error(JSON.stringify(result));

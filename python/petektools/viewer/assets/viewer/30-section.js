@@ -3,17 +3,6 @@
     return !!(bundle && bundle.zones && bundle.zones.length
       && (bundle.columns || []).some(function (column) { return column.zone_ids && column.zone_ids.length; }));
   }
-  function sectionHasHorizonGeometry(bundle) {
-    if (!bundle) return false;
-    var outer = (bundle.columns || []).some(function (column) {
-      return (column.layer_tops || []).some(Number.isFinite)
-        || (column.layer_bases || []).some(Number.isFinite);
-    });
-    var interior = (bundle.horizon_traces || []).some(function (trace) {
-      return (trace.depths || []).some(Number.isFinite);
-    });
-    return outer || interior;
-  }
   function sectionHasContactGeometry(bundle) {
     return !!(bundle && (bundle.contacts || []).some(function (contact) { return Number.isFinite(contact.depth_m); }));
   }

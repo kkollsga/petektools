@@ -893,12 +893,17 @@ def test_async_viewer_paint_completions_are_request_keyed():
     assert 'requestId: m.requestId, paintKey: m.paintKey' in decode
     assert '_volumeDecodeRequestId' in source and '_volumeRecolorRequestId' in source
     assert "function paintCompletionState(" in source
+    assert "function handleVolumeRecolorCompletion(" in source
     assert 'completion === "stale-request"' in source
     assert 'completion === "stale-paint"' in source
-    assert 'paintCompletionState(requestId, vol3._recolorRequestId' in source
+    assert "handleVolumeRecolorCompletion(vol3, requestId, paintKey" in source
     assert 'pending.paintKey, s3dMeshPaintKey(pending.m)' in source
     assert 'entry.paintKey !== s3dMeshPaintKey(entry.m)' in source
     assert 'built._colormapKey = S.colormap + "|" + !!S.colormapReversed' in source
+    assert "visiblePointSlicePlan(m.layers || [], ptN(m.points), S.pointLayerVis)" in source
+    assert "pointSlicesExtent(m.points, visiblePointSlices(), ptX, ptY)" in source
+    assert "pointIndexInVisibleSlices(pi, slices)" in source
+    assert "sectionHasHorizonGeometry(bundle)" in source
 
     # Persistence is deliberately UI-only: no manifest, visibility, lane, or
     # producer data is serialized into browser storage.

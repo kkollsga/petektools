@@ -442,13 +442,14 @@
     }
   }
   function applyRecolor(buf, requestId, paintKey) {
-    if (!vol3 || paintCompletionState(requestId, vol3._recolorRequestId, paintKey,
-      S.colormap + "|" + !!S.colormapReversed) !== "accept") return;
-    vol3.col = new Float32Array(buf);
-    vol3._colormapKey = paintKey; vol3._pendingPaintKey = null;
-    three.geo.setAttribute("color", new three.THREE.BufferAttribute(vol3.col, 3));
-    three.geo.attributes.color.needsUpdate = true;
-    three.render();
+    if (!vol3) return;
+    handleVolumeRecolorCompletion(vol3, requestId, paintKey,
+      S.colormap + "|" + !!S.colormapReversed, function () {
+        vol3.col = new Float32Array(buf);
+        three.geo.setAttribute("color", new three.THREE.BufferAttribute(vol3.col, 3));
+        three.geo.attributes.color.needsUpdate = true;
+        three.render();
+      }, recolorVolumeV3);
   }
 
   // The aspect-derived "fit" suggestion (NOT the default — the default is 5×).
