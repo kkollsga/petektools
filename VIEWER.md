@@ -27,10 +27,10 @@ from petektools import viewer
 # materialize on first enable and are cached once per item/view/lane.
 session = viewer.view({
     "Interpretation": {
-        "Top Agat": {"object": top_agat, "visible": True},
-        "Base Agat": {"object": base_agat, "visible": False},
+        "Synthetic Top Alpha": {"object": synthetic_top_alpha, "visible": True},
+        "Synthetic Base Alpha": {"object": synthetic_base_alpha, "visible": False},
     }
-}, title="Agat workspace")
+}, title="Synthetic Alpha workspace")
 session.tree()                 # detached normalized catalog
 session.diagnostics           # resource failures, if any
 session.save("visible.html")   # initially visible resources only
@@ -74,8 +74,8 @@ A provider can declare ordered, independently lazy attributes on a view:
 
 ```python
 {
-    "id": "surface:top-agat",
-    "label": "Top Agat",
+    "id": "surface:synthetic-top-alpha",
+    "label": "Synthetic Top Alpha",
     "views": {"map": {
         "lanes": [
             {"id": "depth", "label": "Depth"},
@@ -88,7 +88,7 @@ A provider can declare ordered, independently lazy attributes on a view:
 ```
 
 The tree row shows a compact selector. Opening fetches only `depth`; choosing
-Thickness calls `view_resource(item_id="surface:top-agat", view="map",
+Thickness calls `view_resource(item_id="surface:synthetic-top-alpha", view="map",
 lane="thickness")` once, and returning to Depth reuses its cache. Lane state is
 independent per view. `default_lane` is accepted as a provider input alias;
 workspace manifest v1 always emits `active_lane`.
@@ -261,7 +261,8 @@ metadata separates points (`point_set`), geometry-only shells (`grid_geometry`,
 is omitted, only a value-surface role offering callable `attr_names()` **and**
 `value_layer()` contributes its primary layer followed by every named attribute
 in producer order; the Fill picker switches among them and labels each
-`source · layer` (for example, `Top Agat · values` / `Top Agat · thickness`).
+`source · layer` (for example, `Synthetic Top Alpha · values` /
+`Synthetic Top Alpha · thickness`).
 Point sets stay points, and geometry shells stay wireframes even if they expose
 overlapping helper methods. Explicit `fill=False` disables all fills,
 `fill=True` requests the primary only, and a string requests exactly that named

@@ -876,10 +876,10 @@ from petektools import viewer
 # catalog-only opening, or emit explicit per-view visibility from a provider.
 session = viewer.view({
     "Interpretation": {
-        "Top Agat": {"object": top_agat, "visible": True},
-        "Base Agat": {"object": base_agat, "visible": False},
+        "Synthetic Top Alpha": {"object": synthetic_top_alpha, "visible": True},
+        "Synthetic Base Alpha": {"object": synthetic_base_alpha, "visible": False},
     }
-}, title="Agat workspace", open_browser=False)
+}, title="Synthetic Alpha workspace", open_browser=False)
 session.tree(); session.diagnostics; session.url
 session.refresh()
 session.save("visible.html")

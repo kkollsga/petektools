@@ -519,7 +519,7 @@ def test_workspace_provider_lanes_fetch_once_cache_and_switch_offline(tmp_path, 
                     "children": [
                         {
                             "id": "surface:top",
-                            "label": "Top Agat",
+                            "label": "Synthetic Top Alpha",
                             "views": {
                                 "map": {
                                     "lanes": [

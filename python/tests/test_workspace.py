@@ -29,14 +29,14 @@ class Points:
 
 
 def test_nested_tree_normalizes_without_materializing():
-    top = Points("Top Agat")
-    base = Points("Base Agat")
+    top = Points("Synthetic Top Alpha")
+    base = Points("Synthetic Base Alpha")
     session = WorkspaceSession(
         {
             "Interpretation": {
                 "Surfaces": {
-                    "Top Agat": {"object": top, "visible": True},
-                    "Base Agat": {"object": base, "visible": False},
+                    "Synthetic Top Alpha": {"object": top, "visible": True},
+                    "Synthetic Base Alpha": {"object": base, "visible": False},
                 }
             }
         }
@@ -46,8 +46,8 @@ def test_nested_tree_normalizes_without_materializing():
     tree = session.tree()
     leaves = tree[0]["children"][0]["children"]
     assert [leaf["id"] for leaf in leaves] == [
-        "item:Interpretation/Surfaces/Top%20Agat",
-        "item:Interpretation/Surfaces/Base%20Agat",
+        "item:Interpretation/Surfaces/Synthetic%20Top%20Alpha",
+        "item:Interpretation/Surfaces/Synthetic%20Base%20Alpha",
     ]
     assert leaves[0]["visible"] == {"map": True, "scene3d": True}
     assert leaves[1]["visible"] == {"map": False, "scene3d": False}
@@ -183,7 +183,7 @@ class LaneProvider:
                 "children": [
                     {
                         "id": "surface:top",
-                        "label": "Top Agat",
+                        "label": "Synthetic Top Alpha",
                         "role": "surface",
                         "views": {
                             "map": {
