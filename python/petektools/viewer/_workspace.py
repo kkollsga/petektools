@@ -568,14 +568,8 @@ def _normalise_views(
             ):
                 raise TypeError("workspace modes must be an ordered list")
             modes = tuple(raw_modes)
-            if (
-                not modes
-                or len(set(modes)) != len(modes)
-                or any(mode not in ("2d", "3d") for mode in modes)
-            ):
-                raise ValueError(
-                    "workspace modes must be unique values from ['2d', '3d']"
-                )
+            if modes != ("2d", "3d"):
+                raise ValueError("workspace modes must be ordered ['2d', '3d']")
         else:
             modes = ()
         if attributes:
@@ -1645,10 +1639,10 @@ class WorkspaceSession:
                 lane = item.active_lane(view) if lane is None else lane
                 declared = {lane_id for lane_id, _ in lanes}
                 if lane not in declared:
-                    raise KeyError(
+                    raise ValueError(
                         f"workspace item {item_id!r} view {view!r} has no lane {lane!r}"
                     )
-            elif lane is not None and attributes:
+            elif lane is not None:
                 raise ValueError(
                     f"workspace item {item_id!r} view {view!r} has no lanes"
                 )
@@ -1686,11 +1680,11 @@ class WorkspaceSession:
                 detail = item.active_detail(view) if detail is None else detail
                 declared_details = {detail_id for detail_id, _ in details}
                 if detail not in declared_details:
-                    raise KeyError(
+                    raise ValueError(
                         f"workspace item {item_id!r} view {view!r} has no detail {detail!r}"
                     )
             elif detail is not None:
-                raise KeyError(
+                raise ValueError(
                     f"workspace item {item_id!r} view {view!r} has no detail tiers"
                 )
             key = (item_id, view, lane, attribute, color_by, detail)

@@ -293,7 +293,7 @@ def test_provider_lane_resources_cache_once_and_static_freeze_semantics(tmp_path
         ("surface:top", "map", "depth"),
         ("surface:top", "map", "thickness"),
     ]
-    with pytest.raises(KeyError, match="has no lane 'missing'"):
+    with pytest.raises(ValueError, match="has no lane 'missing'"):
         session.resource("surface:top", "map", "missing")
 
     provider = LaneProvider()
@@ -343,8 +343,12 @@ def test_scene3d_detail_tiers_cache_independently_and_static_freezes_full(tmp_pa
         ("surface:top", "scene3d", None, "preview"),
         ("surface:top", "scene3d", None, "full"),
     ]
-    with pytest.raises(KeyError, match="has no detail 'medium'"):
+    with pytest.raises(ValueError, match="has no detail 'medium'"):
         session.resource("surface:top", "scene3d", detail="medium")
+    assert provider.calls == [
+        ("surface:top", "scene3d", None, "preview"),
+        ("surface:top", "scene3d", None, "full"),
+    ]
 
     provider = DetailProvider()
     path = tmp_path / "full-detail.html"
@@ -413,6 +417,10 @@ def test_workspace_server_forwards_declared_lane_and_caches_it_once():
     try:
         manifest = session.manifest()["workspace"]
         href = manifest["tree"][0]["children"][0]["resources"]["map"]["href"]
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(session.url + href[1:] + "&lane=ghost")
+        assert error.value.code == 400
+        assert provider.calls == []
         url = session.url + href[1:] + "&lane=thickness"
         with urllib.request.urlopen(url) as response:
             first = json.load(response)
@@ -431,6 +439,10 @@ def test_workspace_server_forwards_scene3d_detail_tier():
     session = WorkspaceSession(provider).serve(open_browser=False)
     try:
         href = session.manifest()["workspace"]["tree"][0]["resources"]["scene3d"]["href"]
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(session.url + href[1:] + "&detail=ghost")
+        assert error.value.code == 400
+        assert provider.calls == []
         with urllib.request.urlopen(session.url + href[1:] + "&detail=full") as response:
             resource = json.load(response)
         assert resource["detail"] == "full"
@@ -490,14 +502,14 @@ def test_provider_catalog_and_resource_duck_are_lazy_once_under_concurrency():
     assert provider.resource_calls == 0
     with ThreadPoolExecutor(max_workers=8) as pool:
         values = list(
-            pool.map(lambda _: session.resource("surface:top", "map", "thickness"), range(16))
+            pool.map(lambda _: session.resource("surface:top", "map"), range(16))
         )
     assert provider.resource_calls == 1
     assert all(value == values[0] for value in values)
 
     session.refresh()
     assert provider.catalog_calls == 2
-    session.resource("surface:top", "map", "thickness")
+    session.resource("surface:top", "map")
     assert provider.resource_calls == 2
 
 
@@ -623,6 +635,21 @@ def test_resource_failure_is_diagnostic_and_retryable():
     assert provider.resource_calls == 2
 
 
+def test_undeclared_workspace_selectors_fail_before_provider_call():
+    provider = Provider()
+    session = WorkspaceSession(provider)
+
+    with pytest.raises(ValueError, match="has no lanes"):
+        session.resource("surface:top", "map", lane="ghost")
+    with pytest.raises(ValueError, match="has no detail tiers"):
+        session.resource("surface:top", "map", detail="ghost")
+    with pytest.raises(ValueError, match="has no v2 selectors"):
+        session.resource(
+            "surface:top", "map", attribute="ghost", color_by="ghost"
+        )
+    assert provider.resource_calls == 0
+
+
 def test_workspace_server_serves_manifest_resources_and_clear_errors():
     provider = Provider()
     session = WorkspaceSession(provider).serve(open_browser=False)
@@ -633,6 +660,16 @@ def test_workspace_server_serves_manifest_resources_and_clear_errors():
     assert provider.resource_calls == 0
 
     href = manifest["workspace"]["tree"][0]["resources"]["map"]["href"]
+    for query in (
+        "&lane=ghost",
+        "&detail=ghost",
+        "&attribute=ghost&color_by=ghost",
+    ):
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(session.url + href[1:] + query)
+        assert error.value.code == 400
+    assert provider.resource_calls == 0
+
     with urllib.request.urlopen(session.url + href[1:]) as response:
         resource = json.load(response)
     assert resource["item_id"] == "surface:top"
@@ -1115,6 +1152,21 @@ def test_workspace_v2_invalid_view_is_item_local_with_valid_sibling():
     assert (
         "duplicate workspace scene3d attribute ID" in session.diagnostics[0]["message"]
     )
+
+
+@pytest.mark.parametrize("modes", [["2d"], ["3d", "2d"], ["2d", "3d", "2d"]])
+def test_workspace_v2_modes_require_exact_dual_camera_pair(modes):
+    class InvalidModes(SharedWorkspaceProvider):
+        def view_catalog(self):
+            catalog = super().view_catalog()
+            catalog["tree"][0]["views"]["map"]["modes"] = modes
+            return catalog
+
+    session = WorkspaceSession(InvalidModes())
+    item = session.tree()[0]
+    assert item["disabled"] and item["views"] == [] and item["resources"] == {}
+    assert session.diagnostics[0]["view"] == "map"
+    assert "modes must be ordered ['2d', '3d']" in session.diagnostics[0]["message"]
 
 
 def test_workspace_v2_shared_malformed_resource_is_local_and_retryable():
