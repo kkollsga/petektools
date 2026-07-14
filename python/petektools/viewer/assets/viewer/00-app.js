@@ -234,9 +234,11 @@
     var title = W && W.manifest.title ? W.manifest.title
       : (p.kind ? p.kind + " · " : "") + (p.property || "model") + " viewer";
     var projectBacked = !!(W && W.manifest.project);
-    titleEl.textContent = projectBacked ? title.replace(/\.pproj$/i, "") : title;
-    titleEl.classList.toggle("workspace-project-title", !!W);
-    titleEl.dataset.projectSuffix = projectBacked ? ".pproj" : "";
+    var persistedProjectTitle = projectBacked ? W.manifest.project.title : null;
+    var showsPersistedProject = !!(persistedProjectTitle && title === persistedProjectTitle);
+    titleEl.textContent = showsPersistedProject ? title.replace(/\.pproj$/i, "") : title;
+    titleEl.classList.toggle("workspace-project-title", showsPersistedProject);
+    titleEl.dataset.projectSuffix = showsPersistedProject ? ".pproj" : "";
     if (W) titleEl.title = title;
     else titleEl.removeAttribute("title");
     document.getElementById("mode-badge").textContent =

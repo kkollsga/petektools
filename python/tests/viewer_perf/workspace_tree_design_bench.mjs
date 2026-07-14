@@ -86,6 +86,19 @@ const before = await page.evaluate(() => {
   };
 });
 
+const titleOverride = await page.evaluate(() => {
+  const persisted = W.manifest.title;
+  W.manifest.title = "Attribute review"; initState();
+  const title = document.getElementById("title");
+  const result = {
+    text: title.textContent,
+    classed: title.classList.contains("workspace-project-title"),
+    suffix: title.dataset.projectSuffix,
+  };
+  W.manifest.title = persisted; initState();
+  return result;
+});
+
 const loading = await page.evaluate(() => {
   const id = "point:one";
   const key = workspaceRequestKey(id, "map", null, null);
@@ -107,6 +120,44 @@ const hover = await page.evaluate(() => ({
   background: getComputedStyle(document.querySelector('[data-workspace-id="surface:top"]')).backgroundColor,
 }));
 
+const keyboard = await page.evaluate(async () => {
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const tree = document.querySelector(".workspace-tree");
+  const send = async (key) => {
+    document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+    await sleep(20);
+    return document.activeElement?.dataset?.workspaceId;
+  };
+  tree.querySelector('[role="treeitem"][tabindex="0"]').focus();
+  const initial = document.activeElement.dataset.workspaceId;
+  const child = await send("ArrowRight");
+  const next = await send("ArrowDown");
+  const home = await send("Home");
+  const end = await send("End");
+  const parent = await send("ArrowLeft");
+  await send("Home");
+  const collapsed = await send(" ");
+  const collapsedState = window.__PETEK_WORKSPACE_STATE.expanded[collapsed];
+  const expanded = await send("Enter");
+  const expandedState = window.__PETEK_WORKSPACE_STATE.expanded[expanded];
+  return {
+    initial, child, next, home, end, parent, collapsed, collapsedState,
+    expanded, expandedState,
+    tabStops: document.querySelectorAll('.workspace-tree [role="treeitem"][tabindex="0"]').length,
+    fetches: window.__PETEK_WORKSPACE_STATE.fetches,
+  };
+});
+
+await page.locator('.tab[data-tab="section"]').click();
+await page.waitForTimeout(30);
+const unsupportedControls = await page.evaluate(() => ({
+  isolates: document.querySelectorAll(".workspace-isolate").length,
+  clear: !!document.querySelector(".workspace-clear"),
+  footer: document.querySelector(".workspace-tree-footer")?.textContent,
+}));
+await page.locator('.tab[data-tab="map"]').click();
+await page.waitForTimeout(30);
+
 await page.locator(".workspace-clear").click();
 await page.waitForTimeout(30);
 const cleared = await page.evaluate(() => ({
@@ -117,11 +168,12 @@ const cleared = await page.evaluate(() => ({
 }));
 
 await browser.close();
-const result = { before, loading, hover, cleared, consoleErrors: errors };
+const result = { before, titleOverride, loading, hover, keyboard, unsupportedControls, cleared, consoleErrors: errors };
 const fail = (message) => { console.log(JSON.stringify({ ...result, failure: message })); process.exit(7); };
 const expectedIcons = ["surface", "points", "bore", "well", "folder", "tops", "grid", "polygon", "log", "zone", "chart", "unknown"];
 if (errors.length) fail("console errors");
 if (before.title.text !== "North Sea" || !before.title.classed || before.title.suffix !== ".pproj") fail("project title styling missing");
+if (titleOverride.text !== "Attribute review" || titleOverride.classed || titleOverride.suffix) fail("app-title override was branded as a project filename");
 if (before.tree.role !== "tree" || before.tree.label !== "Project items" || !before.tree.itemsHaveLevels) fail("ARIA tree contract missing");
 if (!expectedIcons.every((kind) => before.icons.includes(kind)) || before.roleBadges) fail("icon registry incomplete or text badge retained");
 if (!before.single.parentAbsent || before.single.id !== "bore:single" || before.single.label !== "Well One"
@@ -136,5 +188,12 @@ if (!/Visibility applies to Map/.test(before.footer.text || "") || before.footer
 if (before.stateHooks.activeLane !== "depth" || before.stateHooks.activeColorBy !== "thickness" || before.stateHooks.fetches !== 0) fail("state hooks changed");
 if (!loading.classed || !loading.spinner || loading.status !== "loading") fail("loading state missing");
 if (hover.isolateOpacity !== "1" || hover.background === "rgba(0, 0, 0, 0)") fail("hover state missing");
+if (keyboard.initial !== "group:assets" || keyboard.child !== "surface:top" || keyboard.next !== "point:one"
+    || keyboard.home !== "group:assets" || keyboard.end !== "section:one" || keyboard.parent !== "group:sections"
+    || keyboard.collapsed !== "group:assets" || keyboard.collapsedState !== false
+    || keyboard.expanded !== "group:assets" || keyboard.expandedState !== true
+    || keyboard.tabStops !== 1 || keyboard.fetches !== 0) fail("ARIA tree keyboard contract failed");
+if (unsupportedControls.isolates || unsupportedControls.clear
+    || !/Visibility applies to Intersection/.test(unsupportedControls.footer || "")) fail("unsupported view actions were exposed");
 if (!cleared.allMapHidden || cleared.fetches !== 0 || !cleared.disabled) fail("per-view clear changed fetch/state semantics");
 console.log(JSON.stringify(result));

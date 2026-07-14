@@ -25,6 +25,13 @@ All notable changes to petekTools are recorded here. Format follows
   support lands in the subsequent implementation phases.
 
 ### Fixed
+- **Project-tree interaction completeness.** Formal tree semantics now include a
+  roving focus target, Arrow/Home/End navigation, disclosure traversal, and
+  Enter/Space activation across both ordinary and virtualized catalogs. Focus
+  and scroll position survive disclosure rebuilds. Isolate and bulk-clear
+  actions appear only for views with complete composition paths, while `.pproj`
+  styling is limited to the persisted project title and never an application
+  title override.
 - **Workspace tree virtualization.** Project rows now share one 28 px CSS/JS
   geometry token, and the virtual window derives its row count from the rendered
   tree height instead of fixed 25 px/13-row assumptions. Large catalogs reach

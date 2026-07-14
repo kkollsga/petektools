@@ -57,6 +57,18 @@ const result = await page.evaluate(async () => {
   const search = document.querySelector(".workspace-search");
   search.value = ""; search.dispatchEvent(new Event("input", { bubbles: true }));
   await sleep(100);
+  const first = document.querySelector('.workspace-tree [role="treeitem"][tabindex="0"]');
+  first.focus();
+  first.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true }));
+  await sleep(30);
+  const keyboardEnd = {
+    id: document.activeElement && document.activeElement.dataset.workspaceId,
+    realized: !!document.querySelector('[data-workspace-id="surface:1999"]'),
+    tabStops: document.querySelectorAll('.workspace-tree [role="treeitem"][tabindex="0"]').length,
+  };
+  document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true }));
+  await sleep(20);
+  keyboardEnd.home = document.activeElement && document.activeElement.dataset.workspaceId;
   const rows = document.querySelectorAll(".workspace-row").length;
   const group = document.querySelector(".workspace-group input[type=checkbox]");
   group.click(); // catalog-only all-hidden -> all-visible; resource work is deferred
@@ -71,6 +83,7 @@ const result = await page.evaluate(async () => {
     groupToggleP95Ms: p95(state.groupToggleMs),
     renderedRows: rows,
     allVisible: Object.values(state.visible).every((visible) => visible.map),
+    keyboardEnd,
   };
 });
 result.desktopBottom = await inspectBottom();
@@ -84,6 +97,8 @@ const fail = (message) => { console.log(JSON.stringify({ ...result, failure: mes
 if (errors.length) fail("console errors");
 if (result.itemCount !== 2000) fail("expected 2,000 items");
 if (!result.allVisible) fail("group toggle did not update all leaves");
+if (result.keyboardEnd.id !== "surface:1999" || !result.keyboardEnd.realized
+    || result.keyboardEnd.tabStops !== 1 || result.keyboardEnd.home !== "group:surfaces") fail("virtual roving focus failed");
 for (const [name, probe] of Object.entries({ desktop: result.desktopBottom, narrow: result.narrowBottom })) {
   if (probe.rowHeight !== 28) fail(`${name}: CSS row token was not 28px`);
   if (!probe.boundedRows) fail(`${name}: tree DOM exceeded measured viewport + overscan`);

@@ -48,6 +48,7 @@
       order: [], items: {}, visible: {}, activeLane: {}, activeColorBy: {}, activeDetail: {}, resources: {}, loading: {}, errors: {}, detailErrors: {}, searchText: {},
       query: "", expanded: {}, expansionManual: {}, groups: {}, fetches: 0, compositions: 0, searchTimer: null,
       treeBuildMs: [], groupToggleMs: [], panelTimer: null, composeTimers: {},
+      focusedTreeId: null, restoreTreeFocus: false, treeScrollTop: 0,
     };
     function visit(nodes) {
       (nodes || []).forEach(function (node) {
@@ -190,6 +191,9 @@
   function workspaceItemHasView(id, view) {
     var item = W && W.items[id];
     return !!(item && !item.disabled && (item.views || []).indexOf(view) >= 0);
+  }
+  function workspaceViewSupportsSelectionControls(view) {
+    return view === "map" || view === "scene3d" || view === "wells";
   }
 
   function resourceHref(id, view, lane, detail) {
@@ -621,6 +625,7 @@
     groupEl.appendChild(search);
     var tree = el("div", "workspace-tree");
     tree.setAttribute("role", "tree"); tree.setAttribute("aria-label", "Project items");
+    tree.setAttribute("aria-multiselectable", "true");
     // The virtual window is sized from this rendered viewport. Attach before
     // reading clientHeight/computed tokens; a detached tree reports zero.
     groupEl.appendChild(tree); body.appendChild(groupEl);
@@ -677,9 +682,12 @@
         var groupLabel = chain.map(function (group) { return group.label; }).join(" › ");
         row.setAttribute("role", "treeitem"); row.setAttribute("aria-level", String(depth + 1));
         row.setAttribute("aria-expanded", W.expanded[node.id] ? "true" : "false"); row.dataset.workspaceId = node.id;
+        row.tabIndex = W.focusedTreeId === node.id ? 0 : -1;
+        row.addEventListener("focus", function () { W.focusedTreeId = node.id; });
         var twist = workspaceTwist(!!W.expanded[node.id], groupLabel, function () {
           var next = !W.expanded[node.id];
           chain.forEach(function (group) { W.expanded[group.id] = next; W.expansionManual[group.id] = true; });
+          W.focusedTreeId = node.id; W.restoreTreeFocus = true;
           buildWorkspaceNavigator();
         });
         var cb = el("input"); cb.type = "checkbox"; cb.checked = ids.length > 0 && checked === ids.length;
@@ -703,7 +711,9 @@
         };
         var meta = el("span", "workspace-meta");
         meta.appendChild(el("span", "workspace-count", checked + "/" + ids.length));
-        if (ids.length) meta.appendChild(workspaceIsolateButton(ids.slice(), view, groupLabel));
+        if (ids.length && workspaceViewSupportsSelectionControls(view)) {
+          meta.appendChild(workspaceIsolateButton(ids.slice(), view, groupLabel));
+        }
         row.appendChild(workspaceRails(entry)); row.appendChild(twist); row.appendChild(cb);
         row.appendChild(workspaceIcon(workspaceGroupRole(node), !!W.expanded[node.id]));
         row.appendChild(el("span", "workspace-label", groupLabel)); row.appendChild(meta); target.appendChild(row);
@@ -717,6 +727,8 @@
           + (!has ? " workspace-unavailable" : ""));
         row.setAttribute("role", "treeitem"); row.setAttribute("aria-level", String(depth + 1));
         row.setAttribute("aria-selected", selected ? "true" : "false"); row.dataset.workspaceId = node.id;
+        row.tabIndex = W.focusedTreeId === node.id ? 0 : -1;
+        row.addEventListener("focus", function () { W.focusedTreeId = node.id; });
         if (entry.collapsedBore) row.dataset.collapsedBore = "true";
         var cb = el("input"); cb.type = "checkbox"; cb.checked = has && workspaceItemVisible(node.id, view); cb.disabled = !has;
         cb.setAttribute("aria-label", (has ? "Show " : "Unavailable: ") + displayLabel + " in " + view);
@@ -759,25 +771,32 @@
           var unavailable = el("span", "workspace-status", node.reason);
           unavailable.title = node.reason; meta.appendChild(unavailable);
         }
-        if (has) meta.appendChild(workspaceIsolateButton([node.id], view, displayLabel));
+        if (has && workspaceViewSupportsSelectionControls(view)) {
+          meta.appendChild(workspaceIsolateButton([node.id], view, displayLabel));
+        }
         row.appendChild(meta); target.appendChild(row);
       }
     }
     (W.manifest.tree || []).forEach(function (node, index, roots) {
       flatten(node, 0, [], index === roots.length - 1);
     });
+    if (flat.length && !flat.some(function (entry) { return entry.node.id === W.focusedTreeId; })) {
+      W.focusedTreeId = flat[0].node.id;
+    }
     if (!flat.length) {
       tree.appendChild(el("div", "workspace-region-state", W.query
         ? "No project items match this search." : "This workspace has no catalogued items."));
     }
+    var rowHeight = 0, renderVirtualWindow = null;
     if (flat.length <= 160) {
       flat.forEach(function (entry) { draw(entry, tree); });
+      tree.scrollTop = W.treeScrollTop || 0;
     } else {
       // Keep search and bulk toggles within one frame for project-scale trees.
       // The canonical flat list remains complete; only the scroll window owns
       // DOM rows, so 2,000+ leaves do not turn each panel rebuild into layout
       // work proportional to the project size.
-      var rowHeight = parseFloat(getComputedStyle(tree).getPropertyValue("--row-h"));
+      rowHeight = parseFloat(getComputedStyle(tree).getPropertyValue("--row-h"));
       if (!(rowHeight > 0) || !isFinite(rowHeight)) {
         // CSS owns the row geometry. This probe is only a defensive fallback
         // for an embedding page that strips the token; it introduces no second
@@ -794,19 +813,88 @@
       spacer.style.height = (flat.length * rowHeight) + "px";
       var layer = el("div", "workspace-tree-window");
       tree.appendChild(spacer); tree.appendChild(layer);
-      function renderWindow() {
+      renderVirtualWindow = function () {
         var viewportRows = Math.max(1, Math.ceil(tree.clientHeight / rowHeight));
         var first = Math.max(0, Math.floor(tree.scrollTop / rowHeight) - overscan);
         var last = Math.min(flat.length, first + viewportRows + overscan * 2);
         layer.innerHTML = ""; layer.style.transform = "translateY(" + (first * rowHeight) + "px)";
         for (var i = first; i < last; i++) draw(flat[i], layer);
-      }
-      tree.addEventListener("scroll", renderWindow, { passive: true });
+      };
+      tree.scrollTop = W.treeScrollTop || 0;
+      tree.addEventListener("scroll", function () {
+        W.treeScrollTop = tree.scrollTop; renderVirtualWindow();
+      }, { passive: true });
       if (typeof ResizeObserver !== "undefined") {
-        W.treeResizeObserver = new ResizeObserver(renderWindow);
+        W.treeResizeObserver = new ResizeObserver(renderVirtualWindow);
         W.treeResizeObserver.observe(tree);
       }
-      renderWindow();
+      renderVirtualWindow();
+    }
+    function renderedTreeRow(id) {
+      return Array.prototype.find.call(tree.querySelectorAll('[role="treeitem"]'), function (row) {
+        return row.dataset.workspaceId === id;
+      });
+    }
+    function syncTreeTabStops() {
+      Array.prototype.forEach.call(tree.querySelectorAll('[role="treeitem"]'), function (row) {
+        row.tabIndex = row.dataset.workspaceId === W.focusedTreeId ? 0 : -1;
+      });
+    }
+    function focusFlatIndex(index) {
+      if (!flat.length) return;
+      index = Math.max(0, Math.min(flat.length - 1, index));
+      W.focusedTreeId = flat[index].node.id;
+      if (renderVirtualWindow) {
+        var top = index * rowHeight, bottom = top + rowHeight;
+        if (top < tree.scrollTop) tree.scrollTop = top;
+        else if (bottom > tree.scrollTop + tree.clientHeight) tree.scrollTop = bottom - tree.clientHeight;
+        W.treeScrollTop = tree.scrollTop; renderVirtualWindow();
+      }
+      syncTreeTabStops();
+      var row = renderedTreeRow(W.focusedTreeId); if (row) row.focus();
+    }
+    function setGroupExpanded(entry, expanded) {
+      (entry.chain || [entry.node]).forEach(function (group) {
+        W.expanded[group.id] = expanded; W.expansionManual[group.id] = true;
+      });
+      W.focusedTreeId = entry.node.id; W.restoreTreeFocus = true;
+      buildWorkspaceNavigator();
+    }
+    tree.addEventListener("keydown", function (event) {
+      var row = event.target.closest && event.target.closest('[role="treeitem"]');
+      if (!row || row.parentElement == null || event.target !== row) return;
+      var index = flat.findIndex(function (entry) { return entry.node.id === row.dataset.workspaceId; });
+      if (index < 0) return;
+      var entry = flat[index], node = entry.node, key = event.key;
+      if (key === "ArrowDown") { event.preventDefault(); focusFlatIndex(index + 1); }
+      else if (key === "ArrowUp") { event.preventDefault(); focusFlatIndex(index - 1); }
+      else if (key === "Home") { event.preventDefault(); focusFlatIndex(0); }
+      else if (key === "End") { event.preventDefault(); focusFlatIndex(flat.length - 1); }
+      else if (key === "ArrowRight" && node.children) {
+        event.preventDefault();
+        if (!W.expanded[node.id]) setGroupExpanded(entry, true);
+        else if (index + 1 < flat.length && flat[index + 1].depth > entry.depth) focusFlatIndex(index + 1);
+      } else if (key === "ArrowLeft") {
+        event.preventDefault();
+        if (node.children && W.expanded[node.id]) setGroupExpanded(entry, false);
+        else {
+          var parent = index - 1;
+          while (parent >= 0 && flat[parent].depth >= entry.depth) parent--;
+          if (parent >= 0) focusFlatIndex(parent);
+        }
+      } else if (key === "Enter" || key === " ") {
+        event.preventDefault();
+        if (node.children) setGroupExpanded(entry, !W.expanded[node.id]);
+        else if (workspaceItemHasView(node.id, view)) {
+          W.focusedTreeId = node.id; W.restoreTreeFocus = true;
+          setWorkspaceVisible(node.id, view, !workspaceItemVisible(node.id, view));
+        }
+      }
+    });
+    if (W.restoreTreeFocus && flat.length) {
+      W.restoreTreeFocus = false;
+      var restoreIndex = flat.findIndex(function (entry) { return entry.node.id === W.focusedTreeId; });
+      focusFlatIndex(restoreIndex < 0 ? 0 : restoreIndex);
     }
     var viewLabels = {
       map: "Map", scene3d: "3-D", wells: "Wells", sections: "Intersection",
@@ -819,11 +907,15 @@
     var visibilityNote = el("span");
     visibilityNote.appendChild(document.createTextNode("Visibility applies to "));
     visibilityNote.appendChild(el("strong", null, viewLabels[view] || view));
-    var clear = el("button", "workspace-clear", "Clear all"); clear.type = "button";
-    clear.disabled = selectedInView === 0;
-    clear.title = "Clear all visible items in " + (viewLabels[view] || view);
-    clear.onclick = function () { setWorkspaceViewSelection(view, []); };
-    footer.appendChild(visibilityNote); footer.appendChild(clear); groupEl.appendChild(footer);
+    footer.appendChild(visibilityNote);
+    if (workspaceViewSupportsSelectionControls(view)) {
+      var clear = el("button", "workspace-clear", "Clear all"); clear.type = "button";
+      clear.disabled = selectedInView === 0;
+      clear.title = "Clear all visible items in " + (viewLabels[view] || view);
+      clear.onclick = function () { setWorkspaceViewSelection(view, []); };
+      footer.appendChild(clear);
+    }
+    groupEl.appendChild(footer);
     exposeWorkspaceState();
     W.treeBuildMs.push(performance.now() - started); exposeWorkspaceState();
   }
@@ -832,6 +924,8 @@
     if (!W) return;
     var body = document.getElementById("navigator-body");
     if (!body) return;
+    var oldTree = body.querySelector(".workspace-tree");
+    if (oldTree) W.treeScrollTop = oldTree.scrollTop;
     if (W.treeResizeObserver) { W.treeResizeObserver.disconnect(); W.treeResizeObserver = null; }
     body.innerHTML = "";
     buildWorkspaceTree(body);

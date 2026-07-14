@@ -481,6 +481,13 @@ def test_workspace_tree_design_roles_states_and_multibore_dom(tmp_path):
         leaf("chart:one", "Crossplot", "chart"),
         leaf("unknown:legacy", "Legacy", None, disabled=True, reason="Unsupported project asset"),
     ]
+    section_leaf = leaf("section:one", "Cross section", "polygon")
+    section_leaf.update({
+        "views": ["sections"], "visible": {"sections": True},
+        "resources": {"sections": {
+            "href": "./workspace-resource?item=section:one&view=sections", "deferred": True,
+        }},
+    })
     tree = [
         {"id": "group:assets", "label": "Assets", "expanded": True, "children": assets},
         {"id": "group:wells", "label": "Wells", "expanded": True, "children": [
@@ -492,11 +499,12 @@ def test_workspace_tree_design_roles_states_and_multibore_dom(tmp_path):
                 leaf("bore:multi-b", "Sidetrack", "bore"),
             ]},
         ]},
+        {"id": "group:sections", "label": "Sections", "expanded": True, "children": [section_leaf]},
     ]
     payload = {
         "schema_version": 3, "kind": "workspace", "title": "North Sea",
         "workspace": {
-            "schema_version": 1, "title": "North Sea", "available_views": ["map"],
+            "schema_version": 1, "title": "North Sea", "available_views": ["map", "sections"],
             "project": {"title": "North Sea", "crs": None, "unit": "m"},
             "tree": tree, "resources": {},
             "snapshot": {"include": "visible", "message": "Not embedded in design fixture."},

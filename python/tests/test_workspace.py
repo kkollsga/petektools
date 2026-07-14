@@ -794,12 +794,21 @@ def test_workspace_project_tree_design_contract_is_explicit_and_identity_safe():
     assert 'row.setAttribute("aria-level"' in source
     assert 'row.setAttribute("aria-expanded"' in source
     assert 'row.setAttribute("aria-selected"' in source
+    assert 'row.tabIndex = W.focusedTreeId === node.id ? 0 : -1' in source
+    for key in ("ArrowDown", "ArrowUp", "ArrowRight", "ArrowLeft", "Home", "End", "Enter"):
+        assert f'key === "{key}"' in source
+    assert 'key === " "' in source
+    assert "function focusFlatIndex(index)" in source
+    assert "renderVirtualWindow();" in source
     assert '"Visibility applies to "' in source
     assert 'setWorkspaceViewSelection(view, [])' in source
+    assert "function workspaceViewSupportsSelectionControls(view)" in source
+    assert 'view === "map" || view === "scene3d" || view === "wells"' in source
     assert "activeColorBy" in source and "activeLane" in source
     assert "window.__PETEK_WORKSPACE_STATE" in source
     assert "var projectBacked = !!(W && W.manifest.project)" in source
-    assert 'titleEl.dataset.projectSuffix = projectBacked ? ".pproj" : ""' in source
+    assert "var showsPersistedProject = !!(persistedProjectTitle && title === persistedProjectTitle)" in source
+    assert 'titleEl.dataset.projectSuffix = showsPersistedProject ? ".pproj" : ""' in source
 
 
 def test_workspace_shell_has_separate_semantic_regions_and_bounded_preferences():
