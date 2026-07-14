@@ -74,8 +74,9 @@ An omitted leaf `visible` selects all of that leaf's enabled views; use
 that materializes nothing until the user enables an item. Provider/project
 catalogs should always emit their intended initial visibility explicitly.
 
-A project-backed v2 catalog also emits
-`project={"title": ..., "crs": ..., "unit": ...}`. The title is the persisted
+A project-backed v2 provider wraps the ordered records as
+`{"schema_version": 2, "project": {"title": ..., "crs": ..., "unit": ...},
+"tree": [...]}`. The title is the persisted
 project display name. CRS is optional free text printed verbatim, and the project
 unit is only the fallback for the primary/depth attribute; neither value is
 guessed. Producers persist these values and per-attribute metadata at their own

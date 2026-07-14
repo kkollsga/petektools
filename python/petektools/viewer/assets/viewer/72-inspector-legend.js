@@ -192,7 +192,26 @@
       setRange: function (lo, hi) { layer.range = { min: lo, max: hi }; },
     }));
     var fill = (m.fills || [])[S.mapFillIdx];
-    if (fill) groupEl.appendChild(inspectorContinuousRow({
+    if (fill && fill.categorical) {
+      if (!fill.__categoricalClasses) {
+        var seen = {}, values = fill.regular_grid && fill.regular_grid.values;
+        Object.keys(fill.categorical_codes || {}).forEach(function (code) { seen[code] = true; });
+        for (var valueIndex = 0; values && valueIndex < values.length; valueIndex++) {
+          var categoryValue = vlAt(values, valueIndex);
+          if (isFinite(categoryValue)) seen[String(Math.round(categoryValue))] = true;
+        }
+        fill.__categoricalClasses = Object.keys(seen).sort(function (a, b) { return Number(a) - Number(b); }).map(function (code) {
+          var record = fill.categorical_codes && fill.categorical_codes[code] || {};
+          return { index: Number(code), label: record.label || code,
+            color: record.color || idColor("category:" + fill.name + ":" + code) };
+        });
+      }
+      groupEl.appendChild(inspectorCategoricalRow({
+        label: fillLabel(fill), visible: function () { return S.showFills; },
+        setVisible: function (v) { S.showFills = v; renderMap(); },
+        classes: fill.__categoricalClasses,
+      }));
+    } else if (fill) groupEl.appendChild(inspectorContinuousRow({
       label: fillLabel(fill), units: fill.units, item: fill,
       visible: function () { return S.showFills; }, setVisible: function (v) { S.showFills = v; renderMap(); },
       range: arrayRangeRef(fill.range, { min: 0, max: 1 }),

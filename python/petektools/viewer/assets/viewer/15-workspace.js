@@ -17,6 +17,7 @@
     return !W || !id || !!(W.visible[id] && W.visible[id][view]);
   }
   function workspaceLane(id, view) {
+    if (W && W.activeAttribute[id] && W.activeAttribute[id][view] != null) return W.activeAttribute[id][view];
     return W && W.activeLane[id] ? (W.activeLane[id][view] == null ? null : W.activeLane[id][view]) : null;
   }
   function workspaceColorBy(id, view) {
@@ -25,27 +26,40 @@
   function workspaceDetail(id, view) {
     return W && W.activeDetail[id] ? (W.activeDetail[id][view] == null ? null : W.activeDetail[id][view]) : null;
   }
-  function workspaceResourceSlot(view, lane, detail) {
-    return view + "\u0000" + (lane == null ? "" : String(lane)) + "\u0000" + (detail == null ? "" : String(detail));
+  function workspaceSpec(id, view) {
+    var item = W && W.items[id]; return item && item.resources && item.resources[view];
+  }
+  function workspaceResourceSlot(id, view, lane, detail, colorOverride) {
+    var spec = workspaceSpec(id, view), attribute = null, colorBy = null;
+    if (spec && spec.attributes && spec.attributes.length) {
+      if (spec.transport === "shared") lane = null;
+      else { attribute = lane; colorBy = colorOverride == null ? workspaceColorBy(id, view) : colorOverride; lane = null; }
+    }
+    return view + "\u0000" + (lane == null ? "" : String(lane)) + "\u0000"
+      + (attribute == null ? "" : String(attribute)) + "\u0000"
+      + (colorBy == null ? "" : String(colorBy)) + "\u0000"
+      + (detail == null ? "" : String(detail));
   }
   function workspaceRequestKey(id, view, lane, detail) {
-    return id + "\u0000" + workspaceResourceSlot(view, lane, detail);
+    return id + "\u0000" + workspaceResourceSlot(id, view, lane, detail);
   }
   function workspaceResource(id, view, lane, detail) {
-    return W && W.resources[id] && W.resources[id][workspaceResourceSlot(view, lane, detail)];
+    return W && W.resources[id] && W.resources[id][workspaceResourceSlot(id, view, lane, detail)];
   }
   function storeWorkspaceResource(id, view, resource) {
     if (!W.resources[id]) return;
-    W.resources[id][workspaceResourceSlot(view, resource.lane, resource.detail)] = resource;
+    var spec = workspaceSpec(id, view), lane = resource.lane;
+    if (spec && spec.attributes && spec.attributes.length && spec.transport !== "shared") lane = resource.attribute;
+    W.resources[id][workspaceResourceSlot(id, view, lane, resource.detail, resource.color_by)] = resource;
   }
 
   function initWorkspace(payload) {
     var manifest = payload && payload.workspace;
     if (!manifest) return;
-    if (manifest.schema_version !== 1) throw new Error("unsupported workspace schema_version " + manifest.schema_version);
+    if (manifest.schema_version !== 1 && manifest.schema_version !== 2) throw new Error("unsupported workspace schema_version " + manifest.schema_version);
     W = {
       manifest: manifest, available: (manifest.available_views || []).slice(),
-      order: [], items: {}, visible: {}, activeLane: {}, activeColorBy: {}, activeDetail: {}, resources: {}, loading: {}, errors: {}, detailErrors: {}, searchText: {},
+      order: [], items: {}, visible: {}, activeLane: {}, activeAttribute: {}, activeColorBy: {}, activeMode: {}, activeDetail: {}, resources: {}, loading: {}, errors: {}, detailErrors: {}, searchText: {},
       query: "", expanded: {}, expansionManual: {}, groups: {}, fetches: 0, compositions: 0, searchTimer: null,
       treeBuildMs: [], groupToggleMs: [], panelTimer: null, composeTimers: {},
       focusedTreeId: null, restoreTreeFocus: false, treeScrollTop: 0,
@@ -65,12 +79,19 @@
           W.order.push(node.id); W.items[node.id] = node;
           W.visible[node.id] = Object.assign({}, node.visible || {});
           W.activeLane[node.id] = {};
+          W.activeAttribute[node.id] = {};
           W.activeColorBy[node.id] = {};
+          W.activeMode[node.id] = {};
           W.activeDetail[node.id] = {};
           Object.keys(node.resources || {}).forEach(function (view) {
             var spec = node.resources[view];
             if (spec && spec.lanes && spec.lanes.length) W.activeLane[node.id][view] = spec.active_lane || spec.lanes[0].id;
             if (spec && spec.lanes && spec.lanes.length) W.activeColorBy[node.id][view] = spec.active_color_by || W.activeLane[node.id][view];
+            if (spec && spec.attributes && spec.attributes.length) {
+              W.activeAttribute[node.id][view] = spec.active_attribute || spec.attributes[0].id;
+              W.activeColorBy[node.id][view] = spec.active_color_by || W.activeAttribute[node.id][view];
+            }
+            if (spec && spec.modes && spec.modes.length) W.activeMode[node.id][view] = spec.modes[0];
             if (spec && spec.tiers && spec.tiers.length) W.activeDetail[node.id][view] = spec.active_detail || spec.tiers[0].id;
           });
           W.resources[node.id] = {};
@@ -78,6 +99,16 @@
       });
     }
     visit(manifest.tree);
+    var snapshotState = manifest.snapshot && manifest.snapshot.state || {};
+    Object.keys(snapshotState).forEach(function (id) {
+      Object.keys(snapshotState[id] || {}).forEach(function (view) {
+        var state = snapshotState[id][view] || {};
+        if (state.active_attribute != null && W.activeAttribute[id]) W.activeAttribute[id][view] = state.active_attribute;
+        if (state.active_color_by != null && W.activeColorBy[id]) W.activeColorBy[id][view] = state.active_color_by;
+        if (state.mode != null && W.activeMode[id]) W.activeMode[id][view] = state.mode;
+        if (state.detail != null && W.activeDetail[id]) W.activeDetail[id][view] = state.detail;
+      });
+    });
     // Deterministic first disclosure: reveal every initially selected path and
     // otherwise open only compact branches with at most two actionable leaves.
     // Larger catalogues start folded. From the first user twist onward the
@@ -119,7 +150,9 @@
       itemCount: W.order.length, activeView: workspaceViewName(App.tab),
       visible: JSON.parse(JSON.stringify(W.visible)),
       activeLane: JSON.parse(JSON.stringify(W.activeLane)),
+      activeAttribute: JSON.parse(JSON.stringify(W.activeAttribute)),
       activeColorBy: JSON.parse(JSON.stringify(W.activeColorBy)),
+      activeMode: JSON.parse(JSON.stringify(W.activeMode)),
       activeDetail: JSON.parse(JSON.stringify(W.activeDetail)),
       expanded: JSON.parse(JSON.stringify(W.expanded)),
       expansionManual: JSON.parse(JSON.stringify(W.expansionManual)),
@@ -199,8 +232,12 @@
   function resourceHref(id, view, lane, detail) {
     var item = W.items[id], spec = item.resources && item.resources[view];
     if (!spec || !spec.href) return null;
-    return spec.href + (lane == null ? "" : "&lane=" + encodeURIComponent(lane))
-      + (detail == null ? "" : "&detail=" + encodeURIComponent(detail));
+    var selector = "";
+    if (spec.attributes && spec.attributes.length) {
+      if (spec.transport !== "shared") selector = "&attribute=" + encodeURIComponent(lane)
+        + "&color_by=" + encodeURIComponent(workspaceColorBy(id, view));
+    } else if (lane != null) selector = "&lane=" + encodeURIComponent(lane);
+    return spec.href + selector + (detail == null ? "" : "&detail=" + encodeURIComponent(detail));
   }
 
   function scheduleWorkspacePanel() {
@@ -231,9 +268,19 @@
     requestAnimationFrame(check);
   }
 
+  function restoreWorkspaceSelector(id, view, failed, fallback) {
+    if (fallback == null || workspaceLane(id, view) !== failed) return;
+    var spec = workspaceSpec(id, view);
+    if (spec && spec.attributes && spec.attributes.length) {
+      W.activeAttribute[id][view] = fallback;
+      W.activeColorBy[id][view] = fallback;
+    } else W.activeLane[id][view] = fallback;
+  }
+
   function loadWorkspaceResource(id, view, lane, retry, fallbackLane, detail, background) {
     if (!W || !workspaceItemHasView(id, view)) return;
     if (detail === undefined) detail = workspaceDetail(id, view);
+    var requestedColorBy = workspaceColorBy(id, view);
     var key = workspaceRequestKey(id, view, lane, detail);
     if (workspaceResource(id, view, lane, detail) && !retry) { composeWorkspaceView(view); return; }
     if (W.loading[key]) return;
@@ -241,7 +288,7 @@
     if (App.mode === "file") {
       if (!workspaceResource(id, view, lane, detail)) {
         W.errors[key] = (W.manifest.snapshot && W.manifest.snapshot.message) || "Resource was not embedded in this static snapshot.";
-        if (fallbackLane != null && workspaceLane(id, view) === lane) W.activeLane[id][view] = fallbackLane;
+        restoreWorkspaceSelector(id, view, lane, fallbackLane);
         scheduleWorkspacePanel();
       } else composeWorkspaceView(view);
       return;
@@ -253,8 +300,24 @@
       .then(function (r) { if (!r.ok) return r.text().then(function (t) { throw new Error(t || ("HTTP " + r.status)); }); return r.json(); })
       .then(function (resource) {
         if (!resource || resource.kind !== "workspace_resource") throw new Error("invalid workspace resource envelope");
-        if (resource.item_id !== id || resource.view !== view || (resource.lane == null ? null : resource.lane) !== lane || (resource.detail == null ? null : resource.detail) !== detail) {
-          throw new Error("workspace resource identity/lane/detail mismatch");
+        var spec = workspaceSpec(id, view), resourceLane = resource.lane == null ? null : resource.lane;
+        var identityOk = resource.item_id === id && resource.view === view
+          && (resource.detail == null ? null : resource.detail) === detail;
+        if (spec && spec.attributes && spec.attributes.length) {
+          identityOk = identityOk && resource.schema_version === 2 && resourceLane === null;
+          if (spec.transport === "shared") {
+            identityOk = identityOk && !Object.prototype.hasOwnProperty.call(resource, "lane")
+              && !Object.prototype.hasOwnProperty.call(resource, "attribute")
+              && !Object.prototype.hasOwnProperty.call(resource, "color_by");
+          } else {
+            identityOk = identityOk && !Object.prototype.hasOwnProperty.call(resource, "lane")
+              && resource.attribute === lane && resource.color_by === requestedColorBy;
+          }
+        } else identityOk = identityOk && resource.schema_version === 1 && resourceLane === lane
+          && !Object.prototype.hasOwnProperty.call(resource, "attribute")
+          && !Object.prototype.hasOwnProperty.call(resource, "color_by");
+        if (!identityOk) {
+          throw new Error("workspace resource identity/selector/detail mismatch");
         }
         storeWorkspaceResource(id, view, resource);
         delete W.loading[key];
@@ -262,14 +325,16 @@
         scheduleWorkspaceCompose(view);
         var spec = W.items[id].resources && W.items[id].resources[view];
         if (detail === "preview" && spec && (spec.tiers || []).some(function (tier) { return tier.id === "full"; })) {
-          setTimeout(function () { loadFullAfterPreviewReady(id, view, lane); }, 0);
+          if (view === "map" && spec.transport === "shared") {
+            setTimeout(function () { loadWorkspaceResource(id, view, lane, false, null, "full", true); }, 0);
+          } else setTimeout(function () { loadFullAfterPreviewReady(id, view, lane); }, 0);
         }
       })
       .catch(function (e) {
         delete W.loading[key];
         if (background) W.detailErrors[key] = String((e && e.message) || e);
         else W.errors[key] = String((e && e.message) || e);
-        if (fallbackLane != null && workspaceLane(id, view) === lane) W.activeLane[id][view] = fallbackLane;
+        restoreWorkspaceSelector(id, view, lane, fallbackLane);
         scheduleWorkspacePanel();
       });
   }
@@ -306,7 +371,14 @@
     W.order.forEach(function (id) {
       if (!workspaceItemVisible(id, "map")) return;
       var r = workspaceResource(id, "map", workspaceLane(id, "map"), workspaceDetail(id, "map"));
-      if (r && r.payload && r.payload.map) entries.push({ id: id, payload: r.payload });
+      if (r && r.payload && r.payload.map) {
+        if (r.blocks && r.payload.map.surface_grid) {
+          Object.defineProperty(r.payload.map, "__workspaceBlocks", {
+            value: r.blocks, configurable: true, writable: true
+          });
+        }
+        entries.push({ id: id, payload: r.payload });
+      }
     });
     if (!entries.length) {
       App.payload.map = null; App.payload.wells = []; refreshWorkspaceMapState();
@@ -318,13 +390,50 @@
     function decodeNext() {
       while (next < entries.length) {
         var entry = entries[next++], m = entry.payload.map;
-        if (m.blocks && !m.__blocksReady) {
+        if ((m.blocks || m.__workspaceBlocks) && !m.__blocksReady) {
           decodeMap2d(entry.payload, decodeNext); return;
         }
       }
       composeWorkspaceMapReady(entries);
     }
     decodeNext();
+  }
+
+  function workspaceSharedFill(id, m) {
+    var grid = m && m.surface_grid, spec = workspaceSpec(id, "map");
+    if (!grid || !spec || spec.transport !== "shared") return null;
+    var attributeId = workspaceLane(id, "map"), colorId = workspaceColorBy(id, "map");
+    var descriptors = {}, data = {};
+    (spec.attributes || []).forEach(function (entry) { descriptors[entry.id] = entry; });
+    (grid.attributes || []).forEach(function (entry) { data[entry.id] = entry; });
+    var geometry = data[attributeId], paint = data[colorId];
+    if (!geometry || !paint || !paint.values) return null;
+    var f = grid.frame || {}, angle = (Number(f.rotation_deg) || 0) * Math.PI / 180;
+    var sign = f.yflip ? -1 : 1, c = Math.cos(angle), s = Math.sin(angle);
+    var mask = grid.mask;
+    if (!mask) {
+      var values = new Uint8Array((f.ncol || 0) * (f.nrow || 0)); values.fill(1);
+      mask = { length: values.length, a: values };
+    }
+    var descriptor = descriptors[colorId] || {};
+    return {
+      name: attributeId,
+      display_name: descriptor.label || colorId,
+      units: descriptor.units == null ? null : descriptor.units,
+      range: paint.range,
+      colormap: paint.colormap || null,
+      colormap_reversed: !!paint.colormap_reversed,
+      categorical: descriptor.kind === "categorical",
+      categorical_codes: descriptor.kind === "categorical" ? descriptor.codes : null,
+      item_id: id,
+      __workspaceGeometry: geometry.values,
+      regular_grid: {
+        dimensions: [f.ncol, f.nrow], origin: [f.origin_x, f.origin_y],
+        step_i: [f.spacing_x * c, f.spacing_x * s],
+        step_j: [-sign * f.spacing_y * s, sign * f.spacing_y * c],
+        values: paint.values, mask: mask
+      }
+    };
   }
 
   function composeWorkspaceMapReady(entries) {
@@ -344,6 +453,8 @@
       if (!map.colormap && m.colormap) map.colormap = m.colormap;
       pointParts.push(m.points); gridParts.push(m.grid_lines); gridLodParts.push(m.grid_lines_lod);
       (m.outline || []).forEach(function (v) { map.outline.push(v); });
+      var sharedFill = workspaceSharedFill(id, m);
+      if (sharedFill) map.fills.push(sharedFill);
       (m.fills || []).forEach(function (v) {
         var fill = cloneStamped(v, id);
         // The composed map intentionally has no block table of its own. Keep a
@@ -501,6 +612,10 @@
 
   function setWorkspaceLane(id, view, lane) {
     if (!W || !W.activeLane[id] || workspaceLane(id, view) === lane) return;
+    var spec = workspaceSpec(id, view);
+    if (spec && spec.attributes && spec.attributes.length) {
+      setWorkspaceAttribute(id, view, lane); return;
+    }
     var previous = workspaceLane(id, view);
     W.activeLane[id][view] = lane;
     if (W.activeColorBy[id]) W.activeColorBy[id][view] = lane;
@@ -510,6 +625,38 @@
     if (workspaceItemVisible(id, view)) {
       if (workspaceResource(id, view, lane, detail)) composeWorkspaceView(view);
       else loadWorkspaceResource(id, view, lane, false, previous, detail);
+    }
+    exposeWorkspaceState(); buildWorkspaceNavigator(); buildPanel();
+  }
+
+  function setWorkspaceAttribute(id, view, attribute) {
+    if (!W || !W.activeAttribute[id] || workspaceLane(id, view) === attribute) return;
+    var previous = workspaceLane(id, view), spec = workspaceSpec(id, view);
+    W.activeAttribute[id][view] = attribute;
+    // Geometry changes intentionally reset paint to the same descriptor. The
+    // independent colour selector may then diverge without changing geometry.
+    W.activeColorBy[id][view] = attribute;
+    var detail = workspaceDetail(id, view);
+    if (workspaceItemVisible(id, view)) {
+      if (spec && spec.transport === "shared") composeWorkspaceView(view);
+      else if (workspaceResource(id, view, attribute, detail)) composeWorkspaceView(view);
+      else loadWorkspaceResource(id, view, attribute, false, previous, detail);
+    }
+    exposeWorkspaceState(); buildWorkspaceNavigator(); buildPanel();
+  }
+
+  function setWorkspaceColorBy(id, view, colorBy) {
+    if (!W || !W.activeColorBy[id] || workspaceColorBy(id, view) === colorBy) return;
+    var attribute = workspaceLane(id, view);
+    W.activeColorBy[id][view] = colorBy;
+    var detail = workspaceDetail(id, view), spec = workspaceSpec(id, view);
+    if (workspaceItemVisible(id, view)) {
+      if (spec && spec.transport === "shared") composeWorkspaceView(view);
+      else if (workspaceResource(id, view, attribute, detail)) composeWorkspaceView(view);
+      else {
+        W.activeColorBy[id][view] = colorBy;
+        loadWorkspaceResource(id, view, attribute, false, null, detail);
+      }
     }
     exposeWorkspaceState(); buildWorkspaceNavigator(); buildPanel();
   }
@@ -757,9 +904,10 @@
         }
         var meta = el("span", "workspace-meta");
         var spec = node.resources && node.resources[view];
-        if (has && spec && spec.lanes && spec.lanes.length > 1) {
+        var choices = spec && ((spec.attributes && spec.attributes.length && spec.attributes) || spec.lanes);
+        if (has && choices && choices.length > 1) {
           var select = el("select", "workspace-lane-select");
-          spec.lanes.forEach(function (entry) {
+          choices.forEach(function (entry) {
             var option = el("option", null, entry.label); option.value = entry.id; select.appendChild(option);
           });
           select.value = lane;
@@ -767,8 +915,17 @@
           select.onchange = function () { setWorkspaceLane(node.id, view, select.value); };
           meta.appendChild(select);
           var colorBy = workspaceColorBy(node.id, view);
-          if (colorBy != null && colorBy !== lane) {
-            var labels = {}; spec.lanes.forEach(function (candidate) { labels[candidate.id] = candidate.label; });
+          if (spec.attributes && spec.attributes.length) {
+            var paintSelect = el("select", "workspace-lane-select");
+            spec.attributes.forEach(function (entry) {
+              var option = el("option", null, entry.label); option.value = entry.id; paintSelect.appendChild(option);
+            });
+            paintSelect.value = colorBy;
+            paintSelect.title = "Colour by"; paintSelect.setAttribute("aria-label", "Colour by for " + displayLabel);
+            paintSelect.onchange = function () { setWorkspaceColorBy(node.id, view, paintSelect.value); };
+            meta.appendChild(paintSelect);
+          } else if (colorBy != null && colorBy !== lane) {
+            var labels = {}; choices.forEach(function (candidate) { labels[candidate.id] = candidate.label; });
             meta.appendChild(workspacePaintMark(labels[colorBy] || colorBy, labels[lane] || lane));
           }
         }

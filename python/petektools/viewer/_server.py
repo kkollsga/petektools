@@ -161,19 +161,38 @@ def build_server(
             item = q.get("item", [None])[0]
             view = q.get("view", [None])[0]
             lane = q.get("lane", [None])[0]
+            attribute = q.get("attribute", [None])[0]
+            color_by = q.get("color_by", [None])[0]
             detail = q.get("detail", [None])[0]
             if not item or not view:
-                self._send(400, b"workspace resource requires item and view", "text/plain")
+                self._send(
+                    400, b"workspace resource requires item and view", "text/plain"
+                )
+                return
+            if lane is not None and (attribute is not None or color_by is not None):
+                self._send(
+                    400,
+                    b"workspace resource cannot mix lane with v2 selectors",
+                    "text/plain",
+                )
                 return
             try:
-                # Preserve the original callback contract unless this request
-                # actually selects an advertised progressive detail tier.
-                if detail is None:
-                    body = workspace_provider(item_id=item, view=view, lane=lane)
-                else:
+                if attribute is not None or color_by is not None:
+                    kwargs = {
+                        "item_id": item,
+                        "view": view,
+                        "attribute": attribute,
+                        "color_by": color_by,
+                    }
+                    if detail is not None:
+                        kwargs["detail"] = detail
+                    body = workspace_provider(**kwargs)
+                elif detail is not None:
                     body = workspace_provider(
                         item_id=item, view=view, lane=lane, detail=detail
                     )
+                else:
+                    body = workspace_provider(item_id=item, view=view, lane=lane)
                 if isinstance(body, bytes):
                     data = body
                 elif isinstance(body, str):
@@ -181,8 +200,10 @@ def build_server(
                 else:
                     data = json.dumps(body).encode("utf-8")
                 self._send(200, data, "application/json")
-            except (KeyError, ValueError) as exc:
+            except KeyError as exc:
                 self._send(404, str(exc).encode("utf-8"), "text/plain")
+            except ValueError as exc:
+                self._send(400, str(exc).encode("utf-8"), "text/plain")
             except Exception as exc:
                 self._send(500, str(exc).encode("utf-8"), "text/plain")
 
@@ -217,7 +238,9 @@ def serve_workspace(
             shutil.rmtree(httpd._petek_tmp, ignore_errors=True)
         return httpd, url
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    print(f"petek workspace at {url}  (background; pass block=True to hold)", flush=True)
+    print(
+        f"petek workspace at {url}  (background; pass block=True to hold)", flush=True
+    )
     if open_browser:
         webbrowser.open(url)
     return httpd, url

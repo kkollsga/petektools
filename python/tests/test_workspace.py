@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
+import struct
 import threading
 import time
 import urllib.error
@@ -935,3 +938,389 @@ def test_workspace_shell_declares_keyboard_and_accessibility_contract():
     assert 'function wireButtonTooltips()' in source
     assert 'button.removeAttribute("title")' in source
     assert 'W.expansionManual[group.id] = true' in source
+
+
+def _workspace_block(values, dtype="f32"):
+    code = "f" if dtype == "f32" else "B"
+    raw = struct.pack("<" + code * len(values), *values)
+    digest = hashlib.sha256(raw).hexdigest()
+    return digest, {
+        "dtype": dtype,
+        "shape": [len(values)],
+        "data": base64.b64encode(raw).decode("ascii"),
+    }
+
+
+class SharedWorkspaceProvider:
+    def __init__(self):
+        self.calls = []
+
+    def view_catalog(self):
+        return {
+            "schema_version": 2,
+            "project": {"title": "Alpha", "crs": "EPSG:32631", "unit": "m"},
+            "tree": [
+                {
+                    "id": "surface:top",
+                    "label": "Top",
+                    "views": {
+                        "map": {
+                            "attributes": [
+                                {"id": "depth", "label": "Depth", "units": "m"},
+                                {
+                                    "id": "facies",
+                                    "label": "Facies",
+                                    "kind": "categorical",
+                                    "codes": {
+                                        "1": {"label": "Sand", "color": "#abcDEF"}
+                                    },
+                                },
+                            ],
+                            "active_attribute": "depth",
+                            "active_color_by": "facies",
+                            "transport": "shared",
+                            "modes": ["2d", "3d"],
+                            "tiers": [
+                                {"id": "preview", "label": "Preview"},
+                                {"id": "full", "label": "Full detail"},
+                            ],
+                        }
+                    },
+                    "visible": {"map": True},
+                }
+            ],
+        }
+
+    def view_resource(self, *, item_id, view, detail):
+        self.calls.append((item_id, view, detail))
+        depth_digest, depth_block = _workspace_block([10.0, 11.0, 12.0, 13.0])
+        facies_digest, facies_block = _workspace_block([1.0, 1.0, 1.0, 1.0])
+        return {
+            "schema_version": 2,
+            "kind": "workspace_resource",
+            "item_id": item_id,
+            "view": view,
+            "detail": detail,
+            "blocks": {depth_digest: depth_block, facies_digest: facies_block},
+            "payload": {
+                "schema_version": 4,
+                "map": {
+                    "surface_grid": {
+                        "schema_version": 1,
+                        "item_id": item_id,
+                        "frame": {
+                            "origin_x": 1.0,
+                            "origin_y": 2.0,
+                            "spacing_x": 25.0,
+                            "spacing_y": 25.0,
+                            "ncol": 2,
+                            "nrow": 2,
+                            "rotation_deg": 15.0,
+                            "yflip": True,
+                            "crs": "EPSG:32631",
+                            "units": "m",
+                        },
+                        "mask": None,
+                        "attributes": [
+                            {
+                                "id": "depth",
+                                "label": "Depth",
+                                "kind": "continuous",
+                                "units": "m",
+                                "codes": None,
+                                "values": {"__block__": depth_digest},
+                                "range": [10.0, 13.0],
+                            },
+                            {
+                                "id": "facies",
+                                "label": "Facies",
+                                "kind": "categorical",
+                                "units": None,
+                                "codes": {"1": {"label": "Sand", "color": "#ABCDEF"}},
+                                "values": {"__block__": facies_digest},
+                                "range": None,
+                            },
+                        ],
+                        "triangle_count": 2,
+                    }
+                },
+                "scene3d": None,
+            },
+        }
+
+
+def test_workspace_v2_shared_manifest_identity_and_static_budget(tmp_path):
+    provider = SharedWorkspaceProvider()
+    session = WorkspaceSession(provider)
+    workspace = session.manifest()["workspace"]
+    assert workspace["schema_version"] == 2
+    assert workspace["project"] == {"title": "Alpha", "crs": "EPSG:32631", "unit": "m"}
+    spec = workspace["tree"][0]["resources"]["map"]
+    assert spec["transport"] == "shared"
+    assert spec["active_attribute"] == "depth"
+    assert spec["active_color_by"] == "facies"
+    assert spec["attributes"][1]["codes"]["1"]["color"] == "#ABCDEF"
+    assert "attribute=" not in spec["href"] and "color_by=" not in spec["href"]
+
+    first = session.resource("surface:top", "map", detail="full")
+    assert first["schema_version"] == 2 and "lane" not in first
+    assert "blocks" not in first["payload"]["map"]
+    assert first["payload"]["map"]["surface_grid"]["positive"] == "down"
+    assert session.resource("surface:top", "map", detail="full") == first
+    assert provider.calls == [("surface:top", "map", "full")]
+    with pytest.raises(ValueError, match="do not accept selectors"):
+        session.resource(
+            "surface:top",
+            "map",
+            detail="full",
+            attribute="depth",
+            color_by="facies",
+        )
+    assert provider.calls == [("surface:top", "map", "full")]
+
+    provider = SharedWorkspaceProvider()
+    path = tmp_path / "workspace-v2.html"
+    WorkspaceSession(provider).save(path, include="selected")
+    frozen = _saved_workspace(path)
+    resource = frozen["resources"]["surface:top"]["map"]
+    assert isinstance(resource, dict) and resource["detail"] == "full"
+    assert frozen["snapshot"]["state"]["surface:top"]["map"] == {
+        "active_attribute": "depth",
+        "active_color_by": "facies",
+        "mode": "2d",
+        "detail": "full",
+    }
+    assert len(resource["blocks"]) == 2
+    assert provider.calls == [("surface:top", "map", "full")]
+
+
+def test_workspace_v2_invalid_view_is_item_local_with_valid_sibling():
+    class Mixed(SharedWorkspaceProvider):
+        def view_catalog(self):
+            catalog = super().view_catalog()
+            catalog["tree"][0]["views"]["scene3d"] = {
+                "attributes": [
+                    {"id": "x", "label": "X"},
+                    {"id": "x", "label": "Duplicate"},
+                ]
+            }
+            catalog["tree"][0]["visible"]["scene3d"] = True
+            return catalog
+
+    session = WorkspaceSession(Mixed())
+    item = session.tree()[0]
+    assert item["views"] == ["map"] and not item["disabled"]
+    assert item["visible"] == {"map": True}
+    assert session.diagnostics[0]["view"] == "scene3d"
+    assert (
+        "duplicate workspace scene3d attribute ID" in session.diagnostics[0]["message"]
+    )
+
+
+def test_workspace_v2_shared_malformed_resource_is_local_and_retryable():
+    class Malformed(SharedWorkspaceProvider):
+        def view_resource(self, **kwargs):
+            result = super().view_resource(**kwargs)
+            result["payload"]["map"]["blocks"] = result["blocks"]
+            return result
+
+    provider = Malformed()
+    session = WorkspaceSession(provider)
+    with pytest.raises(ValueError, match="blocks only at envelope level"):
+        session.resource("surface:top", "map", detail="full")
+    with pytest.raises(ValueError, match="blocks only at envelope level"):
+        session.resource("surface:top", "map", detail="full")
+    assert len(provider.calls) == 2
+    assert len(session.diagnostics) == 2
+
+
+def test_workspace_v2_server_rejects_shared_selectors_before_provider_call():
+    provider = SharedWorkspaceProvider()
+    session = WorkspaceSession(provider).serve(open_browser=False)
+    try:
+        href = session.manifest()["workspace"]["tree"][0]["resources"]["map"]["href"]
+        bad = session.url + href[1:] + "&detail=full&attribute=depth&color_by=facies"
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(bad)
+        assert error.value.code == 400
+        assert provider.calls == []
+        with urllib.request.urlopen(
+            session.url + href[1:] + "&detail=full"
+        ) as response:
+            resource = json.load(response)
+        assert resource["schema_version"] == 2
+        assert provider.calls == [("surface:top", "map", "full")]
+    finally:
+        session._server.shutdown()
+        session._server.server_close()
+
+
+def test_workspace_v2_browser_runtime_uses_shared_identity_and_dual_selectors():
+    source = _bundle.viewer_js()
+    assert "manifest.schema_version !== 1 && manifest.schema_version !== 2" in source
+    assert 'spec.transport === "shared"' in source
+    assert '"&attribute=" + encodeURIComponent(lane)' in source
+    assert (
+        "activeAttribute" in source
+        and "activeColorBy" in source
+        and "activeMode" in source
+    )
+    assert "function workspaceSharedFill" in source
+    assert "m.blocks || m.__workspaceBlocks" in source
+    assert "function validOverlayIntersections" in source
+    assert "fill.categorical" in source and "categorical_codes" in source
+
+
+def test_workspace_v2_shared_single_flight_and_strict_echo():
+    provider = SharedWorkspaceProvider()
+    session = WorkspaceSession(provider)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        resources = list(
+            pool.map(
+                lambda _: session.resource("surface:top", "map", detail="full"),
+                range(16),
+            )
+        )
+    assert all(resource == resources[0] for resource in resources)
+    assert provider.calls == [("surface:top", "map", "full")]
+
+    class BadEcho(SharedWorkspaceProvider):
+        def view_resource(self, **kwargs):
+            value = super().view_resource(**kwargs)
+            value["detail"] = "preview"
+            return value
+
+    provider = BadEcho()
+    session = WorkspaceSession(provider)
+    for _ in range(2):
+        with pytest.raises(ValueError, match="detail echo mismatch"):
+            session.resource("surface:top", "map", detail="full")
+    assert len(provider.calls) == 2
+
+
+def test_workspace_v2_transitional_identity_and_selected_export_guard(tmp_path):
+    class Transitional:
+        def __init__(self):
+            self.calls = []
+
+        def view_catalog(self):
+            return [
+                {
+                    "id": "surface:top",
+                    "views": {
+                        "map": {
+                            "attributes": [
+                                {"id": "depth", "label": "Depth"},
+                                {"id": "poro", "label": "Porosity"},
+                            ],
+                            "active_attribute": "depth",
+                            "active_color_by": "poro",
+                        }
+                    },
+                    "visible": {"map": True},
+                }
+            ]
+
+        def view_resource(self, *, item_id, view, attribute, color_by):
+            self.calls.append((item_id, view, attribute, color_by))
+            return {
+                "schema_version": 2,
+                "kind": "workspace_resource",
+                "item_id": item_id,
+                "view": view,
+                "attribute": attribute,
+                "color_by": color_by,
+                "payload": {"schema_version": 4, "map": {}},
+            }
+
+    provider = Transitional()
+    session = WorkspaceSession(provider)
+    resource = session.resource(
+        "surface:top", "map", attribute="depth", color_by="poro"
+    )
+    assert resource["attribute"] == "depth" and resource["color_by"] == "poro"
+    assert provider.calls == [("surface:top", "map", "depth", "poro")]
+    with pytest.raises(ValueError, match="require both"):
+        session.resource("surface:top", "map", attribute="depth")
+    assert len(provider.calls) == 1
+    with pytest.raises(ValueError, match="cannot enumerate"):
+        session.save(tmp_path / "bad-selected.html", include="selected")
+    assert len(provider.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "malformation, message",
+    [
+        ("finite_without_range", "range is required for finite data"),
+        ("range_without_finite", "range must be null without finite data"),
+        ("non_integral_category", "values must be integral"),
+        ("bad_colormap", "unsupported workspace shared colormap"),
+        ("unknown_block", "references an unknown block"),
+    ],
+)
+def test_workspace_v2_shared_attribute_data_validation(malformation, message):
+    class InvalidData(SharedWorkspaceProvider):
+        def view_resource(self, **kwargs):
+            result = super().view_resource(**kwargs)
+            attributes = result["payload"]["map"]["surface_grid"]["attributes"]
+            if malformation == "finite_without_range":
+                attributes[0]["range"] = None
+            elif malformation == "range_without_finite":
+                digest, block = _workspace_block([float("nan")] * 4)
+                result["blocks"] = {
+                    digest: block,
+                    **{
+                        key: value
+                        for key, value in result["blocks"].items()
+                        if key == attributes[1]["values"]["__block__"]
+                    },
+                }
+                attributes[0]["values"] = {"__block__": digest}
+            elif malformation == "non_integral_category":
+                digest, block = _workspace_block([1.5, 1.0, 1.0, 1.0])
+                result["blocks"][digest] = block
+                attributes[1]["values"] = {"__block__": digest}
+            elif malformation == "unknown_block":
+                attributes[0]["values"] = {"__block__": "0" * 64}
+            else:
+                attributes[0]["colormap"] = "rainbow"
+            return result
+
+    with pytest.raises(ValueError, match=message):
+        WorkspaceSession(InvalidData()).resource("surface:top", "map", detail="full")
+
+
+def test_workspace_all_hit_overlay_validation_and_singular_compatibility():
+    class OverlayProvider(Provider):
+        def view_resource(self, *, item_id, view, lane=None):
+            return {
+                "schema_version": 4,
+                "map": {
+                    "well_overlays": [
+                        {
+                            "context_item_id": item_id,
+                            "well_item_id": "well:a",
+                            "trajectory": [[0.0, 0.0, 0.0]],
+                            "intersection": {"md": 2.0, "xyz": [0.0, 0.0, 2.0]},
+                            "intersections": [
+                                {"md": 1.0, "xyz": [0.0, 0.0, 1.0]},
+                                {"md": 2.0, "xyz": [0.0, 0.0, 2.0]},
+                            ],
+                            "status": "ambiguous",
+                        },
+                        {
+                            "context_item_id": item_id,
+                            "well_item_id": "well:legacy",
+                            "trajectory": [[0.0, 0.0, 0.0]],
+                            "intersection": {"md": 1.0, "xyz": [0.0, 0.0, 1.0]},
+                            "status": "hit",
+                        },
+                    ]
+                },
+            }
+
+    payload = WorkspaceSession(OverlayProvider()).resource("surface:top", "map")[
+        "payload"
+    ]
+    assert len(payload["map"]["well_overlays"][0]["intersections"]) == 2
+    assert "intersections" not in payload["map"]["well_overlays"][1]

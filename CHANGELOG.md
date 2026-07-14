@@ -7,6 +7,15 @@ All notable changes to petekTools are recorded here. Format follows
 ## [Unreleased]
 
 ### Added
+- **Viewer workspace schema v2 runtime.** Provider catalogs now normalize project
+  identity and metadata-rich attributes per item/view; shared Map resources use
+  selector-free live/cache/retry identity, one envelope-level block table, and
+  local geometry/paint selectors across the same affine surface grid. Static
+  visible/selected exports embed one full-tier shared envelope with separate UI
+  snapshot state, while transitional selector-backed v2, legacy workspace v1,
+  singular well picks, and separate scene3d resources remain isolated
+  compatibility lanes. Malformed descriptors, echoes, blocks, ranges,
+  categorical values, and all-hit overlays fail locally and remain retryable.
 - **Inspector-owned Map and Intersection legends.** Continuous ramps, units, and
   exact editable ranges now live beside their layer visibility; categorical
   fills use class keys instead of false gradients. The rendered picker exposes
@@ -28,8 +37,7 @@ All notable changes to petekTools are recorded here. Format follows
   One shared Map resource/block table feeds both 2-D/3-D modes and every
   attribute without Cartesian static-export growth. Workspace v1, legacy
   `lane`, singular `intersection`, and separate `scene3d` payloads remain
-  explicit compatibility paths. This entry defines the contract only; runtime
-  support lands in the subsequent implementation phases.
+  explicit compatibility paths.
 
 ### Fixed
 - **Inspector state and asynchronous paint alignment.** Scalar paint omission

@@ -18,12 +18,14 @@
   }
   function mapFrame() { return App.payload.map.frame; }
   function worldExtent() {
-    var f = mapFrame();
-    return {
-      x0: f.origin_x, y0: f.origin_y,
-      x1: f.origin_x + (f.ncol - 1) * f.spacing_x,
-      y1: f.origin_y + (f.nrow - 1) * f.spacing_y,
-    };
+    var f = mapFrame(), angle = (Number(f.rotation_deg) || 0) * Math.PI / 180;
+    var c = Math.cos(angle), s = Math.sin(angle), sign = f.yflip ? -1 : 1;
+    var di = [(f.ncol - 1) * f.spacing_x * c, (f.ncol - 1) * f.spacing_x * s];
+    var dj = [-(f.nrow - 1) * sign * f.spacing_y * s, (f.nrow - 1) * sign * f.spacing_y * c];
+    var xs = [f.origin_x, f.origin_x + di[0], f.origin_x + dj[0], f.origin_x + di[0] + dj[0]];
+    var ys = [f.origin_y, f.origin_y + di[1], f.origin_y + dj[1], f.origin_y + di[1] + dj[1]];
+    return { x0: Math.min.apply(null, xs), y0: Math.min.apply(null, ys),
+      x1: Math.max.apply(null, xs), y1: Math.max.apply(null, ys) };
   }
   function activeMapContextItemId() {
     var fill = (App.payload.map.fills || [])[S.mapFillIdx];
@@ -34,6 +36,18 @@
       return Array.isArray(p) && p.length >= 3 && isFinite(p[0]) && isFinite(p[1]) &&
         (p[2] == null || isFinite(p[2]));
     });
+  }
+  function validOverlayIntersections(value, status) {
+    if (!Array.isArray(value)) return false;
+    var previous = -Infinity;
+    var valid = value.every(function (record) {
+      if (!record || typeof record !== "object" || !isFinite(record.md) || !Array.isArray(record.xyz) ||
+          record.xyz.length !== 3 || !record.xyz.every(isFinite) || record.md < previous) return false;
+      previous = record.md; return true;
+    });
+    if (!valid) return false;
+    return status === "hit" ? value.length === 1 : status === "ambiguous" ? value.length >= 2
+      : (status === "no_hit" || status === "error") ? value.length === 0 : false;
   }
   function resolveMapWellGeometry() {
     var m = App.payload.map, context = activeMapContextItemId();
@@ -68,7 +82,7 @@
       var wellItemId = typeof well.item_id === "string" ? well.item_id : null;
       var base = Array.isArray(well.trajectory) ? well.trajectory : [];
       var overlay = wellItemId ? candidates[wellItemId] : null;
-      var trajectory = base, source = "base", status = null, message = null, intersection = null;
+      var trajectory = base, source = "base", status = null, message = null, intersection = null, intersections = null;
       if (overlay) {
         status = overlay.status; message = overlay.message || null;
         intersection = overlay.intersection == null ? null : overlay.intersection;
@@ -82,6 +96,14 @@
           state.diagnostics.push({ code: "malformed_trajectory", context_item_id: context,
             well_item_id: wellItemId, message: "well overlay trajectory is empty or malformed; using base trajectory" });
         }
+        if (Object.prototype.hasOwnProperty.call(overlay, "intersections")) {
+          if (validOverlayIntersections(overlay.intersections, status)) intersections = overlay.intersections;
+          else {
+            state.diagnostics.push({ code: "malformed_intersections", context_item_id: context,
+              well_item_id: wellItemId, message: "well overlay intersections are malformed for status" });
+            status = "error"; message = "Malformed overlay intersections";
+          }
+        }
         if (status === "ambiguous" || status === "error") {
           state.diagnostics.push({ code: status, context_item_id: context,
             well_item_id: wellItemId, message: message || (status === "ambiguous" ? "Ambiguous intersection" : "Overlay error") });
@@ -91,7 +113,7 @@
         displayName: well.display_name || null, head: [well.x, well.y],
         style: well.style || null, visible: S.wellVis[state.wells.length] !== false,
         status: status, source: source, trajectory: trajectory,
-        intersection: intersection, message: message });
+        intersection: intersection, intersections: intersections, message: message });
     });
     Object.keys(candidates).forEach(function (wellItemId) {
       if (candidates[wellItemId] && !wells.some(function (well) { return well.item_id === wellItemId; })) {
@@ -203,7 +225,7 @@
     if (isBlockMarker(f.values)) f.values = prepBlock(f.values, t);
   }
   function prepMap2d(m) {
-    var t = m.blocks;
+    var t = m.blocks || m.__workspaceBlocks;
     if (isBlockMarker(m.points)) m.points = prepBlock(m.points, t);
     (m.fills || []).forEach(function (f) {
       prepFillArrays(f, t);
@@ -218,6 +240,13 @@
     (m.contacts || []).forEach(function (c) {
       if (isBlockMarker(c.crossing)) c.crossing = prepBlock(c.crossing, t);
     });
+    var grid = m.surface_grid;
+    if (grid) {
+      if (isBlockMarker(grid.mask)) grid.mask = prepBlock(grid.mask, t);
+      (grid.attributes || []).forEach(function (attribute) {
+        if (isBlockMarker(attribute.values)) attribute.values = prepBlock(attribute.values, t);
+      });
+    }
   }
   function fillOne(o, cache) {
     if (o && o.__d != null) o.a = cache[o.__d];
@@ -234,6 +263,11 @@
     fillOne(m.grid_lines_lod, cache);
     (m.contours || []).forEach(function (c) { fillOne(c.lines, cache); fillOne(c.lines_lod, cache); });
     (m.contacts || []).forEach(function (c) { fillOne(c.crossing, cache); });
+    var grid = m.surface_grid;
+    if (grid) {
+      fillOne(grid.mask, cache);
+      (grid.attributes || []).forEach(function (attribute) { fillOne(attribute.values, cache); });
+    }
   }
   function fillMap2dValues(fill, cache) {
     if (!fill) return;
@@ -268,6 +302,11 @@
     addDigest(out, m.grid_lines); addDigest(out, m.grid_lines_lod);
     (m.contours || []).forEach(function (c) { addDigest(out, c.lines); addDigest(out, c.lines_lod); });
     (m.contacts || []).forEach(function (c) { addDigest(out, c.crossing); });
+    var grid = m.surface_grid;
+    if (grid) {
+      addDigest(out, grid.mask);
+      (grid.attributes || []).forEach(function (attribute) { addDigest(out, attribute.values); });
+    }
     return out;
   }
   function valueDigests(fill) {
@@ -281,15 +320,16 @@
   }
   function mergeDigests(dst, src) { for (var d in src) if (Object.prototype.hasOwnProperty.call(src, d)) dst[d] = true; }
   function updateBlockStatus(m) {
-    var decoded = 0, cache = blockCache(), total = Object.keys(m.blocks || {}).length;
-    for (var d in m.blocks) if (cache[d] != null) decoded++;
+    var table = m.blocks || m.__workspaceBlocks || {};
+    var decoded = 0, cache = blockCache(), total = Object.keys(table).length;
+    for (var d in table) if (cache[d] != null) decoded++;
     window.__PETEK_MAP_BLOCK_STATUS = {
       total: total, decoded: decoded, pending: Object.keys(_map2dPending).length,
       activeFill: (typeof S !== "undefined" ? S.mapFillIdx : 0)
     };
   }
   function decodeMapDigests(m, requested, done) {
-    var cache = blockCache(), table = m.blocks, needed = {}, n = 0;
+    var cache = blockCache(), table = m.blocks || m.__workspaceBlocks, needed = {}, n = 0;
     for (var d in requested) {
       if (!Object.prototype.hasOwnProperty.call(requested, d) || cache[d] != null) continue;
       needed[d] = table[d]; n++;
@@ -311,7 +351,7 @@
   // Boot hook (called from boot() before initState): resolve the map's blocks.
   function decodeMap2d(payload, onReady) {
     var m = payload && payload.map;
-    if (!m || !m.blocks || m.__blocksReady) { if (onReady) onReady(); return; }
+    if (!m || !(m.blocks || m.__workspaceBlocks) || m.__blocksReady) { if (onReady) onReady(); return; }
     prepMap2d(m);
     var requested = baseDigests(m), initialFill = (m.fills || [])[0];
     mergeDigests(requested, valueDigests(initialFill));
@@ -1170,15 +1210,29 @@
     }
     if (!isFinite(lo) || !isFinite(hi)) return;
     var span = (hi - lo) || 1, lut = colormapLUT(paintColormap(fill), paintReversed(fill));
+    function categoricalRgb(code) {
+      var record = fill.categorical_codes && fill.categorical_codes[String(code)];
+      var css = record && record.color || idColor("category:" + fill.name + ":" + code);
+      var hex = /^#([0-9a-f]{6})$/i.exec(css);
+      if (hex) return [parseInt(hex[1].slice(0, 2), 16), parseInt(hex[1].slice(2, 4), 16), parseInt(hex[1].slice(4, 6), 16)];
+      var rgb = /rgba?\(\s*([0-9]+)[, ]+\s*([0-9]+)[, ]+\s*([0-9]+)/i.exec(css);
+      return rgb ? [Number(rgb[1]), Number(rgb[2]), Number(rgb[3])] : [127, 127, 127];
+    }
     for (var j = 0; j < hc; j++) for (var i = 0; i < wc; i++) {
       var a = j * nc + i, b = a + 1, c = a + nc, d = c + 1;
       if (!maskAt(G.mask, a) || !maskAt(G.mask, b) || !maskAt(G.mask, c) || !maskAt(G.mask, d)) continue;
       var va = vlAt(G.values, a), vb = vlAt(G.values, b), vc = vlAt(G.values, c), vd = vlAt(G.values, d);
       if (!isFinite(va) || !isFinite(vb) || !isFinite(vc) || !isFinite(vd)) continue;
-      var t = ((va + vb + vc + vd) * .25 - lo) / span;
-      if (t < 0) t = 0; else if (t > 1) t = 1;
-      var li = Math.round(t * 255) * 3, p = (j * wc + i) * 4;
-      out[p] = lut[li]; out[p + 1] = lut[li + 1]; out[p + 2] = lut[li + 2]; out[p + 3] = 255;
+      var p = (j * wc + i) * 4;
+      if (fill.categorical) {
+        var category = Math.round((va + vb + vc + vd) * .25), color = categoricalRgb(category);
+        out[p] = color[0]; out[p + 1] = color[1]; out[p + 2] = color[2]; out[p + 3] = 255;
+      } else {
+        var t = ((va + vb + vc + vd) * .25 - lo) / span;
+        if (t < 0) t = 0; else if (t > 1) t = 1;
+        var li = Math.round(t * 255) * 3;
+        out[p] = lut[li]; out[p + 1] = lut[li + 1]; out[p + 2] = lut[li + 2]; out[p + 3] = 255;
+      }
     }
     ox.putImageData(image, 0, 0);
     ctx.save(); ctx.imageSmoothingEnabled = false;

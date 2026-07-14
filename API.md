@@ -887,6 +887,9 @@ session.save("selected.html", include="selected")
 
 # A producer may instead expose:
 #   view_catalog() -> ordered mapping/list of explicit group/item records.
+# A project-backed v2 provider returns the envelope
+#   {"schema_version":2, "project":{"title":...,"crs":...,"unit":...},
+#    "tree":[...]}; `tree` retains the same ordered records.
 # A workspace-v2 Map record declares metadata-rich attributes and two explicit
 # selectors. All attributes ride one shared resource/block table and are
 # available as both geometry and paint:
