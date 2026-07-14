@@ -74,14 +74,21 @@ static identity. The complete table remains embedded in offline saved views
 without an attribute-by-colour Cartesian export.
 An exact affine structured fill uses `regular_grid` metadata plus row-major
 typed values/mask and never expands nodes or triangles. The renderer maps its
-index raster through `origin + i*step_i + j*step_j`, uses the inverse affine for
-inspection, and treats a false mask or NaN as a hole. Existing ScalarLayer and
-TriFill payloads remain compatibility paths.
+node-centred index raster through `origin + i*step_i + j*step_j`, gives each
+node the half-step footprint `[-.5,ncol-.5] × [-.5,nrow-.5]`, uses the inverse
+affine for inspection, and treats a false mask or NaN as a hole. It never
+averages four nodes or synthesizes a categorical code. Direct ScalarLayer and
+compact affine producers therefore share exact geometry, sample colour, fit,
+and cursor semantics; TriFill remains the non-affine compatibility path.
 Legacy affine 3-D surfaces continue to use typed `regular_surface`
 elevation/mask/value blocks. A shared v2 Map instead carries one affine Frame,
 mask, and ordered value blocks for both camera modes. `Frame` additively declares
 intrinsic rotation/y-flip and optional free-text CRS/world units; absent fields
-retain the historic axis-aligned behavior and are never guessed. A provider may
+retain the historic axis-aligned behavior and are never guessed. The 2-D camera
+is an independent view transform: zero is east-right/north-up, positive camera
+rotation turns north clockwise on screen, and its north HUD never inherits the
+Frame's intrinsic rotation or y-flip. Fit, hit testing, cached geometry, wells,
+and overlays all use that one exact world/screen composition. A provider may
 advertise ordered preview/full tiers; preview is rendered first, full builds
 transferable GPU-ready arrays in the existing decode worker, and the renderer
 swaps it without clearing preview state, moving the camera, or re-entering global

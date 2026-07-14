@@ -218,12 +218,21 @@ acceptance rules. `crs` is a non-empty free-text coordinate-system label
 rendered verbatim and `units` is the world-XY distance unit. Neither is inferred.
 The absent-field defaults reproduce the historic axis-aligned frame exactly.
 Intrinsic frame rotation/y-flip is data geometry; user camera rotation is a
-separate view transform and never mutates this frame.
+separate view transform and never mutates this frame. For camera rotation `φ`,
+world `(x,y)` projects before pan/scale as
+`(u,v)=(cosφ·x+sinφ·y, sinφ·x-cosφ·y)`. Thus `φ=0` is east-right/north-up and
+positive `φ` rotates north clockwise on screen; this orthogonal reflection is
+its own exact inverse. The north HUD depends only on `φ`, while labels and HUD
+controls remain in screen space. Fit projects all four half-cell footprint
+corners, and every geometry cache identity includes normalized `φ` plus the
+complete Frame signature.
 
 **ScalarLayer:** `{name: str, units: str, values: float[ncol·nrow], range,
 display_name?: str}`. `values` are **row-major** (`values[j·ncol + i]`);
 `null`/non-finite cells render transparent. Continuous fields use a
-perceptually-uniform colormap.
+perceptually-uniform colormap. Samples are node-centred: node `(i,j)` occupies
+the intrinsic half-cell around that node, and the full raster footprint is
+`[-.5,ncol-.5] × [-.5,nrow-.5]` mapped through the Frame.
 
 **TriFill (additive; the `view2d` value-fill output — fills are never a
 `color=` side effect):** `{name: str, display_name?: str | null, nodes:
@@ -260,10 +269,14 @@ origin:[x,y], step_i:[dx,dy], step_j:[dx,dy], values, mask}}`. `values` and
 [ncol*nrow]` with canonical NaN for missing values and `u8 [ncol*nrow]` with
 zero marking a hole. The world-coordinate step vectors preserve rotation and a
 flipped J axis exactly. This form intentionally has no `nodes` or `triangles`.
-The renderer colours an index-space raster and applies the affine directly;
-click inspection inverts the same affine. Only a producer layer whose nodes
-exactly cover its affine `node_xy/ncol/nrow` geometry qualifies. Non-affine and
-legacy payloads remain ordinary TriFill.
+The renderer paints exactly `ncol×nrow` node-centred pixels and applies the
+affine from intrinsic footprint `[-.5,ncol-.5] × [-.5,nrow-.5]` directly.
+Continuous and categorical pixels use the one source node at `j*ncol+i`; they
+never average four nodes or synthesize a categorical code. Click inspection
+inverts the same affine and rounds to that node. This is deliberately identical
+to ScalarLayer geometry, sample colour, fit, and cursor semantics. Only a
+producer layer whose nodes exactly cover its affine `node_xy/ncol/nrow`
+geometry qualifies. Non-affine and legacy payloads remain ordinary TriFill.
 
 One fill is active at a time (a panel selector when
 several are present); a "Fill" toggle controls visibility, and the active fill

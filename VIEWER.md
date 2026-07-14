@@ -231,6 +231,13 @@ LOD and idle paints preserve the camera; pan/wheel owns it until an explicit `F`
 refit. Filled surfaces start with grid/lattice lines off; a standalone geometry
 starts with them on, and either manual choice persists.
 
+The Map Inspector's **Camera** control rotates the view independently of the
+data frame and preserves the world point at the viewport centre. At camera
+rotation `0°`, world east is screen-right and world north is screen-up; positive
+camera rotation turns north clockwise on screen. The screen-space north arrow
+shows that camera orientation only. Frame azimuth and `yflip` remain intrinsic
+data geometry and never rotate the HUD, labels, or controls.
+
 In a workspace, a Map resource may carry producer-declared `well_overlays` for
 its stable surface/item identity. The active fill selects that context
 atomically, so switching surfaces changes projected well paths in the same
@@ -254,10 +261,13 @@ blocks. `Frame.rotation_deg` is counter-clockwise from east to I, `yflip`
 reverses J, and optional free-text `crs`/`units` support an honest HUD. Missing
 fields preserve the axis-aligned v1 frame (`0`, `false`, unknown, unknown).
 Intrinsic frame orientation and the user's camera rotation are separate exact
-transforms.
+transforms. Fit projects all four half-cell frame corners through both transforms;
+cursor inspection applies their exact inverse. Wells, contextual well overlays,
+contacts, linework, points, fills, and raster clipping use the same composition,
+so changing camera rotation cannot separate co-located geometry.
 
 The raster is
-**windowed + resolution-capped** — only the grid cells in
+**windowed + resolution-capped** — only the node samples in
 the current viewport are sampled, and never more than one sample per screen pixel
 (subsampled beyond that) — so a repaint costs a screenful regardless of ncol×nrow
 (a 2000×2000 field repaints in ~2 ms), while the click-to-inspect readout still
@@ -305,9 +315,19 @@ An exact affine structured value layer uses the compact Map fill form:
 dimensions, origin, two world-coordinate step vectors, and row-major typed
 values/mask, with no expanded mesh nodes or triangles. Rotation and a flipped J
 axis are preserved by the vectors; NaN holes remain transparent and
-uninspectable. The browser rasterizes in grid index space and applies the affine
-once. Non-affine surfaces and existing ScalarLayer/TriFill JSON or block
-payloads keep their established renderer paths.
+uninspectable. Each of the `ncol×nrow` values is a node-centred raster sample:
+node `(i,j)` occupies the half-step footprint around its exact affine position,
+so the full footprint is `[-.5,ncol-.5] × [-.5,nrow-.5]` in intrinsic space.
+Continuous and categorical paint uses that exact source node (never a four-node
+average or a synthesized category). The compact fill and direct ScalarLayer
+therefore have byte-identical sample colour, geometry, fit, and click indices.
+The browser rasterizes in index space and composes the frame and camera affines
+once. Non-affine TriFill JSON or block payloads keep their established path.
+
+Every geometry bitmap/cache identity includes the normalized camera rotation
+and complete active Frame signature. Pan/zoom may affine-blit a compatible
+bitmap, while a camera or intrinsic-frame change forces a correctly oriented
+rebuild; the north arrow and text labels always remain screen-space.
 
 For the `view2d` QA path, `color=` and `fill=` are **separate semantics**
 (owner rulings 2026-07-10 / 2026-07-13): `color=` colours **points** (and picks

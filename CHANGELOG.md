@@ -7,6 +7,13 @@ All notable changes to petekTools are recorded here. Format follows
 ## [Unreleased]
 
 ### Added
+- **Oriented lattice and Map transforms.** Rust and Python `Lattice` now expose
+  finite normalized intrinsic rotation/y-flip, exact step vectors and forward /
+  inverse intrinsic-world transforms; `Georef` can construct/place the same
+  frame, and grid resampling maps arbitrary oriented source and target lattices
+  through world coordinates. The Map camera is independently rotatable with a
+  north-up reset/HUD, centre-preserving control, exact inverse inspection, and
+  full Frame+camera cache identities.
 - **Viewer workspace schema v2 runtime.** Provider catalogs now normalize project
   identity and metadata-rich attributes per item/view; shared Map resources use
   selector-free live/cache/retry identity, one envelope-level block table, and
@@ -40,6 +47,13 @@ All notable changes to petekTools are recorded here. Format follows
   explicit compatibility paths.
 
 ### Fixed
+- **Rotated Map frame parity.** ScalarLayer, shared affine fills, contacts,
+  linework, points, wells, contextual overlays, clipping, fit, and hit testing
+  now use one frame→world→camera composition. Compact affine fills paint the
+  exact `ncol×nrow` node samples over the same half-cell footprint as direct
+  rasters—no four-node averaging or categorical synthesis. Executable 0°/30°
+  fixtures cover flipped J, several camera rotations, edge fit, cursor indices,
+  overlay co-location, north orientation, and cache invalidation.
 - **Inspector state and asynchronous paint alignment.** Scalar paint omission
   now remains inheritance rather than a false pin; point segments retain their
   own range, paint, and visibility; aggregate section keys mirror aggregate
@@ -1182,16 +1196,16 @@ All notable changes to petekTools are recorded here. Format follows
   ResampleMethod::{Bilinear, Nearest})` resamples a native regular grid (values on
   a georeferencing `Lattice`) onto a foreign target `Lattice`, the counterpart to
   the scattered → grid kernels (a private trend-surface resampler downstream will
-  retire onto it). **Axis-aligned only** (`rotation_deg == 0`; `yflip` honoured
-  through the coordinate maps — Petrel exports are axis-aligned, rotation is future
-  work); no new georef type (the source `Lattice` already carries origin + spacing
-  + counts in world coordinates). **Null / extent policy** (fixed + documented):
+  retire onto it). Source and target may independently carry arbitrary finite
+  intrinsic rotation and `yflip`: every target node maps to world XY and through
+  the exact inverse source frame before the unchanged interpolation kernel. No
+  new georef type is required. **Null / extent policy** (fixed + documented):
   outside the source extent → `NaN` (never extrapolate); `Nearest` snaps to the
   closest node; `Bilinear` returns `NaN` if the *nearest* corner is `NaN`, else the
   weighted mean over the **finite** corners with weights renormalized (a `NaN`
   corner is dropped). Tested: bit-equal identity, bilinear exact on an affine field
   under 2× refinement, nearest snap, null-hole propagation, outside-extent `NaN`,
-  and an offset-origin world-coords case (georeference honoured, not index-space).
+  offset-origin world coordinates, and analytic rotated source/target fixtures.
   Re-exported at the crate root. Additive and non-breaking.
 - `units`: the **SI/metric reporting layer** (family standard,
   `decision_si_units_standard`) — `m3_to_mcm`/`mcm_to_m3` (`M3_PER_MCM = 1e6`),

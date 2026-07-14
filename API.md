@@ -944,6 +944,8 @@ session.save("selected.html", include="selected")
 # defaults 0/False/None/None preserve the axis-aligned contract. Every global or
 # per-layer colormap may add sibling colormap_reversed=False; reversal is never
 # encoded into the colormap name.
+# Map camera rotation is independent: 0° is east-right/north-up, positive turns
+# north clockwise on screen, and the screen-space north HUD follows camera only.
 viewer.view(tree_or_source, *, title="Project workspace", visible=None,
             tab="auto", payload=None, save=None, serve=True, port=0, block=False,
             open_browser=True) -> viewer.WorkspaceSession
@@ -957,10 +959,15 @@ viewer.view(tree_or_source, *, title="Project workspace", visible=None,
 # values decode on first selection and remain cached (A -> B -> A is stable).
 # Exact affine structured layers instead emit dimensions/origin/I+J step vectors
 # plus typed row-major values/mask, with no expanded mesh nodes or triangles.
+# Their ncol*nrow values are node-centred over intrinsic
+# [-.5,ncol-.5]×[-.5,nrow-.5], exactly matching ScalarLayer paint/fit/hit rules;
+# categorical paint uses each exact source code and never averages neighbours.
 # During wheel/drag the renderer affine-composites point/fill plus split
 # grid/contour/outline/contact bitmaps (one paint/rAF); data-sized paths rebuild
 # at most once after settle without moving the user camera. First fit uses only
-# drawable content, caps horizontal zoom at a 10 km span, and F explicitly refits.
+# drawable projected half-cell corners, caps horizontal zoom at a 10 km span,
+# and F explicitly refits. Rotation preserves the viewport-centre world point;
+# every geometry cache keys normalized camera rotation + the full active Frame.
 # Filled surfaces default grid/lattice lines off; geometry-only views default on.
 # Plain JSON and saved single-file views are unchanged.
 viewer.view2d(items, *, title="2D view", color=True, fill=None, contours=None,
