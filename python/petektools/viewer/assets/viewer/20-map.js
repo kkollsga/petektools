@@ -526,6 +526,11 @@
     var stI = Math.max(1, Math.ceil(wcols / capX));
     var stJ = Math.max(1, Math.ceil(wrows / capY));
     var rc = Math.ceil(wcols / stI), rr = Math.ceil(wrows / stJ);
+    // Decimation controls work only. The raster affine must still span the
+    // exact selected node footprint [i0-.5,i1+.5] × [j0-.5,j1+.5]; an integer
+    // stride would overhang one edge and clip the other when the count is not a
+    // stride multiple.
+    var pixelI = wcols / rc, pixelJ = wrows / rr;
     // Reuse one offscreen canvas + ImageData across repaints (allocating a fresh
     // MP-sized canvas every pan frame is the real cost at high ncol×nrow).
     var R = _raster;
@@ -538,9 +543,11 @@
     var r = layer.range || { min: 0, max: 1 }, span = (r.max - r.min) || 1;
     var lut = colormapLUT(paintColormap(layer), paintReversed(layer)), data = img.data;
     for (var rj = 0; rj < rr; rj++) {
-      var jj = j0 + rj * stJ;
+      var sampleJ = j0 - .5 + (rj + .5) * pixelJ;
+      var jj = Math.max(j0, Math.min(j1, Math.round(sampleJ)));
       for (var ri = 0; ri < rc; ri++) {
-        var ii = i0 + ri * stI;
+        var sampleI = i0 - .5 + (ri + .5) * pixelI;
+        var ii = Math.max(i0, Math.min(i1, Math.round(sampleI)));
         var o = (rj * rc + ri) * 4;
         var val = vals[jj * ncol + ii];
         if (val == null || !isFinite(val)) { data[o + 3] = 0; continue; }
@@ -550,12 +557,10 @@
       }
     }
     octx.putImageData(img, 0, 0);
-    // Each raster pixel covers an stI×stJ cell block starting at node (i0,j0); its
-    // block's top-left world corner is that node minus half a cell.
-    var origin = frameIntrinsicToWorld(f, i0 - stI / 2, j0 - stJ / 2);
+    var origin = frameIntrinsicToWorld(f, i0 - .5, j0 - .5);
     var steps = frameStepVectors(f);
     var matrix = mapAffineScreenMatrix(mapView.rotationDeg, origin,
-      [steps.i[0] * stI, steps.i[1] * stI], [steps.j[0] * stJ, steps.j[1] * stJ],
+      [steps.i[0] * pixelI, steps.i[1] * pixelI], [steps.j[0] * pixelJ, steps.j[1] * pixelJ],
       mapView.scale, mapView.ox, mapView.oy);
     ctx.imageSmoothingEnabled = false;
     ctx.save();

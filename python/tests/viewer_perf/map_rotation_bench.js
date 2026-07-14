@@ -121,15 +121,15 @@ function fixtureFrame(rotationDeg, yflip) {
     ncol: 4, nrow: 3, rotation_deg: rotationDeg, yflip,
   };
 }
-function fillFor(frame) {
+function fillFor(frame, sourceValues = values) {
   const steps = context.frameStepVectors(frame);
   return {
-    name: "depth", range: [0, 11], categorical: false,
+    name: "depth", range: [0, Math.max(...sourceValues)], categorical: false,
     regular_grid: {
       dimensions: [frame.ncol, frame.nrow], origin: [frame.origin_x, frame.origin_y],
       step_i: steps.i, step_j: steps.j,
-      values: { length: values.length, a: new Float64Array(values) },
-      mask: { length: values.length, a: new Uint8Array(values.map(() => 1)) },
+      values: { length: sourceValues.length, a: new Float64Array(sourceValues) },
+      mask: { length: sourceValues.length, a: new Uint8Array(sourceValues.map(() => 1)) },
     },
   };
 }
@@ -177,6 +177,53 @@ const smallShared = context.regularGridValueAt(fillFor(smallFrame), smallWorld);
 if (!smallDirect || !smallShared || smallDirect.i !== 2 || smallDirect.j !== 1 ||
     smallShared.i !== 2 || smallShared.j !== 1) {
   throw new Error("small-spacing assembled inverse rejected a valid frame");
+}
+
+// Resolution-capped direct rasters must keep the exact half-cell footprint even
+// when the node count is not divisible by the integer sampling stride.
+const largeFrame = {
+  origin_x: 0, origin_y: 0, spacing_x: 1, spacing_y: 1,
+  ncol: 5000, nrow: 2, rotation_deg: 30, yflip: true,
+};
+const largeValues = Array.from({ length: 10000 }, (_, index) => index % 256);
+const largeLayer = {
+  name: "depth", display: "Depth", units: "m", range: { min: 0, max: 255 }, values: largeValues,
+};
+const largeFill = fillFor(largeFrame, largeValues);
+context.App.payload.map = {
+  frame: largeFrame, contacts: [], fills: [largeFill], contours: [], outline: [], points: null,
+};
+context.S.mapLayers = [largeLayer]; context.S.showFills = false;
+context.mapView.rotationDeg = 37;
+if (!context.fitMap(canvas, "explicit")) throw new Error("large raster fit failed");
+const largeDirect = targetContext(), largeShared = targetContext();
+context.drawWindowedRaster(largeDirect, canvas, largeFrame, largeLayer);
+context.drawRegularGridFill(
+  largeShared, largeFill, context.mapView.scale, context.mapView.ox, context.mapView.oy,
+);
+function rasterFootprint(target) {
+  const matrix = target.matrix, width = target.image.width, height = target.image.height;
+  return [[0, 0], [width, 0], [width, height], [0, height]].map(point => [
+    matrix[0] * point[0] + matrix[2] * point[1] + matrix[4],
+    matrix[1] * point[0] + matrix[3] * point[1] + matrix[5],
+  ]);
+}
+const directFootprint = rasterFootprint(largeDirect);
+const sharedFootprint = rasterFootprint(largeShared);
+directFootprint.forEach((point, index) => {
+  assertArrayClose(point, sharedFootprint[index], "capped raster footprint corner " + index);
+});
+if (largeDirect.image.width > context.MAX_RASTER_DIM ||
+    largeDirect.image.height > context.MAX_RASTER_DIM ||
+    largeDirect.image.width >= largeFrame.ncol) {
+  throw new Error("large direct raster escaped its resolution bound");
+}
+for (const point of context.frameCorners(largeFrame, true)) {
+  const screen = context.w2s(point[0], point[1]);
+  if (screen[0] < -1e-8 || screen[0] > canvas.width + 1e-8 ||
+      screen[1] < -1e-8 || screen[1] > canvas.height + 1e-8) {
+    throw new Error("large rotated raster fit clipped an edge: " + screen);
+  }
 }
 
 // Exact inverse cursor inspection at several independent camera rotations.
