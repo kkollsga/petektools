@@ -128,17 +128,28 @@ impl Lattice {
     /// intrinsic lattice coordinates `(fi, fj)`. The result is not clipped to
     /// the node extent. `None` means the step-vector matrix is singular.
     pub fn world_to_intrinsic(&self, x: f64, y: f64) -> Option<(f64, f64)> {
-        let (step_i, step_j) = self.step_vectors();
-        let det = step_i[0] * step_j[1] - step_i[1] * step_j[0];
-        if !det.is_finite() || det.abs() < f64::EPSILON {
+        if self.xinc == 0.0
+            || self.yinc == 0.0
+            || !self.xori.is_finite()
+            || !self.yori.is_finite()
+            || !self.xinc.is_finite()
+            || !self.yinc.is_finite()
+            || !self.rotation_deg.is_finite()
+            || !x.is_finite()
+            || !y.is_finite()
+        {
             return None;
         }
+        // The frame basis is orthogonal, so apply the inverse rotation and
+        // divide by each spacing independently. A determinant-magnitude test
+        // incorrectly rejects valid small units (and its spacing product can
+        // underflow even though neither axis is degenerate).
+        let (s, c) = self.rotation_deg.to_radians().sin_cos();
         let dx = x - self.xori;
         let dy = y - self.yori;
-        Some((
-            (dx * step_j[1] - dy * step_j[0]) / det,
-            (step_i[0] * dy - step_i[1] * dx) / det,
-        ))
+        let fi = (c * dx + s * dy) / self.xinc;
+        let fj = self.yflip_factor() * (-s * dx + c * dy) / self.yinc;
+        (fi.is_finite() && fj.is_finite()).then_some((fi, fj))
     }
 
     /// Fractional node coordinates `(fi, fj)` for world `(x, y)` — the inverse
@@ -216,8 +227,24 @@ mod tests {
     }
 
     #[test]
+    fn small_spacing_inverse_is_scale_independent() {
+        let axis_aligned = Lattice::regular(0.0, 0.0, 1e-8, 1e-8, 2, 2);
+        let (x, y) = axis_aligned.node_xy(1, 1);
+        assert_eq!((x, y), (1e-8, 1e-8));
+        assert_eq!(axis_aligned.xy_to_ij(x, y), Some((1.0, 1.0)));
+
+        let oriented = Lattice::oriented(0.0, 0.0, 1e-12, 3e-9, 3, 3, 30.0, true).unwrap();
+        let (x, y) = oriented.node_xy(2, 1);
+        let (fi, fj) = oriented.world_to_intrinsic(x, y).unwrap();
+        assert_relative_eq!(fi, 2.0, epsilon = 1e-12);
+        assert_relative_eq!(fj, 1.0, epsilon = 1e-12);
+    }
+
+    #[test]
     fn degenerate_geometry_has_no_inverse() {
         let g = Lattice::regular(0.0, 0.0, 0.0, 10.0, 5, 5);
         assert!(g.xy_to_ij(1.0, 1.0).is_none());
+        let non_finite = Lattice::regular(0.0, 0.0, f64::NAN, 10.0, 5, 5);
+        assert!(non_finite.xy_to_ij(1.0, 1.0).is_none());
     }
 }

@@ -107,13 +107,17 @@
       Number(frame.origin_y) + fi * steps.i[1] + fj * steps.j[1]];
   }
   function frameWorldToIntrinsic(frame, x, y) {
-    var steps = frameStepVectors(frame);
-    if (!steps) return null;
-    var det = steps.i[0] * steps.j[1] - steps.i[1] * steps.j[0];
-    if (!isFinite(det) || Math.abs(det) < 1e-15) return null;
-    var dx = x - Number(frame.origin_x), dy = y - Number(frame.origin_y);
-    return [(dx * steps.j[1] - dy * steps.j[0]) / det,
-      (steps.i[0] * dy - steps.i[1] * dx) / det];
+    if (!frame) return null;
+    var ox = Number(frame.origin_x), oy = Number(frame.origin_y);
+    var sx = Number(frame.spacing_x), sy = Number(frame.spacing_y);
+    var rotation = frame.rotation_deg == null ? 0 : Number(frame.rotation_deg);
+    if (![ox, oy, sx, sy, rotation, x, y].every(isFinite) || sx === 0 || sy === 0) return null;
+    var angle = normalizeMapRotation(rotation) * Math.PI / 180;
+    var c = Math.cos(angle), s = Math.sin(angle), sign = frame.yflip ? -1 : 1;
+    var dx = x - ox, dy = y - oy;
+    var fi = (c * dx + s * dy) / sx;
+    var fj = sign * (-s * dx + c * dy) / sy;
+    return isFinite(fi) && isFinite(fj) ? [fi, fj] : null;
   }
   function frameCorners(frame, halfCell) {
     if (!frame) return [];

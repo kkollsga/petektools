@@ -100,6 +100,10 @@ const context = {
   },
   vlAt: (values, index) => values && values.a ? values.a[index] : values[index],
   maskAt: (values, index) => values && values.a ? values.a[index] : values[index],
+  ptN: points => points ? points.length : 0,
+  ptX: (points, index) => points[index][0],
+  ptY: (points, index) => points[index][1],
+  visiblePointSlices: () => [{ start: 0, n: context.App.payload.map.points.length }],
   idColor: () => { throw new Error("unexpected categorical fallback"); },
 };
 vm.createContext(context);
@@ -132,19 +136,19 @@ function fillFor(frame) {
 const layer = { name: "depth", display: "Depth", units: "m", range: { min: 0, max: 11 }, values };
 const canvas = context.canvas = { width: 900, height: 700 };
 
-function setView(frame, cameraRotation) {
+function setView(frame, cameraRotation, scale = 2) {
   context.mapView.rotationDeg = cameraRotation;
-  context.mapView.scale = 2;
+  context.mapView.scale = scale;
   const projected = context.mapCameraProject(cameraRotation, frame.origin_x, frame.origin_y);
   context.mapView.ox = 450 - projected[0] * context.mapView.scale;
   context.mapView.oy = 350 - projected[1] * context.mapView.scale;
 }
 
-function rasterParity(frame, cameraRotation, label) {
+function rasterParity(frame, cameraRotation, label, scale = 2) {
   const fill = fillFor(frame);
   context.App.payload.map = { frame, contacts: [], fills: [fill], contours: [], outline: [], points: null };
   context.S.mapLayers = [layer];
-  setView(frame, cameraRotation);
+  setView(frame, cameraRotation, scale);
   const direct = targetContext(), shared = targetContext();
   context.drawWindowedRaster(direct, canvas, frame, layer);
   context.drawRegularGridFill(shared, fill, context.mapView.scale, context.mapView.ox, context.mapView.oy);
@@ -162,6 +166,18 @@ function rasterParity(frame, cameraRotation, label) {
 const axisResult = rasterParity(fixtureFrame(0, false), 0, "zero rotation");
 const frame = fixtureFrame(30, true), fill = fillFor(frame);
 const rotatedResults = [0, 37, -91, 180].map(camera => rasterParity(frame, camera, "30° frame / " + camera + "° camera"));
+const smallFrame = {
+  origin_x: 0, origin_y: 0, spacing_x: 1e-8, spacing_y: 2e-8,
+  ncol: 4, nrow: 3, rotation_deg: 30, yflip: true,
+};
+rasterParity(smallFrame, 37, "small-spacing rotated frame", 1e9);
+const smallWorld = context.frameIntrinsicToWorld(smallFrame, 2, 1);
+const smallDirect = context.frameValueAt(layer, smallFrame, smallWorld);
+const smallShared = context.regularGridValueAt(fillFor(smallFrame), smallWorld);
+if (!smallDirect || !smallShared || smallDirect.i !== 2 || smallDirect.j !== 1 ||
+    smallShared.i !== 2 || smallShared.j !== 1) {
+  throw new Error("small-spacing assembled inverse rejected a valid frame");
+}
 
 // Exact inverse cursor inspection at several independent camera rotations.
 const nodeWorld = context.frameIntrinsicToWorld(frame, 2, 1);
@@ -179,6 +195,20 @@ for (const camera of [0, 37, -91, 180]) {
   // A well head and a workspace overlay point at the same world XY must remain
   // pixel-identical because both consume the assembled production w2s helper.
   assertArrayClose(context.w2s(nodeWorld[0], nodeWorld[1]), screen, "well/overlay co-location " + camera);
+}
+
+// Direct and shared null policies must both reject inspection. ScalarLayer has
+// no separate mask: non-finite values are its declared transparent/null signal.
+const nullWorld = context.frameIntrinsicToWorld(frame, 1, 0);
+const nullLayer = { ...layer, values: values.slice() };
+nullLayer.values[1] = NaN;
+if (context.frameValueAt(nullLayer, frame, nullWorld) !== null) {
+  throw new Error("direct ScalarLayer exposed a non-finite click value");
+}
+const maskedFill = fillFor(frame);
+maskedFill.regular_grid.mask.a[1] = 0;
+if (context.regularGridValueAt(maskedFill, nullWorld) !== null) {
+  throw new Error("shared affine fill exposed a masked click value");
 }
 
 // Direct frame and shared affine fill contribute the same half-cell footprint
@@ -200,6 +230,49 @@ if (Math.min(...xs) < -1e-8 || Math.max(...xs) > canvas.width + 1e-8 ||
     !close((Math.min(...ys) + Math.max(...ys)) / 2, canvas.height / 2)) {
   throw new Error("rotated fit clipped or miscentred a frame edge");
 }
+
+// A point-cloud world AABB must contribute all four corners before camera
+// projection. Projecting only its diagonal collapses the 45° fit and clips the
+// two anti-diagonal points above and below the viewport.
+const edgePoints = [[0, 10000, 0], [10000, 0, 0]];
+context.App.payload.map = { frame, contacts: [], fills: [], contours: [], outline: [], points: edgePoints };
+context.S.mapLayers = []; context.S.showFills = false; context.S.showPoints = true;
+for (const camera of [45, -45, 135]) {
+  context.mapView.rotationDeg = camera;
+  if (!context.fitMap(canvas, "explicit")) throw new Error("point fit failed at camera " + camera);
+  for (const point of edgePoints) {
+    const screen = context.w2s(point[0], point[1]);
+    if (screen[0] < -1e-8 || screen[0] > canvas.width + 1e-8 ||
+        screen[1] < -1e-8 || screen[1] > canvas.height + 1e-8) {
+      throw new Error("point fit clipped an edge at camera " + camera + ": " + screen);
+    }
+  }
+}
+context.S.showPoints = false;
+
+// Workspace contacts retain their producer frame. Fit must use that distinct
+// frame rather than substituting the active fill/direct-raster frame.
+const contactFrame = {
+  origin_x: 20000, origin_y: -10000, spacing_x: 1200, spacing_y: 800,
+  ncol: 3, nrow: 2, rotation_deg: 60, yflip: true,
+};
+context.App.payload.map = {
+  frame, fills: [], contours: [], outline: [], points: null,
+  contacts: [{ __workspaceFrame: contactFrame, crossing: [1, 0, 0, 0, 0, 0] }],
+};
+context.S.contactVis = [true];
+for (const camera of [0, 47, -120]) {
+  context.mapView.rotationDeg = camera;
+  if (!context.fitMap(canvas, "explicit")) throw new Error("contact fit failed at camera " + camera);
+  for (const point of context.frameCorners(contactFrame, true)) {
+    const screen = context.w2s(point[0], point[1]);
+    if (screen[0] < -1e-8 || screen[0] > canvas.width + 1e-8 ||
+        screen[1] < -1e-8 || screen[1] > canvas.height + 1e-8) {
+      throw new Error("contact producer frame clipped at camera " + camera + ": " + screen);
+    }
+  }
+}
+context.S.contactVis = [];
 
 // Camera rotation preserves the viewport-centre world point and does not mutate
 // intrinsic frame orientation.

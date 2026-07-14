@@ -240,6 +240,19 @@ mod tests {
     }
 
     #[test]
+    fn small_rotated_flipped_spacing_identity_stays_finite() {
+        let lat = Lattice::oriented(0.0, 0.0, 1e-8, 2e-8, 3, 3, 30.0, true).unwrap();
+        let src = sample_lattice(&lat, |x, y| 1.0 + x / 1e-8 + y / 2e-8);
+        for method in [ResampleMethod::Bilinear, ResampleMethod::Nearest] {
+            let out = resample(&src, &lat, &lat, method).unwrap();
+            assert!(out.iter().all(|value| value.is_finite()), "{method:?}");
+            for (actual, expected) in out.iter().zip(src.iter()) {
+                assert_relative_eq!(actual, expected, epsilon = 1e-12);
+            }
+        }
+    }
+
+    #[test]
     fn rotated_source_inverse_samples_an_unrotated_world_target() {
         let src_lat = Lattice::oriented(1000.0, 2000.0, 10.0, 10.0, 5, 5, 30.0, false).unwrap();
         let src = sample_lattice(&src_lat, plane);

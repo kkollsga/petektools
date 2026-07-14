@@ -138,16 +138,23 @@
       if (py < ylo) ylo = py; if (py > yhi) yhi = py;
     }
     function extLineSet(L) { for (var k = 0; k < lsN(L); k++) { var n = lineLen(L, k); for (var i = 0; i < n; i++) ext(lineX(L, k, i), lineY(L, k, i)); } }
-    var hasFrameField = !!(S.mapLayers && S.mapLayers[S.mapLayerIdx]) ||
-      (m.contacts || []).some(function (_, i) { return S.contactVis[i]; });
-    if (hasFrameField) {
+    if (S.mapLayers && S.mapLayers[S.mapLayerIdx]) {
       frameCorners(mapFrame(), true).forEach(function (p) { ext(p[0], p[1]); });
     }
+    (m.contacts || []).forEach(function (contact, index) {
+      if (!S.contactVis[index]) return;
+      frameCorners(contact.__workspaceFrame || mapFrame(), true).forEach(function (p) {
+        ext(p[0], p[1]);
+      });
+    });
     if (S.showOutline) (m.outline || []).forEach(function (ring) { ring.forEach(function (pt) { ext(pt[0], pt[1]); }); });
     if (S.showGridLines) extLineSet(lineSetRing(m.grid_lines, m.grid_lines_lod));
     if (S.showPoints && m.points && m.points.length) {
       var bb = pointSlicesExtent(m.points, visiblePointSlices(), ptX, ptY);
-      if (bb) { ext(bb.x0, bb.y0); ext(bb.x1, bb.y1); }
+      if (bb) {
+        ext(bb.x0, bb.y0); ext(bb.x1, bb.y0);
+        ext(bb.x1, bb.y1); ext(bb.x0, bb.y1);
+      }
     }
     var activeFill = S.showFills && (m.fills || [])[S.mapFillIdx];
     if (activeFill) {
@@ -1573,9 +1580,13 @@
   function regularGridValueAt(fill, world) {
     var G = fill && fill.regular_grid; if (!G) return null;
     var ax = G.step_i[0], ay = G.step_i[1], bx = G.step_j[0], by = G.step_j[1];
-    var det = ax * by - ay * bx; if (!isFinite(det) || Math.abs(det) < 1e-15) return null;
+    var scaleI = Math.hypot(ax, ay), scaleJ = Math.hypot(bx, by);
+    if (!isFinite(scaleI) || !isFinite(scaleJ) || scaleI === 0 || scaleJ === 0) return null;
+    var anx = ax / scaleI, any = ay / scaleI, bnx = bx / scaleJ, bny = by / scaleJ;
+    var det = anx * bny - any * bnx; if (!isFinite(det) || det === 0) return null;
     var dx = world[0] - G.origin[0], dy = world[1] - G.origin[1];
-    var fi = (dx * by - dy * bx) / det, fj = (ax * dy - ay * dx) / det;
+    var fi = (dx * bny - dy * bnx) / det / scaleI;
+    var fj = (anx * dy - any * dx) / det / scaleJ;
     var i = Math.round(fi), j = Math.round(fj), nc = G.dimensions[0], nr = G.dimensions[1];
     if (i < 0 || j < 0 || i >= nc || j >= nr) return null;
     var index = j * nc + i, value = vlAt(G.values, index);
@@ -1589,6 +1600,7 @@
     var i = Math.round(intrinsic[0]), j = Math.round(intrinsic[1]);
     if (i < 0 || j < 0 || i >= frame.ncol || j >= frame.nrow) return null;
     var value = layer.values[j * frame.ncol + i];
+    if (!isFinite(value)) return null;
     var xy = frameIntrinsicToWorld(frame, i, j);
     return { i: i, j: j, value: value, x: xy[0], y: xy[1] };
   }

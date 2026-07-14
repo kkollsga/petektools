@@ -228,6 +228,25 @@ def test_rotated_lattice_frame_and_resample_are_exact():
         raise AssertionError("expected non-finite rotation to fail")
 
 
+def test_small_spacing_lattice_inverse_and_rotated_resample_are_finite():
+    axis_aligned = pt.Lattice(0.0, 0.0, 1e-8, 1e-8, 2, 2)
+    xy = axis_aligned.node_xy(1, 1)
+    assert xy == (1e-8, 1e-8)
+    assert axis_aligned.xy_to_ij(*xy) == (1.0, 1.0)
+
+    rotated = pt.Lattice(
+        0.0, 0.0, 1e-8, 2e-8, 3, 3, rotation_deg=30.0, yflip=True
+    )
+    src = [[float(i * 10 + j) for j in range(3)] for i in range(3)]
+    for method in ("bilinear", "nearest"):
+        out = pt.resample(src, rotated, rotated, method)
+        assert all(math.isfinite(value) for column in out for value in column)
+        for actual, expected in zip(out, src, strict=True):
+            assert all(
+                abs(a - e) < 1e-12 for a, e in zip(actual, expected, strict=True)
+            )
+
+
 def test_interp1d_methods_and_natural_cubic():
     x = [0.0, 1.0, 2.0, 4.0]
     y = [0.0, 2.0, 1.0, 3.0]

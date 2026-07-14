@@ -100,8 +100,10 @@ impl Georef {
         )
     }
 
-    /// Place a fractional intrinsic lattice point through the same exact
-    /// rotated/flipped frame used by [`oriented_lattice`](Self::oriented_lattice).
+    /// Place an intrinsic/local distance vector through the same rotated/flipped
+    /// orientation used by [`oriented_lattice`](Self::oriented_lattice), then
+    /// translate it to this world origin. Callers convert fractional indices to
+    /// distances first (`[fi * xinc, fj * yinc]`).
     pub fn place_intrinsic(
         &self,
         intrinsic: [f64; 2],
