@@ -946,6 +946,11 @@ session.save("selected.html", include="selected")
 # encoded into the colormap name.
 # Map camera rotation is independent: 0° is east-right/north-up, positive turns
 # north clockwise on screen, and the screen-space north HUD follows camera only.
+# The 2-D HUD uses the exact inverse for cursor world+i/j/value, shows zoom and a
+# constant scale bar, and prints CRS/unit metadata only when declared; perspective
+# and 3-D omit the scale bar. Map pan/zoom/north-up and ambiguous-pick cycling are
+# pointer/keyboard equivalent. All-visible well picks select greatest finite MD;
+# no-hit/error state remains local and visibility changes never refetch.
 viewer.view(tree_or_source, *, title="Project workspace", visible=None,
             tab="auto", payload=None, save=None, serve=True, port=0, block=False,
             open_browser=True) -> viewer.WorkspaceSession

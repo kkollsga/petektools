@@ -238,6 +238,14 @@ camera rotation turns north clockwise on screen. The screen-space north arrow
 shows that camera orientation only. Frame azimuth and `yflip` remain intrinsic
 data geometry and never rotate the HUD, labels, or controls.
 
+The screen-space HUD reports zoom relative to the latest fit, a nice-number 2-D
+scale bar, and the exact inverse cursor world coordinate. When the selected
+affine/direct raster has a finite sample it also reports i/j and value. Frame
+CRS, XY units, and attribute value units appear only when declared; no fallback
+unit or EPSG label is guessed. Perspective/3-D has no constant scale bar. The
+Map canvas is focusable: arrows pan, `+`/`-` zoom about the centre, and `0`
+returns north up, with the same status surfaced to assistive technology.
+
 In a workspace, a Map resource may carry producer-declared `well_overlays` for
 its stable surface/item identity. The active fill selects that context
 atomically, so switching surfaces changes projected well paths in the same
@@ -252,6 +260,12 @@ remain cycleable, and visibility changes cause no fetch. Singular
 `intersection` is still the fallback for old payloads and retains its old
 first-hit meaning. The viewer does not calculate clipping, intersections,
 measured depth or depth conversion.
+The selected pick is a solid marker and remaining visible records are secondary
+markers. A screen-space button follows the selected marker, so pointer click and
+keyboard activation cycle the same stable candidate order; the cycle resets only
+when that candidate set changes. With no visible hit the wellhead remains the
+honest fallback, while error diagnostics stay visible even when a different
+surface supplies a valid pick.
 
 Workspace-v2 shared surfaces use one `map.surface_grid`: an affine `Frame`, a
 mask, ordered rich descriptors, and one typed value block per attribute in the
@@ -382,7 +396,8 @@ squiggle = contours, marker = wells) + the layer's display name, duck-typed
 from the source object's `name` (e.g. a petekIO dataset name like
 `"Top Dome"`; fallback: the layer kind), with the colormap ramp + the clamped
 range wherever the layer is value-coloured. Pan (drag), zoom (wheel);
-**inspection is click-driven** (owner ruling 2026-07-11): hover shows nothing —
+**inspection is click-driven** (owner ruling 2026-07-11): hover opens no popup
+or anchored readout (the fixed HUD alone updates cursor coordinates) —
 a still **click** on/near a point (or a raster cell) anchors a readout at the
 clicked location (dataset/layer name, x, y, z/value) that persists until the
 next click; clicking empty space, or the same target again, dismisses it, and

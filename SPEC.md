@@ -88,7 +88,12 @@ retain the historic axis-aligned behavior and are never guessed. The 2-D camera
 is an independent view transform: zero is east-right/north-up, positive camera
 rotation turns north clockwise on screen, and its north HUD never inherits the
 Frame's intrinsic rotation or y-flip. Fit, hit testing, cached geometry, wells,
-and overlays all use that one exact world/screen composition. A provider may
+and overlays all use that one exact world/screen composition. The fixed
+screen-space HUD reports zoom, a constant-scale 2-D bar, and the exact inverse
+cursor world coordinate plus available i/j/value; it prints CRS and unit suffixes
+only when the Frame/attribute declares them. Perspective/3-D gets no misleading
+constant scale bar. The focusable Map provides keyboard pan/zoom/north-up parity
+without rotating HUD text or labels. A provider may
 advertise ordered preview/full tiers; preview is rendered first, full builds
 transferable GPU-ready arrays in the existing decode worker, and the renderer
 swaps it without clearing preview state, moving the camera, or re-entering global
@@ -99,7 +104,12 @@ materialized bundle: the active fill atomically chooses the producer-declared
 trajectory for draw and fit, while base wellhead/style/visibility remain
 unchanged. Producers may add an MD-ordered `intersections` list; the viewer uses
 the greatest-MD pick among visible contexts while singular `intersection`
-remains the compatibility fallback. petekTools does not compute intersections,
+remains the compatibility fallback. The stable candidate order is catalog
+context then MD/source-record order; an accessible screen-space control gives
+pointer and keyboard users the same deterministic cycle, resetting only when
+visibility changes the candidate signature. `no_hit` retains the wellhead marker
+and `error` remains a localized diagnostic even when another surface has a valid
+hit. petekTools does not compute intersections,
 measured depth, clipping, or depth conversion; missing and invalid records
 degrade locally to base paths.
 Its optional project-workspace shell is equally generic: an insertion-ordered

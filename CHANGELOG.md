@@ -7,6 +7,19 @@ All notable changes to petekTools are recorded here. Format follows
 ## [Unreleased]
 
 ### Added
+- **Truthful behavioral Map rendering.** The fixed screen-space HUD now exposes
+  exact inverse cursor world/i/j/value state, fit-relative zoom, known-only
+  CRS/units, a constant 2-D scale bar, and camera-aware north; perspective/3-D
+  omits the scale bar. Focusable keyboard pan/zoom/north-up and accessible
+  intersection controls match pointer behavior. Shared geometry and paint
+  selectors remain independent: geometry resets paint once, colour-only changes
+  preserve geometry/cache identity and never refetch. Continuous clamp/reverse
+  legends and discrete categorical keys follow the selected visible layer.
+- **All-visible well intersection markers.** The Map composes producer all-hit
+  records across every visible surface, selects greatest finite MD by a stable
+  catalog/record order, retains deterministic cycling until the candidate set
+  changes, and updates locally on visibility. No-hit falls back to the wellhead;
+  per-surface ambiguous/error diagnostics survive valid hits elsewhere.
 - **Oriented lattice and Map transforms.** Rust and Python `Lattice` now expose
   finite normalized intrinsic rotation/y-flip, exact step vectors and forward /
   inverse intrinsic-world transforms; `Georef` can construct/place the same

@@ -227,6 +227,14 @@ controls remain in screen space. Fit projects all four half-cell footprint
 corners, and every geometry cache identity includes normalized `φ` plus the
 complete Frame signature.
 
+The 2-D HUD uses that same exact inverse for cursor world coordinates and then
+the selected affine/direct layer inverse for optional i/j/value. It shows zoom
+relative to the latest fit and a nice-number constant scale bar. `crs`, XY
+`units`, and attribute value units render only when non-null; unknown metadata
+has no invented suffix. A perspective/3-D view has no constant scale bar. HUD
+text and accessible marker controls are screen-space and never participate in
+geometry/cache identity.
+
 **ScalarLayer:** `{name: str, units: str, values: float[ncol·nrow], range,
 display_name?: str}`. `values` are **row-major** (`values[j·ncol + i]`);
 `null`/non-finite cells render transparent. Continuous fields use a
@@ -437,8 +445,15 @@ path participates in Map fit, while head, label and style remain those of the
 base well. Malformed identity/status/order records are skipped locally and never
 fail the Map renderer.
 
-**Click-to-inspect (owner ruling 2026-07-11).** Hover shows nothing on the
-map. A still **click** on/near a point (the grid-bucket hit-test) or a raster
+The candidate cycle order is workspace item order (stable item-ID fallback),
+then MD and source record index. The initial candidate is the greatest finite MD
+(the first stable item/record wins an equal-MD tie). Pointer click and keyboard
+activation share one screen-space control; its position and label follow the
+selected pick, and its index persists until the candidate signature changes.
+Per-context `ambiguous`/`error` diagnostics are not erased by a hit elsewhere.
+
+**Click-to-inspect (owner ruling 2026-07-11).** Hover opens no popup on the map;
+the fixed HUD alone updates cursor state. A still **click** on/near a point (the grid-bucket hit-test) or a raster
 cell anchors a readout at the clicked location (dataset/layer name, x, y,
 z/value) that persists until the next click; clicking empty space — or the
 same target again — dismisses it. A press that moved more than a few px
