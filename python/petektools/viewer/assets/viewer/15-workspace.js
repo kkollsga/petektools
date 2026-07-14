@@ -539,7 +539,45 @@
   }
   function workspaceDecodedBytes(value) {
     var view = value && (value.a || value);
-    return view && typeof view.byteLength === "number" ? view.byteLength : 0;
+    if (!view || typeof view.byteLength !== "number") return 0;
+    return view.buffer && typeof view.buffer.byteLength === "number"
+      ? view.buffer.byteLength : view.byteLength;
+  }
+  function workspaceRetainedSourceLedger() {
+    var seenObjects = typeof WeakSet !== "undefined" ? new WeakSet() : [];
+    var seenBuffers = typeof WeakSet !== "undefined" ? new WeakSet() : [];
+    var allocations = [], total = 0;
+    function seen(set, value) {
+      if (!value || (typeof value !== "object" && typeof value !== "function")) return false;
+      if (set instanceof Array) { if (set.indexOf(value) >= 0) return true; set.push(value); return false; }
+      if (set.has(value)) return true; set.add(value); return false;
+    }
+    function retainBuffer(buffer, owner, digest) {
+      if (!buffer || seen(seenBuffers, buffer)) return;
+      var bytes = typeof buffer.byteLength === "number" ? buffer.byteLength : 0;
+      total += bytes; allocations.push({ owner: owner, digest: digest || null, bytes: bytes });
+    }
+    function visit(value, owner, digest) {
+      if (!value || (typeof value !== "object" && typeof value !== "function")) return;
+      if (typeof ArrayBuffer !== "undefined" && ArrayBuffer.isView && ArrayBuffer.isView(value)) {
+        retainBuffer(value.buffer, owner, digest); return;
+      }
+      if (typeof ArrayBuffer !== "undefined" && value instanceof ArrayBuffer) {
+        retainBuffer(value, owner, digest); return;
+      }
+      if (seen(seenObjects, value)) return;
+      Object.keys(value).forEach(function (key) { visit(value[key], owner, digest); });
+    }
+    if (W && W.resources) Object.keys(W.resources).forEach(function (id) {
+      Object.keys(W.resources[id] || {}).forEach(function (slot) {
+        visit(W.resources[id][slot], "resource:" + id + ":" + slot, null);
+      });
+    });
+    var cache = typeof window !== "undefined" && window.__PETEK_BLOCK_CACHE;
+    Object.keys(cache || {}).forEach(function (digest) {
+      visit(cache[digest], "block-cache", digest);
+    });
+    return { source_decoded_bytes: total, allocations: allocations };
   }
   function workspaceSharedSceneMesh(id, m, fill, detail) {
     if (!fill || !fill.regular_grid) return null;
@@ -605,9 +643,10 @@
       var grid = source.surface_grid || {}, localSeen = [], itemBytes = 0, arrays = [grid.mask];
       (grid.attributes || []).forEach(function (attribute) { arrays.push(attribute.values); });
       arrays.forEach(function (value) {
-        var view = value && (value.a || value); if (!view || localSeen.indexOf(view) >= 0) return;
-        localSeen.push(view); itemBytes += workspaceDecodedBytes(view);
-        if (globalSeen.indexOf(view) < 0) { globalSeen.push(view); sourceBytes += workspaceDecodedBytes(view); }
+        var view = value && (value.a || value), identity = view && (view.buffer || view);
+        if (!view || localSeen.indexOf(identity) >= 0) return;
+        localSeen.push(identity); itemBytes += workspaceDecodedBytes(view);
+        if (globalSeen.indexOf(identity) < 0) { globalSeen.push(identity); sourceBytes += workspaceDecodedBytes(view); }
       });
       var geometryView = fill.__workspaceGeometry && (fill.__workspaceGeometry.a || fill.__workspaceGeometry);
       if (geometryView && geometrySeen.indexOf(geometryView) < 0) geometrySeen.push(geometryView);

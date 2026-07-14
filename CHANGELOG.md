@@ -20,7 +20,10 @@ All notable changes to petekTools are recorded here. Format follows
   and paint-only or staggered per-item refinement preserves the stable scene,
   orbit camera, and GPU topology. The lifetime ledger now counts pending,
   attached, and retiring CPU/GPU allocations through atomic overlap and
-  cancellation instead of reporting cache ownership as memory release. Legacy
+  cancellation instead of reporting cache ownership as memory release. Its
+  decoded-source total scans all loaded resource tiers and digest-cache values,
+  so distinct preview/full and hidden-item buffers stay counted and aliases are
+  deduplicated by underlying buffer; encoded strings are excluded. Legacy
   separate Map/3-D resources remain unchanged.
 - **Truthful behavioral Map rendering.** The fixed screen-space HUD now exposes
   exact inverse cursor world/i/j/value state, fit-relative zoom, known-only

@@ -64,7 +64,7 @@ const sourceMap = {
     attributes: [{ id: "depth", values: geometryValues }, { id: "paint", values: paintValues }],
   },
 };
-const resource = { detail: "full" };
+const resource = { detail: "full", payload: { map: sourceMap } };
 let renders = 0, mapFallbackRenders = 0, status = null, banner = null;
 const retained = {
   visibility: { "surface:a": { map: true } }, attribute: "depth", colorBy: "depth",
@@ -83,6 +83,7 @@ const context = {
     visible: retained.visibility, activeMode: { "surface:a": { map: "2d" } },
     activeAttribute: { "surface:a": { map: "depth" } },
     activeColorBy: { "surface:a": { map: "depth" } },
+    resources: { "surface:a": { full: resource } },
     modeSwitches: 0, fetches: 1, sharedDecodes: 1,
   },
   window: { PETEK_DECODE: decode }, document: {
@@ -122,6 +123,7 @@ vm.createContext(context);
 [
   "workspaceMode", "workspaceMapModeItems", "workspaceMapMode", "syncWorkspaceMapModeHosts",
   "setWorkspaceMapMode", "setWorkspaceColorBy", "workspaceSharedElevationRange", "workspaceDecodedBytes",
+  "workspaceRetainedSourceLedger",
   "workspaceSharedFill", "workspaceSharedSceneMesh", "composeWorkspaceSharedMapScene",
 ].forEach(name => vm.runInContext(extractFunction(workspace, name), context));
 context.syncWorkspaceMapModeHosts = context.syncWorkspaceMapModeHosts;
@@ -290,6 +292,7 @@ context.W.visible["surface:b"] = { map: true };
 context.W.activeMode["surface:b"] = { map: "2d" };
 context.W.activeAttribute["surface:b"] = { map: "depth" };
 context.W.activeColorBy["surface:b"] = { map: "depth" };
+context.W.resources["surface:b"] = { full: { detail: "full", payload: { map: sourceMapB } } };
 const fillB = context.workspaceSharedFill("surface:b", sourceMapB);
 const wellAtA = { id: "well:a", trajectory: [[100, 200, -10]] };
 resource.detail = "full";
@@ -538,7 +541,7 @@ context.composeWorkspaceView = () => {
 context.composeWorkspaceView("map");
 const paintScene = context.App.payload.__workspaceMapScene3d;
 const paintComposedLedger = ledgerSnapshot();
-if (JSON.stringify(paintComposedLedger) !== JSON.stringify({ source: 160036, cpu: 240, gpu: 240, total: 160516 })) {
+if (JSON.stringify(paintComposedLedger) !== JSON.stringify({ source: 160052, cpu: 240, gpu: 240, total: 160532 })) {
   throw new Error("2-D paint composition zeroed live ledger: " + JSON.stringify(paintComposedLedger));
 }
 const paintMesh = paintScene.meshes[0], paintCenter = refinementCenter;
@@ -667,10 +670,85 @@ context.composeWorkspaceSharedMapScene(
 );
 const masklessLedger = context.window.__PETEK_SHARED_MODE_LEDGER;
 const masklessFullKey = context.App.payload.__workspaceMapScene3d.meshes[0].__sharedLedgerKey;
-if (masklessLedger.source_decoded_bytes !== 16 ||
+if (masklessLedger.source_decoded_bytes !== 160052 ||
     !masklessPreviewKey.endsWith("|0") || !masklessFullKey.endsWith("|0")) {
   throw new Error("maskless retained-byte or identity accounting mismatch");
 }
+
+// Source bytes follow ownership, not the current composition. Resource slots
+// retain preview and full tier fallbacks; the digest cache aliases those same
+// decoded buffers. Both roots must deduplicate by underlying ArrayBuffer while
+// hidden loaded items remain counted independently of visibility.
+const previousResources = context.W.resources;
+const previousBlockCache = context.window.__PETEK_BLOCK_CACHE;
+const previewSource = {
+  geometry: new Float32Array(4), paint: new Float32Array(4), mask: new Uint8Array(4),
+};
+const fullSource = {
+  geometry: new Float32Array(8), paint: new Float32Array(4), mask: new Uint8Array(4),
+};
+function retainedTier(detail, source) {
+  return { detail, payload: { map: { surface_grid: { mask: { a: source.mask }, attributes: [
+    { id: "depth", values: { a: source.geometry } },
+    { id: "paint", values: { a: source.paint } },
+  ] } } } };
+}
+const previewResource = retainedTier("preview", previewSource);
+const fullResource = retainedTier("full", fullSource);
+context.W.resources = { "surface:lifetime": { preview: previewResource } };
+context.window.__PETEK_BLOCK_CACHE = {
+  "preview-geometry": previewSource.geometry,
+  "preview-paint": previewSource.paint,
+  "preview-mask": previewSource.mask,
+};
+context.refreshSharedModeLedger();
+const sourcePreview = context.window.__PETEK_SHARED_MODE_LEDGER.source_decoded_bytes;
+context.W.resources["surface:lifetime"].full = fullResource;
+context.window.__PETEK_BLOCK_CACHE["full-geometry"] = fullSource.geometry;
+context.window.__PETEK_BLOCK_CACHE["full-paint"] = fullSource.paint;
+context.window.__PETEK_BLOCK_CACHE["full-mask"] = fullSource.mask;
+context.refreshSharedModeLedger();
+const sourceOverlap = context.window.__PETEK_SHARED_MODE_LEDGER.source_decoded_bytes;
+context.supersedeWorkspaceSharedPreview({ __sharedEvictionGroup: "surface:lifetime|depth" });
+context.refreshSharedModeLedger();
+const sourceAfterFull = context.window.__PETEK_SHARED_MODE_LEDGER.source_decoded_bytes;
+if (sourcePreview !== 36 || sourceOverlap !== 88 || sourceAfterFull !== 88 ||
+    context.W.resources["surface:lifetime"].preview !== previewResource ||
+    context.window.__PETEK_BLOCK_CACHE["preview-geometry"] !== previewSource.geometry ||
+    previewResource.payload.map.surface_grid.attributes[0].values.a !== previewSource.geometry) {
+  throw new Error("preview/full source lifetime ledger mismatch: " + JSON.stringify({
+    sourcePreview, sourceOverlap, sourceAfterFull,
+  }));
+}
+const hiddenSource = new Float32Array(3);
+context.W.resources["surface:hidden"] = { full: retainedTier("full", {
+  geometry: hiddenSource, paint: hiddenSource, mask: null,
+}) };
+context.window.__PETEK_BLOCK_CACHE["hidden-shared"] = hiddenSource;
+context.W.visible["surface:hidden"] = { map: false };
+const attributionCount = context.window.__PETEK_SHARED_MODE_LEDGER.entries.length;
+context.refreshSharedModeLedger();
+const sourceHidden = context.window.__PETEK_SHARED_MODE_LEDGER.source_decoded_bytes;
+context.W.visible["surface:hidden"].map = true; context.refreshSharedModeLedger();
+const sourceShown = context.window.__PETEK_SHARED_MODE_LEDGER.source_decoded_bytes;
+context.W.visible["surface:hidden"].map = false; context.refreshSharedModeLedger();
+const sourceHiddenAgain = context.window.__PETEK_SHARED_MODE_LEDGER.source_decoded_bytes;
+if (sourceHidden !== 100 || sourceShown !== 100 || sourceHiddenAgain !== 100 ||
+    context.window.__PETEK_SHARED_MODE_LEDGER.entries.length !== attributionCount) {
+  throw new Error("hidden loaded source lifetime changed with visibility: " + JSON.stringify({
+    sourceHidden, sourceShown, sourceHiddenAgain,
+  }));
+}
+const cacheOnlyDigest = new Uint8Array(7);
+context.window.__PETEK_BLOCK_CACHE["decoded-cache-only"] = cacheOnlyDigest;
+context.window.__PETEK_BLOCK_CACHE["encoded-string-not-decoded"] = "AAAAAA==";
+context.refreshSharedModeLedger();
+const sourceCacheOnly = context.window.__PETEK_SHARED_MODE_LEDGER.source_decoded_bytes;
+if (sourceCacheOnly !== 107) {
+  throw new Error("decoded digest cache root or encoded-string exclusion mismatch: " + sourceCacheOnly);
+}
+context.W.resources = previousResources;
+context.window.__PETEK_BLOCK_CACHE = previousBlockCache;
 
 context.W.activeMode["surface:a"].map = "3d";
 context.App.tab = "map"; context.sharedScene3dFallback("WebGL unavailable");
@@ -714,5 +792,8 @@ console.log(JSON.stringify({
   staggeredFinalPerItem: finalByItem.map(entries => entries.length),
   refinementRenders, paintRenders: sceneRenders,
   masklessSourceBytes: masklessLedger.source_decoded_bytes, implicitMask: true,
+  sourceLifetime: { preview: sourcePreview, overlap: sourceOverlap,
+    afterFull: sourceAfterFull, hidden: sourceHidden, shown: sourceShown,
+    cacheOnly: sourceCacheOnly },
   legacy: true, offline: true, stateNeutral: modeStateNeutral,
 }));

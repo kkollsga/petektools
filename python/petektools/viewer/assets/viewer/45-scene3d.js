@@ -616,6 +616,11 @@
 
   function refreshSharedModeLedger() {
     var ledger = window.__PETEK_SHARED_MODE_LEDGER; if (!ledger) return;
+    if (typeof workspaceRetainedSourceLedger === "function") {
+      var retainedSources = workspaceRetainedSourceLedger();
+      ledger.source_decoded_bytes = retainedSources.source_decoded_bytes;
+      ledger.source_allocations = retainedSources.allocations;
+    }
     var entries = ledger.entries || [], entryByGroup = {};
     entries.forEach(function (entry) {
       entry.derived_position_bytes = 0; entry.derived_topology_bytes = 0;

@@ -195,9 +195,13 @@ completion cannot create separate 2-D and 3-D copies. Without Three.js/WebGL, re
 is retained while the viewport reports `requested:"3d", rendered:"2d"` and
 renders the 2-D fallback. This is a usable fallback, not a resource error.
 The diagnostic shared-mode ledger is lifetime-based rather than cache-only:
-source bytes; unique CPU buffers retained by caches, pending chunks, attached
+source bytes retained by every loaded workspace resource tier or the decoded
+digest cache; unique CPU buffers retained by caches, pending chunks, attached
 objects, or retiring preview objects; and attached GPU attributes are distinct
-categories, with identity deduplication inside each category. `retained_bytes`
+categories, with underlying-buffer identity deduplication inside each category.
+Encoded block strings are not decoded bytes. Hidden items and preview fallbacks
+remain in the top source total while their resource/digest roots remain live;
+entry rows only attribute the current composition. `retained_bytes`
 is their sum. Preview bytes remain present during an atomic full overlap and
 drop only on disposal; cancelled pending bytes drop only when the continuation
 releases its state. A 2-D-only paint composition preserves all still-live 3-D

@@ -107,6 +107,9 @@ allocates no hidden raster. Static export embeds the full tier once when it is
 advertised. Diagnostic memory accounting follows actual lifetime: cache,
 pending, attached, and retiring CPU buffers are identity-deduplicated separately
 from attached GPU attributes, so atomic overlap remains visible until disposal.
+Decoded source buffers are scanned from all loaded resource tiers and the digest
+cache, deduplicated by underlying buffer; hidden items and retained preview
+fallbacks remain in the top total, while encoded strings never count.
 Map resources may also carry additive contextual well overlays keyed by stable
 surface/fill and base-well item identities. Selection is local to the already
 materialized bundle: the active fill atomically chooses the producer-declared

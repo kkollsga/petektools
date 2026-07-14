@@ -514,6 +514,11 @@ sources. Continuous paint and declared categorical code colours share the same
 topology; paint-only changes do not rebuild it. A preview stays interactive while
 a separately fetched full tier builds; each item's final swap is atomic and
 camera-stable while other preview items remain interactive.
+The shared-mode diagnostic source total follows retained ownership rather than
+visibility: it scans all loaded resource tiers and decoded digest-cache values,
+deduplicates aliases by underlying buffer, and excludes encoded strings. Thus a
+hidden loaded item or retained preview fallback stays counted until actually
+evicted even though entry rows describe only the current composition.
 Non-affine and legacy Mesh3D payloads keep their established path.
 Their geometry-only
 counterparts (`grid_geometry`, `structured_shell`, `mesh_shell`) render as a
