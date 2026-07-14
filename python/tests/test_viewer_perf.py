@@ -167,6 +167,11 @@ def test_shared_only_workspace_map_composes_and_renders_with_source_frames():
     assert result["cursorValue"] == 3
     assert result["category"] == 1
     assert result["stableGeometry"] is True
+    assert result["paintCacheSeparated"] is True
+    assert result["categoricalCacheSeparated"] is True
+    assert result["maskCacheSeparated"] is True
+    assert result["clampCacheSeparated"] is True
+    assert result["fillCacheHits"] >= 1
     assert result["paintWrites"] == 2
     assert result["composeCalls"] == 2
     assert result["loadCalls"] == 0

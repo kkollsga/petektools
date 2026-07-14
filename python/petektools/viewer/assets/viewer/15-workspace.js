@@ -413,10 +413,17 @@
     var sign = f.yflip ? -1 : 1, c = Math.cos(angle), s = Math.sin(angle);
     var mask = grid.mask;
     if (!mask) {
-      var values = new Uint8Array((f.ncol || 0) * (f.nrow || 0)); values.fill(1);
-      mask = { length: values.length, a: values };
+      mask = grid.__workspaceAllValidMask;
+      if (!mask) {
+        var values = new Uint8Array((f.ncol || 0) * (f.nrow || 0)); values.fill(1);
+        mask = { length: values.length, a: values };
+        Object.defineProperty(grid, "__workspaceAllValidMask", {
+          value: mask, configurable: true, writable: true,
+        });
+      }
     }
     var descriptor = descriptors[colorId] || {};
+    var categoricalCodes = paint.codes || descriptor.codes || null;
     // One stable fill object per geometry attribute. A colour-only change
     // updates paint fields in place, preserving geometry/cache identity and
     // avoiding a geometry rebuild while still invalidating the paint key.
@@ -436,7 +443,28 @@
         },
       };
     }
-    var changedPaint = fill.color_by !== colorId;
+    // Paint identity is reference-based and memoized, so render frames never
+    // hash the full values/mask arrays. Replacing either source (or the code
+    // table) creates a distinct bitmap key; returning to an unchanged lane can
+    // reuse its prior key while the fill/grid geometry objects stay stable.
+    var identityCache = m.__workspaceSharedPaintIdentities || Object.defineProperty(m,
+      "__workspaceSharedPaintIdentities", { value: {}, configurable: true, writable: true,
+      }).__workspaceSharedPaintIdentities;
+    var identityKey = attributeId + "\u0000" + colorId;
+    var identities = identityCache[identityKey] || (identityCache[identityKey] = []);
+    var paintIdentity = null;
+    for (var identityIndex = 0; identityIndex < identities.length; identityIndex++) {
+      var candidate = identities[identityIndex];
+      if (candidate.values === paint.values && candidate.mask === mask &&
+          candidate.codes === categoricalCodes) { paintIdentity = candidate.token; break; }
+    }
+    if (!paintIdentity) {
+      paintIdentity = {};
+      identities.push({ values: paint.values, mask: mask, codes: categoricalCodes,
+        token: paintIdentity });
+    }
+    var changedPaint = fill.__paintIdentity !== paintIdentity;
+    fill.__paintIdentity = paintIdentity;
     fill.name = colorId; fill.color_by = colorId;
     var item = W && W.items && W.items[id];
     fill.display_name = item && item.label ? item.label : (descriptor.label || colorId);
@@ -444,7 +472,7 @@
     fill.range = paint.range; fill.colormap = paint.colormap || null;
     fill.colormap_reversed = !!paint.colormap_reversed;
     fill.categorical = descriptor.kind === "categorical";
-    fill.categorical_codes = fill.categorical ? descriptor.codes : null;
+    fill.categorical_codes = fill.categorical ? categoricalCodes : null;
     fill.regular_grid.values = paint.values; fill.regular_grid.mask = mask;
     if (changedPaint) fill.__categoricalClasses = null;
     return fill;

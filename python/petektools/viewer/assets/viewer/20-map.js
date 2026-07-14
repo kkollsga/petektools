@@ -1609,6 +1609,19 @@
     }
     return entry;
   }
+  function fillPaintCacheKey(fill) {
+    var grid = fill && fill.regular_grid;
+    // Values, mask, categorical table, and the workspace paint token are
+    // identity checks only: no full-array hashing is allowed on render frames.
+    // Numeric clamp/style fields remain explicit because the inspector may
+    // replace them locally without rebuilding the shared fill.
+    return [displayId(fill && fill.__paintIdentity),
+      displayId(grid ? grid.values : fill && fill.values),
+      displayId(grid && grid.mask), fill && fill.color_by || fill && fill.name || "",
+      fill && fill.categorical ? 1 : 0, displayId(fill && fill.categorical_codes),
+      paintColormap(fill), paintReversed(fill),
+      fill && fill.range ? fill.range[0] + "," + fill.range[1] : "-"].join("|");
+  }
   function fillNodesBBox(ring) {
     var bboxKey = mapGeometryCacheKey(mapFrame(), mapView.rotationDeg);
     if (ring.__cameraBBox && ring.__cameraBBoxKey === bboxKey) return ring.__cameraBBox;
@@ -1639,8 +1652,7 @@
   }
   function drawMapFill(ctx, cv, fill) {
     if (!fill || (!fill.regular_grid && (!fill.nodes || !fill.nodes.length))) return;
-    var key = mapGeometryCacheKey(mapFrame(), mapView.rotationDeg) + "|" +
-      paintColormap(fill) + "|" + paintReversed(fill) + "|" + (fill.range ? fill.range[0] + "," + fill.range[1] : "-");
+    var key = mapGeometryCacheKey(mapFrame(), mapView.rotationDeg) + "|" + fillPaintCacheKey(fill);
     var bb = fillNodesBBox(fill);
     // the viewport in world coords, clamped to the fill bbox — the region a blit
     // must cover to be valid
