@@ -53,10 +53,20 @@ impl Georef {
 
     /// A world-placed `Lattice` of `ncol × nrow` nodes at spacing `(xinc, yinc)`,
     /// node `(0, 0)` pinned to this origin.
-    fn lattice(&self, xinc: f64, yinc: f64, ncol: usize, nrow: usize) -> Lattice {
-        Lattice {
-            inner: self.inner.lattice(xinc, yinc, ncol, nrow),
-        }
+    #[pyo3(signature = (xinc, yinc, ncol, nrow, rotation_deg = 0.0, yflip = false))]
+    fn lattice(
+        &self,
+        xinc: f64,
+        yinc: f64,
+        ncol: usize,
+        nrow: usize,
+        rotation_deg: f64,
+        yflip: bool,
+    ) -> PyResult<Lattice> {
+        self.inner
+            .oriented_lattice(xinc, yinc, ncol, nrow, rotation_deg, yflip)
+            .map(|inner| Lattice { inner })
+            .map_err(to_pyerr)
     }
 
     /// Translate a local `[x, y]` (from `(0, 0)`) into this world frame.
@@ -67,6 +77,19 @@ impl Georef {
     /// Translate a list of local `[x, y]` points into this world frame.
     fn place_points(&self, locals: Vec<[f64; 2]>) -> Vec<[f64; 2]> {
         self.inner.place_points(&locals)
+    }
+
+    /// Place a local point through a rotated/flipped intrinsic frame.
+    #[pyo3(signature = (intrinsic, rotation_deg = 0.0, yflip = false))]
+    fn place_intrinsic(
+        &self,
+        intrinsic: [f64; 2],
+        rotation_deg: f64,
+        yflip: bool,
+    ) -> PyResult<[f64; 2]> {
+        self.inner
+            .place_intrinsic(intrinsic, rotation_deg, yflip)
+            .map_err(to_pyerr)
     }
 
     fn __repr__(&self) -> String {

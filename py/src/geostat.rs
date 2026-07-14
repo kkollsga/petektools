@@ -46,9 +46,9 @@ fn extract_spatial_variogram(obj: &Bound<'_, PyAny>) -> PyResult<RsSpatialVariog
     ))
 }
 
-/// A regular 2-D lattice — the target grid geometry. `Lattice(xori, yori, xinc,
-/// yinc, ncol, nrow)` builds an axis-aligned grid; node `(col, row)` sits at
-/// `(xori + col*xinc, yori + row*yinc)`. World units throughout.
+/// A regular 2-D lattice — the target grid geometry. Optional intrinsic
+/// `rotation_deg` (CCW from east to I) and `yflip` preserve the historic
+/// axis-aligned constructor defaults. World units throughout.
 #[pyclass(name = "Lattice", frozen)]
 pub struct Lattice {
     pub(crate) inner: RsLattice,
@@ -57,10 +57,21 @@ pub struct Lattice {
 #[pymethods]
 impl Lattice {
     #[new]
-    fn new(xori: f64, yori: f64, xinc: f64, yinc: f64, ncol: usize, nrow: usize) -> Lattice {
-        Lattice {
-            inner: RsLattice::regular(xori, yori, xinc, yinc, ncol, nrow),
-        }
+    #[pyo3(signature = (xori, yori, xinc, yinc, ncol, nrow, rotation_deg = 0.0, yflip = false))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        xori: f64,
+        yori: f64,
+        xinc: f64,
+        yinc: f64,
+        ncol: usize,
+        nrow: usize,
+        rotation_deg: f64,
+        yflip: bool,
+    ) -> PyResult<Lattice> {
+        RsLattice::oriented(xori, yori, xinc, yinc, ncol, nrow, rotation_deg, yflip)
+            .map(|inner| Lattice { inner })
+            .map_err(crate::to_pyerr)
     }
 
     #[getter]
@@ -91,17 +102,59 @@ impl Lattice {
     fn yinc(&self) -> f64 {
         self.inner.yinc
     }
+    /// Intrinsic rotation in normalized degrees CCW from world east to I.
+    #[getter]
+    fn rotation_deg(&self) -> f64 {
+        self.inner.rotation_deg
+    }
+    /// Whether positive intrinsic J follows the flipped axis.
+    #[getter]
+    fn yflip(&self) -> bool {
+        self.inner.yflip
+    }
+
+    /// Exact world-coordinate step vectors for positive intrinsic I and J.
+    fn step_vectors(&self) -> ([f64; 2], [f64; 2]) {
+        self.inner.step_vectors()
+    }
+
+    /// Exact fractional intrinsic `(i, j)` to world `(x, y)` transform.
+    fn intrinsic_to_world(&self, fi: f64, fj: f64) -> (f64, f64) {
+        self.inner.intrinsic_to_world(fi, fj)
+    }
+
+    /// Exact world `(x, y)` to fractional intrinsic `(i, j)` transform.
+    fn world_to_intrinsic(&self, x: f64, y: f64) -> Option<(f64, f64)> {
+        self.inner.world_to_intrinsic(x, y)
+    }
+
+    /// Compatibility aliases matching the Rust geometry vocabulary.
+    fn node_xy(&self, i: usize, j: usize) -> (f64, f64) {
+        self.inner.node_xy(i, j)
+    }
+
+    fn xy_to_ij(&self, x: f64, y: f64) -> Option<(f64, f64)> {
+        self.inner.xy_to_ij(x, y)
+    }
 
     fn __repr__(&self) -> String {
-        format!(
-            "Lattice(xori={}, yori={}, xinc={}, yinc={}, ncol={}, nrow={})",
+        let base = format!(
+            "Lattice(xori={}, yori={}, xinc={}, yinc={}, ncol={}, nrow={}",
             self.inner.xori,
             self.inner.yori,
             self.inner.xinc,
             self.inner.yinc,
             self.inner.ncol,
             self.inner.nrow
-        )
+        );
+        if self.inner.rotation_deg == 0.0 && !self.inner.yflip {
+            base + ")"
+        } else {
+            format!(
+                "{base}, rotation_deg={}, yflip={})",
+                self.inner.rotation_deg, self.inner.yflip
+            )
+        }
     }
 }
 

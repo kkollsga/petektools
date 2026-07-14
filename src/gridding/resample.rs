@@ -17,14 +17,14 @@
 //! `Array2<f64>` shaped `(ncol, nrow)` to match `src_georef`, `NaN` where a node
 //! is undefined.
 //!
-//! ## Axis-aligned only (documented limitation)
+//! ## Exact frame transform
 //!
-//! Resampling is designed and tested for **axis-aligned** lattices
-//! (`rotation_deg == 0`; `yflip` is honoured through the coordinate maps).
-//! Because the world↔index maps ([`Lattice::node_xy`] / [`Lattice::xy_to_ij`])
-//! are fully general, a rotated lattice flows through arithmetically, but
-//! rotation is **untested and unsupported** here — Petrel exports are
-//! axis-aligned; rotation is future work.
+//! Source and target may independently carry intrinsic rotation and a flipped J
+//! axis. Every target node is mapped to world through
+//! [`Lattice::intrinsic_to_world`] and then through the exact inverse source
+//! transform [`Lattice::world_to_intrinsic`]. Interpolation itself remains the
+//! same axis-aligned index-space kernel; frame handling is composed at this one
+//! seam rather than duplicated inside bilinear/nearest sampling.
 //!
 //! ## Null / extent policy (chosen, fixed, documented)
 //!
@@ -91,10 +91,10 @@ pub fn resample(
 
     for tj in 0..target.nrow {
         for ti in 0..target.ncol {
-            let (x, y) = target.node_xy(ti, tj);
+            let (x, y) = target.intrinsic_to_world(ti as f64, tj as f64);
             // Map the target node's WORLD position into source index space (this
             // is what honours the georeference — not an index-for-index copy).
-            let Some((fi, fj)) = src_georef.xy_to_ij(x, y) else {
+            let Some((fi, fj)) = src_georef.world_to_intrinsic(x, y) else {
                 continue; // degenerate source (already guarded) → leave NaN
             };
             let fi = snap(fi);
@@ -222,6 +222,31 @@ mod tests {
                 assert_relative_eq!(out[[i, j]], plane(x, y), epsilon = 1e-9);
             }
         }
+    }
+
+    #[test]
+    fn rotated_source_and_target_are_exact_on_affine_world_field() {
+        let src_lat =
+            Lattice::oriented(431_000.0, 6_521_000.0, 10.0, 12.0, 5, 5, 30.0, true).unwrap();
+        let src = sample_lattice(&src_lat, plane);
+        let target = Lattice::oriented(431_000.0, 6_521_000.0, 5.0, 6.0, 9, 9, 30.0, true).unwrap();
+        let out = resample(&src, &src_lat, &target, ResampleMethod::Bilinear).unwrap();
+        for j in 0..target.nrow {
+            for i in 0..target.ncol {
+                let (x, y) = target.node_xy(i, j);
+                assert_relative_eq!(out[[i, j]], plane(x, y), epsilon = 1e-8);
+            }
+        }
+    }
+
+    #[test]
+    fn rotated_source_inverse_samples_an_unrotated_world_target() {
+        let src_lat = Lattice::oriented(1000.0, 2000.0, 10.0, 10.0, 5, 5, 30.0, false).unwrap();
+        let src = sample_lattice(&src_lat, plane);
+        let (x, y) = src_lat.intrinsic_to_world(1.25, 2.5);
+        let target = Lattice::regular(x, y, 1.0, 1.0, 1, 1);
+        let out = resample(&src, &src_lat, &target, ResampleMethod::Bilinear).unwrap();
+        assert_relative_eq!(out[[0, 0]], plane(x, y), epsilon = 1e-9);
     }
 
     #[test]

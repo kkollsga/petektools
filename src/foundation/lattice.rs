@@ -8,6 +8,8 @@
 //! Parity is pinned by the golden test in `tests/lattice_parity.rs`, which
 //! checks `node_xy` / `xy_to_ij` against petekio 0.2.0's `GridGeometry` formula.
 
+use super::{AlgoError, Result};
+
 /// An axis-aligned 2-D bounding box.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BBox {
@@ -55,6 +57,37 @@ impl Lattice {
         }
     }
 
+    /// Build an intrinsically rotated/flipped lattice. Rotation is normalized
+    /// into `[0, 360)` and must be finite. Existing [`regular`](Self::regular)
+    /// construction remains the exact zero-rotation compatibility path.
+    #[allow(clippy::too_many_arguments)]
+    pub fn oriented(
+        xori: f64,
+        yori: f64,
+        xinc: f64,
+        yinc: f64,
+        ncol: usize,
+        nrow: usize,
+        rotation_deg: f64,
+        yflip: bool,
+    ) -> Result<Self> {
+        if !rotation_deg.is_finite() {
+            return Err(AlgoError::InvalidArgument(
+                "Lattice: rotation_deg must be finite".to_string(),
+            ));
+        }
+        Ok(Self {
+            xori,
+            yori,
+            xinc,
+            yinc,
+            ncol,
+            nrow,
+            rotation_deg: rotation_deg.rem_euclid(360.0),
+            yflip,
+        })
+    }
+
     /// `+1.0` normally, `-1.0` when `yflip` is set.
     pub fn yflip_factor(&self) -> f64 {
         if self.yflip {
@@ -64,27 +97,55 @@ impl Lattice {
         }
     }
 
+    /// World-coordinate step vectors for one positive intrinsic I and J node.
+    pub fn step_vectors(&self) -> ([f64; 2], [f64; 2]) {
+        let (s, c) = self.rotation_deg.to_radians().sin_cos();
+        (
+            [self.xinc * c, self.xinc * s],
+            [
+                -self.yinc * self.yflip_factor() * s,
+                self.yinc * self.yflip_factor() * c,
+            ],
+        )
+    }
+
+    /// Exact affine transform from fractional intrinsic lattice coordinates
+    /// `(fi, fj)` to world `(x, y)`.
+    pub fn intrinsic_to_world(&self, fi: f64, fj: f64) -> (f64, f64) {
+        let (step_i, step_j) = self.step_vectors();
+        (
+            self.xori + fi * step_i[0] + fj * step_j[0],
+            self.yori + fi * step_i[1] + fj * step_j[1],
+        )
+    }
+
     /// World `(x, y)` of node `(i, j)`. `node_xy(0, 0) == (xori, yori)`.
     pub fn node_xy(&self, i: usize, j: usize) -> (f64, f64) {
-        let (s, c) = self.rotation_deg.to_radians().sin_cos();
-        let di = i as f64 * self.xinc;
-        let dj = j as f64 * self.yinc * self.yflip_factor();
-        (self.xori + di * c - dj * s, self.yori + di * s + dj * c)
+        self.intrinsic_to_world(i as f64, j as f64)
+    }
+
+    /// Exact inverse affine transform from world `(x, y)` to fractional
+    /// intrinsic lattice coordinates `(fi, fj)`. The result is not clipped to
+    /// the node extent. `None` means the step-vector matrix is singular.
+    pub fn world_to_intrinsic(&self, x: f64, y: f64) -> Option<(f64, f64)> {
+        let (step_i, step_j) = self.step_vectors();
+        let det = step_i[0] * step_j[1] - step_i[1] * step_j[0];
+        if !det.is_finite() || det.abs() < f64::EPSILON {
+            return None;
+        }
+        let dx = x - self.xori;
+        let dy = y - self.yori;
+        Some((
+            (dx * step_j[1] - dy * step_j[0]) / det,
+            (step_i[0] * dy - step_i[1] * dx) / det,
+        ))
     }
 
     /// Fractional node coordinates `(fi, fj)` for world `(x, y)` — the inverse
     /// of [`node_xy`](Self::node_xy). `None` for a degenerate (zero-spacing)
     /// geometry. The result may lie outside `[0, ncol-1] × [0, nrow-1]`.
     pub fn xy_to_ij(&self, x: f64, y: f64) -> Option<(f64, f64)> {
-        if self.xinc == 0.0 || self.yinc == 0.0 {
-            return None;
-        }
-        let (s, c) = self.rotation_deg.to_radians().sin_cos();
-        let dx = x - self.xori;
-        let dy = y - self.yori;
-        let u = dx * c + dy * s; // along x axis  = i * xinc
-        let v = -dx * s + dy * c; // along y axis = j * yinc * yflip
-        Some((u / self.xinc, v / (self.yinc * self.yflip_factor())))
+        self.world_to_intrinsic(x, y)
     }
 
     /// Axis-aligned bounding box of all nodes.
@@ -139,6 +200,19 @@ mod tests {
         let (fi, fj) = g.xy_to_ij(x, y).unwrap();
         assert_relative_eq!(fi, 2.0, epsilon = 1e-9);
         assert_relative_eq!(fj, 1.0, epsilon = 1e-9);
+    }
+
+    #[test]
+    fn oriented_normalizes_and_fractional_transform_is_exact() {
+        let g = Lattice::oriented(431_000.0, 6_521_000.0, 25.0, 40.0, 5, 4, 390.0, true).unwrap();
+        assert_eq!(g.rotation_deg, 30.0);
+        assert!(g.yflip);
+        let (x, y) = g.intrinsic_to_world(1.25, 2.5);
+        let (fi, fj) = g.world_to_intrinsic(x, y).unwrap();
+        assert_relative_eq!(fi, 1.25, epsilon = 1e-10);
+        assert_relative_eq!(fj, 2.5, epsilon = 1e-10);
+        assert_eq!(g.node_xy(2, 1), g.intrinsic_to_world(2.0, 1.0));
+        assert!(Lattice::oriented(0.0, 0.0, 1.0, 1.0, 2, 2, f64::NAN, false).is_err());
     }
 
     #[test]

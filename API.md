@@ -41,7 +41,13 @@ pub struct Lattice {
 impl Lattice {
     pub fn regular(xori: f64, yori: f64, xinc: f64, yinc: f64,
                    ncol: usize, nrow: usize) -> Lattice;  // unrotated, unflipped
+    pub fn oriented(xori: f64, yori: f64, xinc: f64, yinc: f64,
+                    ncol: usize, nrow: usize, rotation_deg: f64, yflip: bool)
+        -> Result<Lattice>;  // finite rotation normalized to [0,360)
     pub fn yflip_factor(&self) -> f64;
+    pub fn step_vectors(&self) -> ([f64; 2], [f64; 2]);
+    pub fn intrinsic_to_world(&self, fi: f64, fj: f64) -> (f64, f64);
+    pub fn world_to_intrinsic(&self, x: f64, y: f64) -> Option<(f64, f64)>;
     pub fn node_xy(&self, i: usize, j: usize) -> (f64, f64);
     pub fn xy_to_ij(&self, x: f64, y: f64) -> Option<(f64, f64)>; // fractional; None if degenerate
     pub fn bbox(&self) -> BBox;
@@ -95,10 +101,11 @@ default not-a-knot boundary condition. Python exposes this as
 
 Resample a native regular grid (values on a georeferencing `Lattice`) onto a
 foreign target `Lattice` — the grid → grid counterpart to the scattered → grid
-kernels. **Axis-aligned only** (`rotation_deg == 0`; `yflip` honoured through the
-coordinate maps): Petrel exports are axis-aligned, rotation is future work. No new
-georef type — the source `Lattice` already carries origin + spacing + counts in
-world coordinates.
+kernels. Source and target may independently carry intrinsic rotation/y-flip:
+target nodes map to world and then through the exact inverse source frame before
+the unchanged axis-aligned index-space interpolation kernel runs. No duplicate
+rotated kernel and no new georef type — the source `Lattice` already carries
+origin, spacing, dimensions and orientation in world coordinates.
 
 **Null / extent policy:** a target node outside the source extent
 (`[0, ncol−1] × [0, nrow−1]` in source index space) is `NaN` — never
@@ -725,6 +732,8 @@ pub const FICTIONAL_ORIGIN: [f64; 2] = [431_000.0, 6_521_000.0];
 pub struct Georef { pub east0: f64, pub north0: f64 }
 impl Georef { pub fn new(east0, north0) -> Result<Self>; pub fn fictional() -> Self; pub fn origin() -> [f64; 2];
               pub fn lattice(xinc, yinc, ncol, nrow) -> Lattice; pub fn place_point([f64;2]) -> [f64;2];
+              pub fn oriented_lattice(xinc, yinc, ncol, nrow, rotation_deg, yflip) -> Result<Lattice>;
+              pub fn place_intrinsic([f64;2], rotation_deg, yflip) -> Result<[f64;2]>;
               pub fn place_points(&[[f64;2]]) -> Vec<[f64;2]>; pub fn place_extent(&BBox) -> BBox; }
 
 // Outlines.
@@ -794,12 +803,16 @@ pt.evaluate_formula(assignments, properties, params=None) -> dict[str, list[floa
 # geostat front-door — coords are [x,y,z] rows (list-of-3-lists or (n,3) ndarray).
 exp = pt.experimental_variogram(coords, lag, n_lags)     # .lags/.semivariances/.counts
 vg  = pt.Variogram.fit("spherical", exp)                 # or Variogram(model, nugget, sill, range)
-lat = pt.Lattice(xori, yori, xinc, yinc, ncol, nrow)
+lat = pt.Lattice(xori, yori, xinc, yinc, ncol, nrow,
+                 rotation_deg=0.0, yflip=False)
+lat.intrinsic_to_world(fi, fj); lat.world_to_intrinsic(x, y)
+lat.step_vectors()  # exact world vectors for one positive I/J node
 est, var = pt.local_kriging_grid(coords, lat, vg, max_neighbours, radius)  # ncol×nrow fields
 field    = pt.sgs(coords, lat, vg, max_neighbours, radius, seed)           # seeded, reproducible
 
 # resample — grid → grid. src_grid is nested lists field[col][row] (ncol×nrow),
-# on a source Lattice; onto a target Lattice. Axis-aligned; NaN outside extent.
+# on a source Lattice; onto an independently rotated/flipped target Lattice.
+# Target world nodes pass through the exact inverse source frame; NaN outside.
 out = pt.resample(src_grid, src_lattice, target_lattice, method="bilinear")  # or "nearest"
 
 # synth — believable synthetic data (seeded, bit-reproducible; fractions in [0,1]).
@@ -826,7 +839,8 @@ traj = pt.synth_trajectory_profile(wellhead_xy, kb_elevation, td, md_step, seed,
            kickoff_md=800.0, build_rate_deg_per_30m=3.0, hold_incl_deg=45.0, azimuth_deg=90.0)  # + drop_start_md/drop_rate_deg_per_30m/final_incl_deg for build_hold_drop
 dls  = pt.max_dogleg_severity(traj["md"], traj["incl"], traj["azim"])        # deg/30m believability yardstick
 g    = pt.Georef()                                                           # fictional world origin (or Georef(east0, north0))
-lat  = g.lattice(xinc, yinc, ncol, nrow)                                     # world-placed Lattice; g.place_point([x,y]) etc.
+lat  = g.lattice(xinc, yinc, ncol, nrow, rotation_deg=30, yflip=False)       # world-placed oriented Lattice
+xy   = g.place_intrinsic([fi*xinc, fj*yinc], rotation_deg=30, yflip=False)    # same exact frame; place_point stays translation-only
 ring = pt.closure_outline(surface, lat, spill_depth)                         # -> [[x,y]] (largest closed ring)
 ring = pt.study_area_outline(xmin, ymin, xmax, ymax, corner_radius, arc_steps)
 
