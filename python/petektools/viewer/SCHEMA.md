@@ -173,6 +173,24 @@ budget). The Map renderer consumes XY/value data; the 3-D camera consumes
 the selected attribute as geometry and the selected `color_by` values as paint
 from these same blocks. There is no duplicate `regular_surface` for this grid.
 
+**Dual-mode runtime semantics.** The native Map 2-D/3-D control changes only
+`snapshot.state[item_id].map.mode`; it is not resource identity. A switch MUST
+retain item selection/visibility, geometry attribute, colour-by, clamp/range,
+colormap/reversal, current extent, independent Map and orbit cameras, and the
+current well-intersection cycle. The 3-D descriptor holds exact references to
+the decoded `elevations`, paint `values`, and `mask`. It MUST NOT clone or
+transfer those sources. Derived position/index/colour and GPU buffers are
+allowed and are cached once per `(item,detail,geometry identity,mask identity)`;
+paint identity/range/style is a separate key, so paint-only changes reuse
+topology and a mask replacement cannot. Shared building yields at bounded
+chunks and discards a superseded completion before it enters the cache. A
+preview and full tier each have one geometry cache; full completion cannot
+create separate 2-D and 3-D copies. Without Three.js/WebGL, requested `mode:"3d"`
+is retained while the viewport reports `requested:"3d", rendered:"2d"` and
+renders the 2-D fallback. This is a usable fallback, not a resource error.
+Legacy separate Map + `scene3d` catalogs and schema-v1 bundles retain their
+existing resource, worker, tab, and rendering behavior.
+
 **Item bindings (additive).** Workspace-produced primitives may carry
 `item_id`. `MapBundle.items` compactly binds one item to ranges in the existing
 shared arrays: `{id, point_range?, grid_line_range?, grid_line_lod_range?,

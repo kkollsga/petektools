@@ -95,9 +95,13 @@ only when the Frame/attribute declares them. Perspective/3-D gets no misleading
 constant scale bar. The focusable Map provides keyboard pan/zoom/north-up parity
 without rotating HUD text or labels. A provider may
 advertise ordered preview/full tiers; preview is rendered first, full builds
-transferable GPU-ready arrays in the existing decode worker, and the renderer
-swaps it without clearing preview state, moving the camera, or re-entering global
-Loading. Static export embeds the full tier once when it is advertised.
+GPU-ready position/index/colour arrays from the already decoded shared blocks in
+bounded yielding chunks, and the renderer swaps it without clearing preview
+state, moving either camera, or re-entering global Loading. Shared source blocks
+are reference-only descriptors: they are neither cloned nor transferred; only
+the derived topology, position, paint, and GPU allocations are cached. A paint
+change reuses topology, while a mask change invalidates it. Static export embeds
+the full tier once when it is advertised.
 Map resources may also carry additive contextual well overlays keyed by stable
 surface/fill and base-well item identities. Selection is local to the already
 materialized bundle: the active fill atomically chooses the producer-declared

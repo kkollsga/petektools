@@ -120,6 +120,18 @@ decode of geometry. Metadata survives catalog normalization, manifest JSON,
 live responses, and saved HTML unchanged except for canonical defaults described
 in `SCHEMA.md`.
 
+The Map viewport exposes one accessible 2-D/3-D mode control for these dual-mode
+resources. It swaps the renderer host in place; selection, item visibility,
+geometry attribute, colour-by, clamp/reverse, extent, independent Map/3-D camera
+state, and well-pick cycle remain untouched. The 3-D builder references the
+decoded elevation/value/mask arrays directly and yields between bounded chunks;
+it caches one position/index allocation per detail+geometry+mask identity and
+paint buffers separately. `window.__PETEK_SHARED_MODE_LEDGER` reports source,
+derived, retained-paint, GPU-upload, fetch/decode/build, and mode-switch counts.
+If Three.js or WebGL is unavailable, the requested mode remains selected but the
+viewport truthfully renders the still-usable 2-D surface without a provider call
+or an error latch. Saved HTML carries the same control and embedded full resource.
+
 Workspace v1 remains accepted. Its `{lanes,active_lane}` catalog, `lane=` request,
 and envelope echo map one lane to both v2 selectors with continuous/unknown-unit
 metadata. `default_lane` remains a v1 provider input alias. A provider/request
@@ -485,10 +497,14 @@ elevation mesh from their primary value layer (value-coloured under `fill=`;
 triangles touching a z-less node are holes, never guessed).
 Exact affine structured surfaces use compact `regular_surface` meshes:
 dimensions/origin/I+J steps plus typed row-major elevation, mask, and optional
-value blocks, with no expanded nodes or triangles. The shared volume/Map worker
-builds transferable position/index/colour buffers. A preview stays interactive
-while a separately fetched full tier builds; the final swap is atomic and
-camera-stable. Non-affine and legacy Mesh3D payloads keep their established path.
+value blocks, with no expanded nodes or triangles. Legacy `scene3d` resources use
+the shared worker and transferable buffers. A workspace-v2 dual-mode Map instead
+builds derived position/index/colour buffers in bounded main-thread chunks from
+the exact already-decoded source arrays, without cloning or transferring those
+sources. Continuous paint and declared categorical code colours share the same
+topology; paint-only changes do not rebuild it. A preview stays interactive while
+a separately fetched full tier builds; the final swap is atomic and camera-stable.
+Non-affine and legacy Mesh3D payloads keep their established path.
 Their geometry-only
 counterparts (`grid_geometry`, `structured_shell`, `mesh_shell`) render as a
 **flat wireframe grid** placed at the **shallowest point** of their own nodes

@@ -927,6 +927,12 @@ session.save("selected.html", include="selected")
 # A shared Map envelope is keyed only by (item_id,"map",detail), has one
 # envelope-level content-addressed block table, and carries map.surface_grid with
 # one value block per attribute. 2-D/3-D mode and selector changes never refetch.
+# The saved/live viewer renders both modes in the Map viewport. Its mode switch
+# retains selectors, visibility, clamp, extent, both cameras and well-pick cycle;
+# shared 3-D derives chunked position/index/paint arrays by reference from the one
+# decoded source. Paint changes reuse topology; mask identity invalidates it. If
+# WebGL is unavailable the selected 3-D request truthfully falls back to usable
+# 2-D without provider access or an error latch.
 # Visible/selected static exports include one such envelope per item (the full
 # tier when advertised),
 # never the attribute×color_by Cartesian product.

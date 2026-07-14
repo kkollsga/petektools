@@ -7,6 +7,15 @@ All notable changes to petekTools are recorded here. Format follows
 ## [Unreleased]
 
 ### Added
+- **One-resource Map 2-D/3-D runtime.** Workspace-v2 shared surfaces now switch
+  camera modes inside the Map viewport without another fetch, decode, or source
+  geometry copy. The chunked shared builder references the decoded
+  elevation/value/mask blocks, caches topology separately from continuous or
+  declared categorical paint, rejects stale chunks, and exposes an exact memory
+  and task ledger. Mode roundtrips retain selectors, visibility, clamp, extent,
+  both cameras, and well-cycle state; saved HTML works fully offline. Missing
+  Three.js/WebGL truthfully falls back to usable 2-D while preserving the 3-D
+  request, and legacy separate Map/3-D resources remain unchanged.
 - **Truthful behavioral Map rendering.** The fixed screen-space HUD now exposes
   exact inverse cursor world/i/j/value state, fit-relative zoom, known-only
   CRS/units, a constant 2-D scale bar, and camera-aware north; perspective/3-D
