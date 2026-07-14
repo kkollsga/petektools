@@ -11,11 +11,14 @@ All notable changes to petekTools are recorded here. Format follows
   camera modes inside the Map viewport without another fetch, decode, or source
   geometry copy. The chunked shared builder references the decoded
   elevation/value/mask blocks, caches topology separately from continuous or
-  declared categorical paint, rejects stale chunks, and exposes an exact memory
+  declared categorical paint, rejects stale geometry/paint attachment, and exposes an exact memory
   and task ledger. Mode roundtrips retain selectors, visibility, clamp, extent,
   both cameras, and well-cycle state; saved HTML works fully offline. Missing
   Three.js/WebGL truthfully falls back to usable 2-D while preserving the 3-D
-  request, and legacy separate Map/3-D resources remain unchanged.
+  request. Center-aware positions prevent visibility recomposition drift; null
+  masks allocate no hidden raster; full detail evicts only the matching preview;
+  and paint-only or staggered per-item refinement preserves the stable scene,
+  orbit camera, and GPU topology. Legacy separate Map/3-D resources remain unchanged.
 - **Truthful behavioral Map rendering.** The fixed screen-space HUD now exposes
   exact inverse cursor world/i/j/value state, fit-relative zoom, known-only
   CRS/units, a constant 2-D scale bar, and camera-aware north; perspective/3-D

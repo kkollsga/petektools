@@ -472,17 +472,9 @@
     var f = grid.frame || {}, sourceFrame = workspaceMapSourceFrame(m);
     var angle = (Number(f.rotation_deg) || 0) * Math.PI / 180;
     var sign = f.yflip ? -1 : 1, c = Math.cos(angle), s = Math.sin(angle);
-    var mask = grid.mask;
-    if (!mask) {
-      mask = grid.__workspaceAllValidMask;
-      if (!mask) {
-        var values = new Uint8Array((f.ncol || 0) * (f.nrow || 0)); values.fill(1);
-        mask = { length: values.length, a: values };
-        Object.defineProperty(grid, "__workspaceAllValidMask", {
-          value: mask, configurable: true, writable: true,
-        });
-      }
-    }
+    // Null is the canonical implicit all-valid mask in both renderers. Keeping
+    // it null avoids synthesizing and retaining an unreported ncol*nrow array.
+    var mask = grid.mask || null;
     var descriptor = descriptors[colorId] || {};
     var categoricalCodes = paint.codes || descriptor.codes || null;
     // One stable fill object per geometry attribute. A colour-only change
@@ -578,7 +570,12 @@
       fill.__workspacePositive || "down");
     mesh.__sharedGeometryIdentity = fill.__workspaceGeometry;
     mesh.__sharedPaintIdentity = fill.__paintIdentity;
-    mesh.__sharedCacheGroup = id + "|" + (detail || "default");
+    mesh.__sharedDetail = detail || "default";
+    // Eviction follows the stable item+geometry lane, not the detail tier:
+    // full supersedes preview for this geometry without touching another item
+    // or another geometry attribute. Detail remains part of allocation identity.
+    mesh.__sharedEvictionGroup = id + "|" + key;
+    mesh.__sharedCacheGroup = mesh.__sharedEvictionGroup + "|" + mesh.__sharedDetail;
     mesh.__sharedLedgerPrefix = mesh.__sharedCacheGroup + "|" + key + "|" +
       (typeof displayId === "function" ? displayId(m) + "|" + displayId(fill.__workspaceGeometry) : "0|0");
     mesh.__sharedLedgerKey = mesh.__sharedLedgerPrefix + "|" +
@@ -586,6 +583,7 @@
     return mesh;
   }
   function composeWorkspaceSharedMapScene(entries, map, wells) {
+    var previousScene = App.payload.__workspaceMapScene3d;
     var scene = { schema_version: 1, points: [], meshes: [], lattices: [], contours: [],
       wells: wells, outlines: [], layers: [], point_color: null, colormap: null,
       z_exaggeration: 5, ref_z: 0, detail: null, __workspaceSharedMap: true };
@@ -600,6 +598,9 @@
       var resource = workspaceResource(entry.id, "map", workspaceLane(entry.id, "map"), workspaceDetail(entry.id, "map"));
       var detail = resource && resource.detail || null, mesh = workspaceSharedSceneMesh(entry.id, source, fill, detail);
       if (!mesh) return;
+      if (detail === "full" && typeof supersedeWorkspaceSharedPreview === "function") {
+        supersedeWorkspaceSharedPreview(mesh);
+      }
       scene.meshes.push(mesh); allFull = allFull && detail === "full"; anyPreview = anyPreview || detail === "preview";
       var grid = source.surface_grid || {}, localSeen = [], itemBytes = 0, arrays = [grid.mask];
       (grid.attributes || []).forEach(function (attribute) { arrays.push(attribute.values); });
@@ -618,6 +619,28 @@
     });
     if (!scene.meshes.length) { App.payload.__workspaceMapScene3d = null; return; }
     scene.detail = allFull ? "full" : anyPreview ? "preview" : null;
+    scene.__workspaceLifecycleKey = scene.meshes.map(function (mesh) {
+      return mesh.item_id + ":" + mesh.name;
+    }).join(";") + "|w:" + wells.map(function (well) {
+      return well.item_id || well.id || "well";
+    }).join(";");
+    scene.__workspaceGeometryKeys = scene.meshes.map(function (mesh) {
+      return mesh.__sharedLedgerKey;
+    });
+    // Paint-only composition mutates the stable mesh descriptors above. Keep
+    // the scene/well objects themselves so renderScene3d takes its recolour
+    // path: no GPU topology upload, camera reset, or orbit reframe.
+    if (previousScene && previousScene.__workspaceLifecycleKey === scene.__workspaceLifecycleKey) {
+      var previousKeys = previousScene.__workspaceGeometryKeys || [];
+      var geometryChanged = previousKeys.length !== scene.__workspaceGeometryKeys.length ||
+        previousKeys.some(function (key, index) { return key !== scene.__workspaceGeometryKeys[index]; });
+      previousScene.detail = scene.detail;
+      previousScene.meshes = scene.meshes;
+      previousScene.__workspaceGeometryKeys = scene.__workspaceGeometryKeys;
+      if (geometryChanged) previousScene.__workspaceGeometryRevision =
+        (previousScene.__workspaceGeometryRevision || 0) + 1;
+      scene = previousScene;
+    } else scene.__workspaceGeometryRevision = 0;
     App.payload.__workspaceMapScene3d = scene;
     window.__PETEK_SHARED_MODE_LEDGER = {
       fetches: W.fetches, decodes: W.sharedDecodes, geometry_identities: geometrySeen.length,

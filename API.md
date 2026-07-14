@@ -930,8 +930,12 @@ session.save("selected.html", include="selected")
 # The saved/live viewer renders both modes in the Map viewport. Its mode switch
 # retains selectors, visibility, clamp, extent, both cameras and well-pick cycle;
 # shared 3-D derives chunked position/index/paint arrays by reference from the one
-# decoded source. Paint changes reuse topology; mask identity invalidates it. If
-# WebGL is unavailable the selected 3-D request truthfully falls back to usable
+# decoded source. Paint changes reuse topology; mask identity invalidates it.
+# If composition changes the common scene center, centered positions rebuild under
+# a center-aware key. Full evicts only that item/geometry's preview; other items
+# may remain preview until their own full response. Null mask is implicit-valid
+# and allocates no synthesized mask. Late obsolete paint may cache but not attach.
+# If WebGL is unavailable the selected 3-D request truthfully falls back to usable
 # 2-D without provider access or an error latch.
 # Visible/selected static exports include one such envelope per item (the full
 # tier when advertised),

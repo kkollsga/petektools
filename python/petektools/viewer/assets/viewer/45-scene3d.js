@@ -13,6 +13,7 @@
   var _s3dRegularPending = {}, _s3dRegularRequestId = 0, _s3dPendingFor = null;
   var _s3dSharedDerived = {};
   var _s3dSharedPaintPending = {};
+  var _s3dSharedBuildTotals = {};
   var S3D_NEUTRAL = [150, 150, 150];      // non-finite / monochrome vertex colour
   var S3D_MESH_NEUTRAL = 0x8f9aa5;        // neutral (no-values) surface material
 
@@ -101,6 +102,9 @@
       if (!s3dBuilt || s3dBuilt._for !== sc) {
         buildScene3d(sc);
         if (App.tab === "scene3d" || shared) buildPanel(); // counts + fit-z now known
+      } else if (shared && s3dBuilt._workspaceGeometryRevision !==
+          (sc.__workspaceGeometryRevision || 0)) {
+        reconcileSharedRegularScene(sc);
       } else if (s3dBuilt._colormapKey !== scene3dPaintSignature(sc)) {
         recolorScene3d(sc);
       }
@@ -275,6 +279,7 @@
       _center: { cx: cx, cy: cy, cz: cz, refZ: refZ }, // world<->render transform (picking)
       _degraded: null,
       _regularPending: 0, _maxAttachMs: 0,
+      _workspaceGeometryRevision: sc.__workspaceGeometryRevision || 0,
     };
 
     // ---- point clouds: ONE THREE.Points per cloud, per-vertex ramp colours
@@ -456,15 +461,75 @@
     step();
   }
 
-  function queueRegularSurface(m, built, center, refining, staging) {
+  function s3dCenterKey(center) {
+    return (center || [0, 0, 0]).map(function (value) { return String(Number(value) || 0); }).join(",");
+  }
+  function sharedDerivedKey(m, center) {
+    return m.__sharedLedgerKey + "|center:" + s3dCenterKey(center);
+  }
+  function sharedRequestSupersedes(candidate, request) {
+    if (!candidate || candidate.evictionGroup !== request.evictionGroup) return false;
+    return candidate.cacheGroup === request.cacheGroup ||
+      (request.detail === "full" && candidate.detail === "preview");
+  }
+  function cancelSupersededSharedWork(request) {
+    Object.keys(_s3dRegularPending).forEach(function (pendingId) {
+      var pending = _s3dRegularPending[pendingId];
+      if (pending.requestId === request.requestId || !sharedRequestSupersedes(pending, request)) return;
+      delete _s3dRegularPending[pendingId];
+      if (pending.built && pending.built._regularPending > 0) pending.built._regularPending--;
+    });
+    Object.keys(_s3dSharedPaintPending).forEach(function (pendingKey) {
+      var pending = _s3dSharedPaintPending[pendingKey];
+      if (sharedRequestSupersedes(pending, request)) delete _s3dSharedPaintPending[pendingKey];
+    });
+  }
+  function evictSupersededSharedDerived(request) {
+    Object.keys(_s3dSharedDerived).forEach(function (key) {
+      var candidate = _s3dSharedDerived[key];
+      if (key !== request.derivedKey && sharedRequestSupersedes(candidate, request)) {
+        delete _s3dSharedDerived[key];
+      }
+    });
+  }
+  function supersedeWorkspaceSharedPreview(m) {
+    Object.keys(_s3dRegularPending).forEach(function (pendingId) {
+      var pending = _s3dRegularPending[pendingId];
+      if (pending.evictionGroup !== m.__sharedEvictionGroup || pending.detail !== "preview") return;
+      delete _s3dRegularPending[pendingId];
+      if (pending.built && pending.built._regularPending > 0) pending.built._regularPending--;
+    });
+    Object.keys(_s3dSharedPaintPending).forEach(function (pendingKey) {
+      var pending = _s3dSharedPaintPending[pendingKey];
+      if (pending.evictionGroup === m.__sharedEvictionGroup && pending.detail === "preview") {
+        delete _s3dSharedPaintPending[pendingKey];
+      }
+    });
+    Object.keys(_s3dSharedDerived).forEach(function (key) {
+      var candidate = _s3dSharedDerived[key];
+      if (candidate.evictionGroup === m.__sharedEvictionGroup && candidate.detail === "preview") {
+        delete _s3dSharedDerived[key];
+      }
+    });
+  }
+
+  function queueRegularSurface(m, built, center, refining, staging, sharedReplace) {
     var paintKey = s3dMeshPaintKey(m), paintParts = paintKey.split("|");
     var id = ++_s3dRegularRequestId, stops = colormapStops(paintParts[0], paintParts[1] === "true");
     var request = { requestId: id, m: m, built: built, refining: !!refining, staging: staging,
-      detail: built._detail, center: center, paintKey: paintKey };
-    _s3dRegularPending[id] = request; built._regularPending++;
-    var msg = { cmd: "buildRegularSurface", requestId: id, surface: m.regular_surface,
-      center: center, range: m.range, stops: stops,
+      sharedReplace: !!sharedReplace,
+      detail: m.__sharedDetail || built._detail, center: center.slice(), paintKey: paintKey,
+      ledgerKey: m.__sharedLedgerKey, cacheGroup: m.__sharedCacheGroup,
+      evictionGroup: m.__sharedEvictionGroup,
+      centerKey: s3dCenterKey(center), derivedKey: sharedDerivedKey(m, center) };
+    var surface = m.regular_surface.shared_decoded ? Object.assign({}, m.regular_surface) : m.regular_surface;
+    var msg = { cmd: "buildRegularSurface", requestId: id, surface: surface,
+      center: request.center, range: m.range, stops: stops,
       categories: m.categorical ? m.categorical_codes : null };
+    if (m.regular_surface.shared_decoded) {
+      cancelSupersededSharedWork(request); evictSupersededSharedDerived(request);
+    }
+    _s3dRegularPending[id] = request; built._regularPending++;
     if (m.regular_surface.shared_decoded) {
       setTimeout(function () {
         function fail(error) {
@@ -476,19 +541,19 @@
           if (_s3dRegularPending[id]) { delete _s3dRegularPending[id]; built._regularPending--; }
         }
         try {
-          Object.keys(_s3dSharedDerived).forEach(function (key) {
-            var candidate = _s3dSharedDerived[key];
-            if (key !== m.__sharedLedgerKey && candidate.cacheGroup === m.__sharedCacheGroup) {
-              delete _s3dSharedDerived[key];
-            }
-          });
-          var cached = _s3dSharedDerived[m.__sharedLedgerKey] ||
-            (_s3dSharedDerived[m.__sharedLedgerKey] = { paints: {}, paintOrder: [],
-              cacheGroup: m.__sharedCacheGroup, geometryBuilds: 0, paintBuilds: 0 });
+          if (!current()) { cancel(); return; }
+          evictSupersededSharedDerived(request);
+          var cached = _s3dSharedDerived[request.derivedKey] ||
+            (_s3dSharedDerived[request.derivedKey] = { paints: {}, paintOrder: [],
+              cacheGroup: request.cacheGroup, evictionGroup: request.evictionGroup,
+              detail: request.detail, centerKey: request.centerKey,
+              geometryBuilds: 0, paintBuilds: 0 });
+          var totals = _s3dSharedBuildTotals[request.evictionGroup] ||
+            (_s3dSharedBuildTotals[request.evictionGroup] = { positions: 0, paints: 0 });
           var colors = cached.paints[paintKey];
           function finish() {
             while (cached.paintOrder.length > 4) delete cached.paints[cached.paintOrder.shift()];
-            updateSharedModeLedger(m, cached, paintKey);
+            updateSharedModeLedger(m, cached, paintKey, request);
             onRegularSurfaceBuilt({ requestId: id, pos: cached.pos.buffer, index: cached.index.buffer,
               col: colors ? colors.buffer : null, triangleCount: cached.triangleCount,
               buildMs: 0, sharedCache: true });
@@ -496,14 +561,16 @@
           if (!cached.pos || !cached.index) {
             runSharedRegularBuild(msg, false, function (first) {
               cached.pos = first.pos; cached.index = first.index; cached.triangleCount = first.triangleCount;
-              cached.geometryBuilds++; colors = first.col;
-              if (colors) { cached.paints[paintKey] = colors; cached.paintOrder.push(paintKey); cached.paintBuilds++; }
+              cached.geometryBuilds++; cached.positionBuildOrdinal = ++totals.positions; colors = first.col;
+              if (colors) { cached.paints[paintKey] = colors; cached.paintOrder.push(paintKey);
+                cached.paintBuilds++; cached.paintBuildOrdinal = ++totals.paints; }
               finish();
             }, fail, current, cancel);
           } else if (!colors && msg.surface.values) {
             runSharedRegularBuild(msg, true, function (nextColors) {
               colors = nextColors; cached.paints[paintKey] = colors;
-              cached.paintOrder.push(paintKey); cached.paintBuilds++; finish();
+              cached.paintOrder.push(paintKey); cached.paintBuilds++;
+              cached.paintBuildOrdinal = ++totals.paints; finish();
             }, fail, current, cancel);
           } else finish();
         } catch (e) {
@@ -527,9 +594,10 @@
     }, 0);
   }
 
-  function updateSharedModeLedger(m, cached, paintKey) {
+  function updateSharedModeLedger(m, cached, paintKey, request) {
     var ledger = window.__PETEK_SHARED_MODE_LEDGER; if (!ledger) return;
-    var entry = (ledger.entries || []).filter(function (candidate) { return candidate.key === m.__sharedLedgerKey; })[0];
+    var ledgerKey = request ? request.ledgerKey : m.__sharedLedgerKey;
+    var entry = (ledger.entries || []).filter(function (candidate) { return candidate.key === ledgerKey; })[0];
     if (!entry) return;
     var colors = cached.paints[paintKey] || null;
     entry.derived_position_bytes = cached.pos ? cached.pos.byteLength : 0;
@@ -540,6 +608,11 @@
     }, 0);
     entry.gpu_upload_bytes = entry.derived_position_bytes + entry.derived_topology_bytes + entry.derived_paint_bytes;
     entry.geometry_builds = cached.geometryBuilds; entry.paint_builds = cached.paintBuilds;
+    entry.position_builds_total = cached.positionBuildOrdinal || 0;
+    entry.paint_builds_total = cached.paintBuildOrdinal || 0;
+    entry.derived_key = request ? request.derivedKey : sharedDerivedKey(m,
+      s3dBuilt ? [s3dBuilt._center.cx, s3dBuilt._center.cy, s3dBuilt._center.cz] : [0, 0, 0]);
+    entry.center_identity = cached.centerKey;
     ledger.derived_position_bytes = (ledger.entries || []).reduce(function (n, item) { return n + item.derived_position_bytes; }, 0);
     ledger.derived_topology_bytes = (ledger.entries || []).reduce(function (n, item) { return n + item.derived_topology_bytes; }, 0);
     ledger.derived_paint_bytes = (ledger.entries || []).reduce(function (n, item) { return n + item.derived_paint_bytes; }, 0);
@@ -547,6 +620,7 @@
     ledger.gpu_upload_bytes = (ledger.entries || []).reduce(function (n, item) { return n + item.gpu_upload_bytes; }, 0);
     ledger.geometry_builds = (ledger.entries || []).reduce(function (n, item) { return n + (item.geometry_builds || 0); }, 0);
     ledger.paint_builds = (ledger.entries || []).reduce(function (n, item) { return n + (item.paint_builds || 0); }, 0);
+    ledger.position_builds_total = (ledger.entries || []).reduce(function (n, item) { return n + (item.position_builds_total || 0); }, 0);
     ledger.retained_bytes = ledger.source_decoded_bytes + ledger.derived_position_bytes +
       ledger.derived_topology_bytes + ledger.retained_paint_bytes;
   }
@@ -592,10 +666,34 @@
       pending.paintKey, s3dMeshPaintKey(pending.m));
     if (completion === "stale-request") return;
     if (completion === "stale-paint") {
-      queueRegularSurface(pending.m, built, pending.center, pending.refining, pending.staging); return;
+      queueRegularSurface(pending.m, built, pending.center, pending.refining,
+        pending.staging, pending.sharedReplace); return;
     }
     var entry = regularSurfaceObject(pending.m, data); entry.paintKey = pending.paintKey;
+    entry.sourceKey = pending.ledgerKey; entry.derivedKey = pending.derivedKey;
     built._maxAttachMs = Math.max(built._maxAttachMs || 0, entry.attachMs);
+    if (pending.sharedReplace) {
+      var currentMesh = (built._for.meshes || []).filter(function (mesh) {
+        return mesh.item_id === pending.m.item_id && mesh.name === pending.m.name;
+      })[0];
+      if (!currentMesh || currentMesh.__sharedLedgerKey !== pending.ledgerKey) {
+        entry.geo.dispose(); entry.mesh.material.dispose(); return;
+      }
+      var old = built.meshObjs.filter(function (candidate) {
+        return candidate.m.item_id === pending.m.item_id && candidate.m.name === pending.m.name;
+      })[0];
+      if (old) {
+        s3d.group.remove(old.mesh); old.geo.dispose(); old.mesh.material.dispose();
+        built.triangleCount -= old.triangleCount;
+      }
+      s3d.group.add(entry.mesh);
+      built.meshObjs = built.meshObjs.filter(function (candidate) { return candidate !== old; });
+      built.meshObjs.push(entry); built.triangleCount += entry.triangleCount;
+      built._detail = built._for.detail; built._colormapKey = scene3dPaintSignature(built._for);
+      setScene3dStatus("ok", { detail: built._detail, refining: built._regularPending > 0,
+        triangles: built.triangleCount, meshes: built.meshObjs.length });
+      applyScene3dVisibility(); s3d.render(); buildPanel(); return;
+    }
     if (pending.refining) {
       pending.staging.objects.push(entry); pending.staging.triangles += entry.triangleCount;
       pending.staging.remaining--;
@@ -614,6 +712,30 @@
         detail: built._detail });
       applyScene3dVisibility(); s3d.render(); buildPanel();
     }
+  }
+
+  function reconcileSharedRegularScene(sc) {
+    var built = s3dBuilt, center = [built._center.cx, built._center.cy, built._center.cz];
+    var wanted = {};
+    (sc.meshes || []).filter(function (mesh) { return !!mesh.regular_surface; }).forEach(function (mesh) {
+      var key = mesh.item_id + "\u0000" + mesh.name; wanted[key] = true;
+      var old = built.meshObjs.filter(function (candidate) {
+        return candidate.m.item_id === mesh.item_id && candidate.m.name === mesh.name;
+      })[0];
+      if (!old || old.sourceKey !== mesh.__sharedLedgerKey) {
+        queueRegularSurface(mesh, built, center, false, null, true);
+      }
+    });
+    built.meshObjs.slice().forEach(function (entry) {
+      if (!entry.m.regular_surface || wanted[entry.m.item_id + "\u0000" + entry.m.name]) return;
+      s3d.group.remove(entry.mesh); entry.geo.dispose(); entry.mesh.material.dispose();
+      built.triangleCount -= entry.triangleCount;
+      built.meshObjs = built.meshObjs.filter(function (candidate) { return candidate !== entry; });
+    });
+    built._workspaceGeometryRevision = sc.__workspaceGeometryRevision || 0;
+    built._detail = sc.detail;
+    setScene3dStatus("ok", { detail: built._detail, refining: built._regularPending > 0,
+      triangles: built.triangleCount, meshes: built.meshObjs.length });
   }
 
   function refineRegularScene3d(sc) {
@@ -710,34 +832,48 @@
     var sharedPending = 0;
     sharedRegular.forEach(function (m) {
       var object = s3dBuilt.meshObjs.filter(function (candidate) { return candidate.m === m; })[0];
-      var cached = _s3dSharedDerived[m.__sharedLedgerKey]; if (!object || !cached) return;
+      var center = [s3dBuilt._center.cx, s3dBuilt._center.cy, s3dBuilt._center.cz];
+      var derivedKey = sharedDerivedKey(m, center);
+      var cached = _s3dSharedDerived[derivedKey]; if (!object || !cached) return;
       var paintKey = s3dMeshPaintKey(m), colors = cached.paints[paintKey];
       function apply(nextColors) {
-        if (!s3dBuilt || s3dBuilt._for !== sc || object.m !== m) return;
+        if (!s3dBuilt || s3dBuilt._for !== sc || object.m !== m ||
+            s3dMeshPaintKey(m) !== paintKey || sharedDerivedKey(m, center) !== derivedKey) {
+          sharedPending--; return false;
+        }
         object.geo.setAttribute("color", new s3d.THREE.BufferAttribute(nextColors, 3));
         object.hasValues = !!nextColors; object.paintKey = paintKey;
-        updateSharedModeLedger(m, cached, paintKey);
+        updateSharedModeLedger(m, cached, paintKey, { ledgerKey: m.__sharedLedgerKey,
+          derivedKey: derivedKey });
         if (!--sharedPending) {
           s3dBuilt._colormapKey = scene3dPaintSignature(sc);
           if (s3d && s3d.render) s3d.render();
         }
+        return true;
       }
       if (colors) { sharedPending++; apply(colors); return; }
-      var pendingKey = m.__sharedLedgerKey + "|" + paintKey;
+      var pendingKey = derivedKey + "|paint:" + paintKey;
       if (_s3dSharedPaintPending[pendingKey]) return;
-      _s3dSharedPaintPending[pendingKey] = true; sharedPending++;
+      var pendingPaint = { cacheGroup: m.__sharedCacheGroup,
+        evictionGroup: m.__sharedEvictionGroup, detail: m.__sharedDetail,
+        derivedKey: derivedKey, paintKey: paintKey };
+      _s3dSharedPaintPending[pendingKey] = pendingPaint; sharedPending++;
       var parts = paintKey.split("|"), stops = colormapStops(parts[0], parts[1] === "true");
-      var msg = { surface: m.regular_surface, range: m.range, stops: stops,
+      var msg = { surface: Object.assign({}, m.regular_surface), range: m.range, stops: stops,
         categories: m.categorical ? m.categorical_codes : null };
       runSharedRegularBuild(msg, true, function (nextColors) {
         delete _s3dSharedPaintPending[pendingKey];
         cached.paints[paintKey] = nextColors; cached.paintOrder.push(paintKey); cached.paintBuilds++;
+        var totals = _s3dSharedBuildTotals[m.__sharedEvictionGroup] ||
+          (_s3dSharedBuildTotals[m.__sharedEvictionGroup] = { positions: 0, paints: 0 });
+        cached.paintBuildOrdinal = ++totals.paints;
         while (cached.paintOrder.length > 4) delete cached.paints[cached.paintOrder.shift()];
         apply(nextColors);
       }, function (error) {
         delete _s3dSharedPaintPending[pendingKey]; sharedPending--;
         setScene3dStatus("error", { reason: String((error && error.message) || error) });
-      }, function () { return !!s3dBuilt && s3dBuilt._for === sc && object.m === m; }, function () {
+      }, function () { return !!_s3dSharedPaintPending[pendingKey] && !!s3dBuilt &&
+        s3dBuilt._for === sc && object.m === m && _s3dSharedDerived[derivedKey] === cached; }, function () {
         delete _s3dSharedPaintPending[pendingKey]; sharedPending--;
       });
     });

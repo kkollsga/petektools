@@ -180,12 +180,18 @@ colormap/reversal, current extent, independent Map and orbit cameras, and the
 current well-intersection cycle. The 3-D descriptor holds exact references to
 the decoded `elevations`, paint `values`, and `mask`. It MUST NOT clone or
 transfer those sources. Derived position/index/colour and GPU buffers are
-allowed and are cached once per `(item,detail,geometry identity,mask identity)`;
+allowed and are cached once per `(item,detail,geometry identity,mask identity,
+scene-center identity)`;
 paint identity/range/style is a separate key, so paint-only changes reuse
-topology and a mask replacement cannot. Shared building yields at bounded
+the stable scene, orbit/framed state, and GPU topology, while a mask or center
+replacement cannot reuse positions. A null mask is implicit all-valid and MUST
+NOT allocate a synthesized `ncol*nrow` byte array. Shared building yields at bounded
 chunks and discards a superseded completion before it enters the cache. A
-preview and full tier each have one geometry cache; full completion cannot
-create separate 2-D and 3-D copies. Without Three.js/WebGL, requested `mode:"3d"`
+preview and full tier each have one geometry cache; each full item atomically
+evicts its own preview while other items may remain preview, without reframing
+the camera. A late obsolete paint completion may remain cached for reuse but
+MUST NOT attach unless its exact paint/derived key is still current. Full
+completion cannot create separate 2-D and 3-D copies. Without Three.js/WebGL, requested `mode:"3d"`
 is retained while the viewport reports `requested:"3d", rendered:"2d"` and
 renders the 2-D fallback. This is a usable fallback, not a resource error.
 Legacy separate Map + `scene3d` catalogs and schema-v1 bundles retain their

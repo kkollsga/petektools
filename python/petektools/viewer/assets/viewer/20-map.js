@@ -1532,7 +1532,7 @@
     if (!isFinite(lo) || !isFinite(hi)) {
       for (var q = 0; q < G.values.length; q++) {
         var qv = vlAt(G.values, q);
-        if (maskAt(G.mask, q) && isFinite(qv)) { if (qv < lo) lo = qv; if (qv > hi) hi = qv; }
+        if ((!G.mask || maskAt(G.mask, q)) && isFinite(qv)) { if (qv < lo) lo = qv; if (qv > hi) hi = qv; }
       }
     }
     if (!isFinite(lo) || !isFinite(hi)) return;

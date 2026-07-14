@@ -126,7 +126,12 @@ geometry attribute, colour-by, clamp/reverse, extent, independent Map/3-D camera
 state, and well-pick cycle remain untouched. The 3-D builder references the
 decoded elevation/value/mask arrays directly and yields between bounded chunks;
 it caches one position/index allocation per detail+geometry+mask identity and
-paint buffers separately. `window.__PETEK_SHARED_MODE_LEDGER` reports source,
+scene-center identity, and paint buffers separately. Full detail evicts only the
+same item/geometry preview allocation; staggered items refine independently in
+the stable scene. Null mask is implicit all-valid and allocates no synthesized
+byte raster. Paint-only composition preserves the scene, orbit camera, framed
+state, and GPU position/index attributes; a late paint completion is cached but
+cannot attach over a newer paint key. `window.__PETEK_SHARED_MODE_LEDGER` reports source,
 derived, retained-paint, GPU-upload, fetch/decode/build, and mode-switch counts.
 If Three.js or WebGL is unavailable, the requested mode remains selected but the
 viewport truthfully renders the still-usable 2-D surface without a provider call
@@ -503,7 +508,8 @@ builds derived position/index/colour buffers in bounded main-thread chunks from
 the exact already-decoded source arrays, without cloning or transferring those
 sources. Continuous paint and declared categorical code colours share the same
 topology; paint-only changes do not rebuild it. A preview stays interactive while
-a separately fetched full tier builds; the final swap is atomic and camera-stable.
+a separately fetched full tier builds; each item's final swap is atomic and
+camera-stable while other preview items remain interactive.
 Non-affine and legacy Mesh3D payloads keep their established path.
 Their geometry-only
 counterparts (`grid_geometry`, `structured_shell`, `mesh_shell`) render as a
