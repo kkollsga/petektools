@@ -54,6 +54,9 @@ _WORKSPACE_WELL_OVERLAY_JS = (
 _REGULAR_SURFACE_JS = Path(__file__).parent / "viewer_perf" / "regular_surface_build_bench.js"
 _MAP_ROTATION_JS = Path(__file__).parent / "viewer_perf" / "map_rotation_bench.js"
 _MAP_BEHAVIOR_JS = Path(__file__).parent / "viewer_perf" / "map_behavior_bench.js"
+_WORKSPACE_DUAL_MODE_JS = (
+    Path(__file__).parent / "viewer_perf" / "workspace_dual_mode_bench.js"
+)
 _NODE = shutil.which("node")
 
 
@@ -175,6 +178,36 @@ def test_shared_only_workspace_map_composes_and_renders_with_source_frames():
     assert result["paintWrites"] == 2
     assert result["composeCalls"] == 2
     assert result["loadCalls"] == 0
+
+
+@pytest.mark.skipif(_NODE is None, reason="node not installed")
+def test_shared_workspace_dual_mode_reuses_one_resource_and_geometry():
+    assets = Path(__file__).parents[1] / "petektools" / "viewer" / "assets"
+    out = subprocess.run(
+        [
+            _NODE,
+            str(_WORKSPACE_DUAL_MODE_JS),
+            str(assets / "viewer" / "15-workspace.js"),
+            str(assets / "viewer" / "45-scene3d.js"),
+            str(assets / "decode.js"),
+            str(assets / "index.html"),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert out.returncode == 0, out.stdout + out.stderr
+    result = json.loads(out.stdout.strip().splitlines()[-1])
+    assert result["fetches"] == result["decodes"] == result["geometryBuilds"] == 1
+    assert result["sourceBytes"] == 36
+    assert result["positionBytes"] == 48
+    assert result["topologyBytes"] == 24
+    assert result["paintBytes"] == 48
+    assert result["retainedBytes"] == 156
+    assert result["paintBuilds"] == 2
+    assert result["categorical"] and result["maskSeparated"]
+    assert result["fallback"] == "fallback"
+    assert result["legacy"] and result["offline"] and result["stateNeutral"]
 
 
 def _overlay_map(name, fills, overlays):

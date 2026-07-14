@@ -238,7 +238,8 @@
     help._setOpen = setOpen;
   }
   function fitActiveWorkspaceView() {
-    if (App.tab === "map") { requestMapFit("explicit"); renderMap(); }
+    if (App.tab === "map" && workspaceMapMode() === "3d" && s3d) { frameScene3d(); s3d.render(); }
+    else if (App.tab === "map") { requestMapFit("explicit"); renderMap(); }
     else if (App.tab === "scene3d" && s3d) { frameScene3d(); s3d.render(); }
     else if (App.tab === "volume" && three) { three.framed = false; renderVolume(); }
     else renderActive();
@@ -302,6 +303,7 @@
       saveUiPrefs();
       renderActive(); // re-read tokens; identities keep their slot, colours restep
     });
+    wireWorkspaceMapModeControl();
     configureWorkspaceShell();
   }
   function selectTab(tab) {
@@ -332,7 +334,8 @@
     // synchronous 2-D tab reports its true repaint cost; the async volume worker
     // reports only its kickoff). Harmless in production.
     var t0 = (typeof performance !== "undefined") ? performance.now() : 0;
-    if (App.tab === "map") renderMap();
+    if (App.tab === "map" && workspaceMapMode() === "3d") renderScene3d();
+    else if (App.tab === "map") { syncWorkspaceMapModeHosts(false); renderMap(); }
     else if (App.tab === "section") renderSection();
     else if (App.tab === "scene3d") renderScene3d();
     else if (App.tab === "charts") renderCharts();

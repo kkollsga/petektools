@@ -11,8 +11,49 @@
   var s3d = null;      // { renderer, scene, camera, controls, group, badge }
   var s3dBuilt = null; // built scene registry for the current payload
   var _s3dRegularPending = {}, _s3dRegularRequestId = 0, _s3dPendingFor = null;
+  var _s3dSharedDerived = {};
+  var _s3dSharedPaintPending = {};
   var S3D_NEUTRAL = [150, 150, 150];      // non-finite / monochrome vertex colour
   var S3D_MESH_NEUTRAL = 0x8f9aa5;        // neutral (no-values) surface material
+
+  function scene3dWorkspaceView() {
+    return App.tab === "map" && typeof workspaceMapMode === "function" && workspaceMapMode() === "3d"
+      ? "map" : "scene3d";
+  }
+  function activeScene3dBundle() {
+    var shared = scene3dWorkspaceView() === "map";
+    var sc = shared ? App.payload.__workspaceMapScene3d : App.payload.scene3d;
+    if (shared && sc) {
+      (sc.meshes || []).forEach(function (mesh) {
+        var fill = (App.payload.map.fills || []).filter(function (candidate) {
+          return candidate.item_id === mesh.item_id && candidate.geometry_attribute === mesh.name;
+        })[0];
+        if (!fill) return;
+        mesh.values = fill.regular_grid.values; mesh.range = fill.range;
+        mesh.colormap = fill.colormap; mesh.colormap_reversed = fill.colormap_reversed;
+        mesh.categorical = !!fill.categorical; mesh.categorical_codes = fill.categorical_codes;
+        mesh.__sharedPaintIdentity = fill.__paintIdentity;
+        mesh.regular_surface.values = fill.regular_grid.values;
+        mesh.regular_surface.mask = fill.regular_grid.mask;
+      });
+    }
+    return sc;
+  }
+  function scene3dHostElement() {
+    return document.getElementById(scene3dWorkspaceView() === "map" ? "map-scene3d-host" : "scene3d-host");
+  }
+  function scene3dWebGLAvailable() {
+    try {
+      var probe = document.createElement("canvas");
+      return !!(probe.getContext && (probe.getContext("webgl2") || probe.getContext("webgl") || probe.getContext("experimental-webgl")));
+    } catch (_) { return false; }
+  }
+  function sharedScene3dFallback(reason) {
+    setScene3dStatus("fallback", { reason: reason, requested: "3d", rendered: "2d" });
+    syncWorkspaceMapModeHosts(true); renderMap();
+    showBanner("3-D unavailable — showing 2-D", reason,
+      "The requested mode is retained; 2-D remains fully usable without provider access.");
+  }
 
   // Expose the scene build outcome for the test harness (like
   // __PETEK_VOLUME_STATUS): { state: "ok"|"error", points, triangles, buildMs }.
@@ -22,7 +63,7 @@
       // resource changed. Never let that stale success overwrite the current
       // localized loading/empty/malformed/error state.
       if (state === "ok") {
-        var feedback = workspaceViewFeedback("scene3d");
+        var feedback = workspaceViewFeedback(scene3dWorkspaceView());
         if (feedback && feedback.state !== "ready") {
           state = feedback.state; info = { reason: feedback.message };
         }
@@ -32,9 +73,9 @@
   }
 
   function renderScene3d() {
-    var host = document.getElementById("scene3d-host");
-    var sc = App.payload.scene3d;
-    var feedback = workspaceViewFeedback("scene3d");
+    var view = scene3dWorkspaceView(), shared = view === "map";
+    var host = scene3dHostElement(), sc = activeScene3dBundle();
+    var feedback = workspaceViewFeedback(view);
     if (feedback && feedback.state !== "ready") {
       setScene3dStatus(feedback.state, { reason: feedback.message }); showEmpty(feedback.message); return;
     }
@@ -43,19 +84,24 @@
       setScene3dStatus(state.state, { reason: state.message }); showEmpty(state.message); return;
     }
     if (!window.THREE) {
+      if (shared) { sharedScene3dFallback("The 3-D runtime is unavailable."); return; }
       setScene3dStatus("runtime", { reason: "Three.js did not load" });
       showEmpty("The 3-D runtime is unavailable. Reload the viewer or re-export this file."); return;
     }
+    if (shared && !scene3dWebGLAvailable()) {
+      sharedScene3dFallback("WebGL is unavailable or disabled in this browser."); return;
+    }
+    if (shared) syncWorkspaceMapModeHosts(false);
     hideEmpty();
     // LOUD, never silent: a malformed bundle (bad block, inconsistent arrays)
     // surfaces a banner + an error status hook, not a blank canvas.
     try {
-      if (!s3d) initScene3d(host);
+      if (!s3d) initScene3d(host); else attachScene3dHost(host);
       resizeScene3d(host);
       if (!s3dBuilt || s3dBuilt._for !== sc) {
         buildScene3d(sc);
-        if (App.tab === "scene3d") buildPanel(); // counts + fit-z now known
-      } else if (s3dBuilt._colormapKey !== S.colormap + "|" + !!S.colormapReversed) {
+        if (App.tab === "scene3d" || shared) buildPanel(); // counts + fit-z now known
+      } else if (s3dBuilt._colormapKey !== scene3dPaintSignature(sc)) {
         recolorScene3d(sc);
       }
       applyScene3dVisibility();
@@ -69,6 +115,7 @@
     } catch (e) {
       var reason = String((e && e.message) || e);
       var webgl = /webgl|graphics context|context (?:lost|creation|create)/i.test(reason);
+      if (shared && webgl) { sharedScene3dFallback(reason); return; }
       setScene3dStatus(webgl ? "webgl" : "error", { reason: reason });
       showEmpty(webgl ? "WebGL is unavailable or disabled in this browser." : "3-D scene failed to build — " + reason);
       showBanner(webgl ? "WebGL unavailable" : "3-D scene failed",
@@ -96,9 +143,14 @@
     labels.className = "scene3d-well-labels";
     labels.style.cssText = "position:absolute;inset:0;overflow:hidden;pointer-events:none";
     host.appendChild(labels);
-    s3d = { THREE: THREE, renderer: renderer, scene: scene, camera: camera, controls: controls, group: group, badge: badge, labels: labels, framed: false };
+    s3d = { THREE: THREE, renderer: renderer, scene: scene, camera: camera, controls: controls, group: group, badge: badge, labels: labels, host: host, framed: false };
     s3d.render = function () { renderer.render(scene, camera); updateScene3dWellLabels(); };
     wireScene3dClickInspect(renderer.domElement);
+  }
+  function attachScene3dHost(host) {
+    if (!s3d || !host || s3d.host === host) return;
+    host.appendChild(s3d.renderer.domElement); host.appendChild(s3d.badge); host.appendChild(s3d.labels);
+    s3d.host = host;
   }
   function resizeScene3d(host) {
     var w = host.clientWidth || 1, h = host.clientHeight || 1;
@@ -213,7 +265,7 @@
     var ptStride = totalPts > budget ? Math.ceil(totalPts / budget) : 1;
 
     var built = {
-      _for: sc, _colormapKey: S.colormap + "|" + !!S.colormapReversed, _detail: sc.detail || null,
+      _for: sc, _colormapKey: scene3dPaintSignature(sc), _detail: sc.detail || null,
       pointObjs: [], meshObjs: [], wellObjs: [], wellLabels: [],
       latticeObjs: [], contourObjs: [], outlineObjs: [],
       latticeZ: [], // per-lattice rendered flat level (data-space; tests)
@@ -388,6 +440,22 @@
     });
   }
 
+  function runSharedRegularBuild(msg, colorsOnly, done, fail, current, cancel) {
+    var D = window.PETEK_DECODE;
+    var state = colorsOnly
+      ? D.startRegularSurfaceColors(msg.surface, msg.range, msg.stops, msg.categories)
+      : D.startRegularSurface(msg.surface, msg.center, msg.range, msg.stops, msg.categories);
+    function step() {
+      try {
+        if (current && !current()) { if (cancel) cancel(); return; }
+        var complete = colorsOnly ? D.stepRegularSurfaceColors(state, 16384)
+          : D.stepRegularSurface(state, 16384);
+        if (complete) done(state.result); else setTimeout(step, 0);
+      } catch (error) { fail(error); }
+    }
+    step();
+  }
+
   function queueRegularSurface(m, built, center, refining, staging) {
     var paintKey = s3dMeshPaintKey(m), paintParts = paintKey.split("|");
     var id = ++_s3dRegularRequestId, stops = colormapStops(paintParts[0], paintParts[1] === "true");
@@ -395,12 +463,61 @@
       detail: built._detail, center: center, paintKey: paintKey };
     _s3dRegularPending[id] = request; built._regularPending++;
     var msg = { cmd: "buildRegularSurface", requestId: id, surface: m.regular_surface,
-      center: center, range: m.range, stops: stops };
+      center: center, range: m.range, stops: stops,
+      categories: m.categorical ? m.categorical_codes : null };
+    if (m.regular_surface.shared_decoded) {
+      setTimeout(function () {
+        function fail(error) {
+          delete _s3dRegularPending[id]; built._regularPending--;
+          setScene3dStatus("error", { reason: String((error && error.message) || error) });
+        }
+        function current() { return !!_s3dRegularPending[id] && s3dBuilt === built; }
+        function cancel() {
+          if (_s3dRegularPending[id]) { delete _s3dRegularPending[id]; built._regularPending--; }
+        }
+        try {
+          Object.keys(_s3dSharedDerived).forEach(function (key) {
+            var candidate = _s3dSharedDerived[key];
+            if (key !== m.__sharedLedgerKey && candidate.cacheGroup === m.__sharedCacheGroup) {
+              delete _s3dSharedDerived[key];
+            }
+          });
+          var cached = _s3dSharedDerived[m.__sharedLedgerKey] ||
+            (_s3dSharedDerived[m.__sharedLedgerKey] = { paints: {}, paintOrder: [],
+              cacheGroup: m.__sharedCacheGroup, geometryBuilds: 0, paintBuilds: 0 });
+          var colors = cached.paints[paintKey];
+          function finish() {
+            while (cached.paintOrder.length > 4) delete cached.paints[cached.paintOrder.shift()];
+            updateSharedModeLedger(m, cached, paintKey);
+            onRegularSurfaceBuilt({ requestId: id, pos: cached.pos.buffer, index: cached.index.buffer,
+              col: colors ? colors.buffer : null, triangleCount: cached.triangleCount,
+              buildMs: 0, sharedCache: true });
+          }
+          if (!cached.pos || !cached.index) {
+            runSharedRegularBuild(msg, false, function (first) {
+              cached.pos = first.pos; cached.index = first.index; cached.triangleCount = first.triangleCount;
+              cached.geometryBuilds++; colors = first.col;
+              if (colors) { cached.paints[paintKey] = colors; cached.paintOrder.push(paintKey); cached.paintBuilds++; }
+              finish();
+            }, fail, current, cancel);
+          } else if (!colors && msg.surface.values) {
+            runSharedRegularBuild(msg, true, function (nextColors) {
+              colors = nextColors; cached.paints[paintKey] = colors;
+              cached.paintOrder.push(paintKey); cached.paintBuilds++; finish();
+            }, fail, current, cancel);
+          } else finish();
+        } catch (e) {
+          fail(e);
+        }
+      }, 0);
+      return;
+    }
     var worker = typeof ensureWorker === "function" ? ensureWorker() : null;
     if (worker) worker.postMessage(msg);
     else setTimeout(function () {
       try {
-        var r = window.PETEK_DECODE.buildRegularSurface(msg.surface, msg.center, msg.range, msg.stops);
+        var r = window.PETEK_DECODE.buildRegularSurface(msg.surface, msg.center, msg.range,
+          msg.stops, msg.categories);
         onRegularSurfaceBuilt({ requestId: id, pos: r.pos.buffer, index: r.index.buffer,
           col: r.col ? r.col.buffer : null, triangleCount: r.triangleCount, buildMs: 0 });
       } catch (e) {
@@ -410,11 +527,41 @@
     }, 0);
   }
 
+  function updateSharedModeLedger(m, cached, paintKey) {
+    var ledger = window.__PETEK_SHARED_MODE_LEDGER; if (!ledger) return;
+    var entry = (ledger.entries || []).filter(function (candidate) { return candidate.key === m.__sharedLedgerKey; })[0];
+    if (!entry) return;
+    var colors = cached.paints[paintKey] || null;
+    entry.derived_position_bytes = cached.pos ? cached.pos.byteLength : 0;
+    entry.derived_topology_bytes = cached.index ? cached.index.byteLength : 0;
+    entry.derived_paint_bytes = colors ? colors.byteLength : 0;
+    entry.retained_paint_bytes = Object.keys(cached.paints).reduce(function (n, key) {
+      return n + (cached.paints[key] ? cached.paints[key].byteLength : 0);
+    }, 0);
+    entry.gpu_upload_bytes = entry.derived_position_bytes + entry.derived_topology_bytes + entry.derived_paint_bytes;
+    entry.geometry_builds = cached.geometryBuilds; entry.paint_builds = cached.paintBuilds;
+    ledger.derived_position_bytes = (ledger.entries || []).reduce(function (n, item) { return n + item.derived_position_bytes; }, 0);
+    ledger.derived_topology_bytes = (ledger.entries || []).reduce(function (n, item) { return n + item.derived_topology_bytes; }, 0);
+    ledger.derived_paint_bytes = (ledger.entries || []).reduce(function (n, item) { return n + item.derived_paint_bytes; }, 0);
+    ledger.retained_paint_bytes = (ledger.entries || []).reduce(function (n, item) { return n + item.retained_paint_bytes; }, 0);
+    ledger.gpu_upload_bytes = (ledger.entries || []).reduce(function (n, item) { return n + item.gpu_upload_bytes; }, 0);
+    ledger.geometry_builds = (ledger.entries || []).reduce(function (n, item) { return n + (item.geometry_builds || 0); }, 0);
+    ledger.paint_builds = (ledger.entries || []).reduce(function (n, item) { return n + (item.paint_builds || 0); }, 0);
+    ledger.retained_bytes = ledger.source_decoded_bytes + ledger.derived_position_bytes +
+      ledger.derived_topology_bytes + ledger.retained_paint_bytes;
+  }
+
   function s3dMeshPaintKey(mesh) {
     var name = canonicalColormap(mesh.colormap || S.colormap);
     var reversed = mesh.colormap != null || mesh.colormap_reversed != null
       ? !!mesh.colormap_reversed : !!S.colormapReversed;
-    return name + "|" + reversed;
+    return [name, reversed, displayId(mesh.__sharedPaintIdentity),
+      displayId(mesh.regular_surface && mesh.regular_surface.values),
+      mesh.range ? mesh.range[0] + "," + mesh.range[1] : "-", mesh.categorical ? 1 : 0,
+      displayId(mesh.categorical_codes)].join("|");
+  }
+  function scene3dPaintSignature(sc) {
+    return [S.colormap, !!S.colormapReversed].concat((sc.meshes || []).map(s3dMeshPaintKey)).join(";");
   }
 
   function regularSurfaceObject(m, data) {
@@ -500,7 +647,7 @@
       built.meshObjs = built.meshObjs.filter(function (o) { return !o.m.regular_surface; }).concat(staging.objects);
       built.triangleCount = built.triangleCount - oldTriangles + staging.triangles;
       built._for = staging.sc; built._detail = staging.detail || "full";
-      built._colormapKey = S.colormap + "|" + !!S.colormapReversed;
+      built._colormapKey = scene3dPaintSignature(staging.sc);
       _s3dPendingFor = null;
       setScene3dStatus("ok", { detail: built._detail, refining: false,
         triangles: built.triangleCount, meshes: built.meshObjs.length,
@@ -517,7 +664,7 @@
     if (!s3dBuilt || !S.s3dShow.wells) return;
     var rect = s3d.renderer.domElement.getBoundingClientRect(), boxes = [];
     s3dBuilt.wellLabels.forEach(function (entry) {
-      if (!workspaceItemVisible(entry.w.item_id, "scene3d")) return;
+      if (!workspaceItemVisible(entry.w.item_id, scene3dWorkspaceView())) return;
       var p = entry.p.clone().applyMatrix4(s3d.group.matrixWorld).project(s3d.camera);
       if (p.z < -1 || p.z > 1) return;
       var ax = (p.x * .5 + .5) * rect.width, ay = (-p.y * .5 + .5) * rect.height;
@@ -559,11 +706,47 @@
   // Per-object pins (cloud.colormap / mesh.colormap) keep their own ramp.
   function recolorScene3d(sc) {
     var regularMeshes = (sc.meshes || []).filter(function (m) { return !!m.regular_surface; });
-    if (regularMeshes.length && _s3dPendingFor !== sc) {
+    var sharedRegular = regularMeshes.filter(function (m) { return !!m.regular_surface.shared_decoded; });
+    var sharedPending = 0;
+    sharedRegular.forEach(function (m) {
+      var object = s3dBuilt.meshObjs.filter(function (candidate) { return candidate.m === m; })[0];
+      var cached = _s3dSharedDerived[m.__sharedLedgerKey]; if (!object || !cached) return;
+      var paintKey = s3dMeshPaintKey(m), colors = cached.paints[paintKey];
+      function apply(nextColors) {
+        if (!s3dBuilt || s3dBuilt._for !== sc || object.m !== m) return;
+        object.geo.setAttribute("color", new s3d.THREE.BufferAttribute(nextColors, 3));
+        object.hasValues = !!nextColors; object.paintKey = paintKey;
+        updateSharedModeLedger(m, cached, paintKey);
+        if (!--sharedPending) {
+          s3dBuilt._colormapKey = scene3dPaintSignature(sc);
+          if (s3d && s3d.render) s3d.render();
+        }
+      }
+      if (colors) { sharedPending++; apply(colors); return; }
+      var pendingKey = m.__sharedLedgerKey + "|" + paintKey;
+      if (_s3dSharedPaintPending[pendingKey]) return;
+      _s3dSharedPaintPending[pendingKey] = true; sharedPending++;
+      var parts = paintKey.split("|"), stops = colormapStops(parts[0], parts[1] === "true");
+      var msg = { surface: m.regular_surface, range: m.range, stops: stops,
+        categories: m.categorical ? m.categorical_codes : null };
+      runSharedRegularBuild(msg, true, function (nextColors) {
+        delete _s3dSharedPaintPending[pendingKey];
+        cached.paints[paintKey] = nextColors; cached.paintOrder.push(paintKey); cached.paintBuilds++;
+        while (cached.paintOrder.length > 4) delete cached.paints[cached.paintOrder.shift()];
+        apply(nextColors);
+      }, function (error) {
+        delete _s3dSharedPaintPending[pendingKey]; sharedPending--;
+        setScene3dStatus("error", { reason: String((error && error.message) || error) });
+      }, function () { return !!s3dBuilt && s3dBuilt._for === sc && object.m === m; }, function () {
+        delete _s3dSharedPaintPending[pendingKey]; sharedPending--;
+      });
+    });
+    var legacyRegular = regularMeshes.filter(function (m) { return !m.regular_surface.shared_decoded; });
+    if (legacyRegular.length && _s3dPendingFor !== sc) {
       _s3dPendingFor = sc;
       var center0 = s3dBuilt._center;
-      var staging0 = { sc: sc, objects: [], triangles: 0, built: s3dBuilt, detail: s3dBuilt._detail, remaining: regularMeshes.length };
-      regularMeshes.forEach(function (m) {
+      var staging0 = { sc: sc, objects: [], triangles: 0, built: s3dBuilt, detail: s3dBuilt._detail, remaining: legacyRegular.length };
+      legacyRegular.forEach(function (m) {
         queueRegularSurface(m, s3dBuilt, [center0.cx, center0.cy, center0.cz], true, staging0);
       });
     }
@@ -586,7 +769,7 @@
       bakeMeshColors(o.m, o.geo.attributes.color.array);
       o.geo.attributes.color.needsUpdate = true;
     });
-    if (!regularMeshes.length) s3dBuilt._colormapKey = S.colormap + "|" + !!S.colormapReversed;
+    if (!legacyRegular.length && !sharedPending) s3dBuilt._colormapKey = scene3dPaintSignature(sc);
   }
 
   function polylinesToSegments(lines, map3, colorCss) {
@@ -627,15 +810,16 @@
 
   function applyScene3dVisibility() {
     if (!s3dBuilt) return;
-    s3dBuilt.pointObjs.forEach(function (o) { o.obj.visible = S.s3dShow.points && workspaceItemVisible(o.src.item_id, "scene3d"); });
+    var view = scene3dWorkspaceView();
+    s3dBuilt.pointObjs.forEach(function (o) { o.obj.visible = S.s3dShow.points && workspaceItemVisible(o.src.item_id, view); });
     s3dBuilt.meshObjs.forEach(function (o) {
-      o.mesh.visible = S.s3dShow.meshes && workspaceItemVisible(o.m.item_id, "scene3d");
+      o.mesh.visible = S.s3dShow.meshes && workspaceItemVisible(o.m.item_id, view);
       o.mesh.material.wireframe = S.s3dWireframe;
     });
-    s3dBuilt.latticeObjs.forEach(function (o) { o.visible = S.s3dShow.lattice && workspaceItemVisible(o.userData.petek.item_id, "scene3d"); });
-    s3dBuilt.contourObjs.forEach(function (o) { o.visible = S.s3dShow.contours && workspaceItemVisible(o.userData.petek.item_id, "scene3d"); });
-    s3dBuilt.outlineObjs.forEach(function (o) { o.visible = S.s3dShow.outlines && workspaceItemVisible(o.userData.petek.item_id, "scene3d"); });
-    s3dBuilt.wellObjs.forEach(function (o) { o.visible = S.s3dShow.wells && workspaceItemVisible(o.userData.petek.item_id, "scene3d"); });
+    s3dBuilt.latticeObjs.forEach(function (o) { o.visible = S.s3dShow.lattice && workspaceItemVisible(o.userData.petek.item_id, view); });
+    s3dBuilt.contourObjs.forEach(function (o) { o.visible = S.s3dShow.contours && workspaceItemVisible(o.userData.petek.item_id, view); });
+    s3dBuilt.outlineObjs.forEach(function (o) { o.visible = S.s3dShow.outlines && workspaceItemVisible(o.userData.petek.item_id, view); });
+    s3dBuilt.wellObjs.forEach(function (o) { o.visible = S.s3dShow.wells && workspaceItemVisible(o.userData.petek.item_id, view); });
   }
 
   // z-exaggeration: a display-only group scale (same control the volume tab
@@ -727,15 +911,20 @@
       if (m.regular_surface) {
         var G = m.regular_surface, nc = G.dimensions[0], vi0 = hit.face.a;
         var ii = vi0 % nc, jj = Math.floor(vi0 / nc);
-        var elev = G.__elev || (G.__elev = decodeLane(G.elevations));
-        var vals = G.values ? (G.__values || (G.__values = decodeLane(G.values))) : null;
+        var decodeRegular = window.PETEK_DECODE && window.PETEK_DECODE.regularSurfaceArray;
+        var elev = G.__elev || (G.__elev = decodeRegular
+          ? decodeRegular(G.elevations) : decodeLane(G.elevations));
+        var vals = G.values ? (G.__values || (G.__values = decodeRegular
+          ? decodeRegular(G.values) : decodeLane(G.values))) : null;
         var value0 = vals ? vals[vi0] : null;
+        var elevation0 = elev && isFinite(elev[vi0]) ? elev[vi0] : null;
+        if (elevation0 != null && G.positive === "down") elevation0 = -elevation0;
         var regularOut = {
           key: "mesh:" + (m.display_name || m.name || "") + ":" + vi0,
           label: disp(m, m.name) || "mesh",
           x: G.origin[0] + ii * G.step_i[0] + jj * G.step_j[0],
           y: G.origin[1] + ii * G.step_i[1] + jj * G.step_j[1],
-          z: elev && isFinite(elev[vi0]) ? elev[vi0] : null,
+          z: elevation0,
         };
         if (value0 != null && isFinite(value0) && m.name !== "z") {
           regularOut.value = value0; regularOut.valueLabel = m.name;
@@ -823,8 +1012,8 @@
 
   // The scene3d control panel: colormap + z-exag (+ fit) + per-layer toggles.
   function buildScene3dPanel(body) {
-    var sc = App.payload.scene3d;
-    if (!sc) { body.appendChild(el("div", "hint", workspaceLoadingHint("scene3d") || "No 3-D scene bundle in this payload.")); return; }
+    var sc = activeScene3dBundle(), view = scene3dWorkspaceView();
+    if (!sc) { body.appendChild(el("div", "hint", workspaceLoadingHint(view) || "No 3-D scene bundle in this payload.")); return; }
     var built = s3dBuilt && s3dBuilt._for === sc ? s3dBuilt : null;
     var g = group("Scene");
     g.appendChild(el("div", "hint",
@@ -880,8 +1069,15 @@
     var pc = sc.point_color, pointsRampDrawn = false, ptIdx = 0;
     if (S.s3dShow.meshes) {
       (sc.meshes || []).forEach(function (m) {
-        if (!workspaceItemVisible(m.item_id, "scene3d")) return;
-        if (m.values && m.range) {
+        if (!workspaceItemVisible(m.item_id, scene3dWorkspaceView())) return;
+        if (m.categorical && m.categorical_codes) {
+          Object.keys(m.categorical_codes).sort(function (a, b) { return Number(a) - Number(b); })
+            .forEach(function (code) {
+              var record = m.categorical_codes[code] || {};
+              keys.appendChild(keyRow((disp(m, m.name) || "mesh") + " · " +
+                (record.label != null ? record.label : code), record.color || token("--muted"), false));
+            });
+        } else if (m.values && m.range) {
           var reversed = m.colormap != null || m.colormap_reversed != null
             ? !!m.colormap_reversed : !!S.colormapReversed;
           rampBlock(lg, typeIcon("fill", null, m.colormap, reversed), disp(m, m.name),
@@ -897,7 +1093,7 @@
         // OWN range/colormap draws its OWN ramp (per-object color ruling);
         // clouds on the global point_color share one ramp block.
         var src = (sc.points || [])[ptIdx++] || null;
-        if (!workspaceItemVisible(ly.item_id || (src && src.item_id), "scene3d")) return;
+        if (!workspaceItemVisible(ly.item_id || (src && src.item_id), scene3dWorkspaceView())) return;
         if (!S.s3dShow.points || !(sc.points || []).length) return;
         var plabel = ly.name ? pretty(ly.name) : "points";
         var cc = s3dCloudColor(src, pc);
@@ -910,15 +1106,15 @@
             cc.range ? rampCss(cc.cmap, 0.75, cc.reversed) : token("--accent")));
         }
       } else if (ly.kind === "lines") {
-        if (!workspaceItemVisible(ly.item_id, "scene3d")) return;
+        if (!workspaceItemVisible(ly.item_id, scene3dWorkspaceView())) return;
         if (!S.s3dShow.lattice || !(sc.lattices || []).length) return;
         keys.appendChild(iconKeyRow("lines", ly.name ? pretty(ly.name) : "grid lines", token("--muted")));
       } else if (ly.kind === "contours") {
-        if (!workspaceItemVisible(ly.item_id, "scene3d")) return;
+        if (!workspaceItemVisible(ly.item_id, scene3dWorkspaceView())) return;
         if (!S.s3dShow.contours || !(sc.contours || []).length) return;
         keys.appendChild(iconKeyRow("contours", ly.name ? pretty(ly.name) : "contours", token("--text-secondary")));
       } else if (ly.kind === "wells") {
-        if (!workspaceItemVisible(ly.item_id, "scene3d")) return;
+        if (!workspaceItemVisible(ly.item_id, scene3dWorkspaceView())) return;
         if (!S.s3dShow.wells) return;
         keys.appendChild(iconKeyRow("wells", pretty(ly.name || "well"), idColor("well:" + ly.name)));
       }

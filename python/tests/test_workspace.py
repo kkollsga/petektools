@@ -960,7 +960,8 @@ def test_async_viewer_paint_completions_are_request_keyed():
     assert "handleVolumeRecolorCompletion(vol3, requestId, paintKey" in source
     assert 'pending.paintKey, s3dMeshPaintKey(pending.m)' in source
     assert 'entry.paintKey !== s3dMeshPaintKey(entry.m)' in source
-    assert 'built._colormapKey = S.colormap + "|" + !!S.colormapReversed' in source
+    assert "built._colormapKey = scene3dPaintSignature(staging.sc)" in source
+    assert "displayId(mesh.__sharedPaintIdentity)" in source
     assert "visiblePointSlicePlan(m.layers || [], ptN(m.points), S.pointLayerVis)" in source
     assert "pointSlicesExtent(m.points, visiblePointSlices(), ptX, ptY)" in source
     assert "pointIndexInVisibleSlices(pi, slices)" in source
@@ -1157,6 +1158,10 @@ def test_workspace_v2_shared_manifest_identity_and_static_budget(tmp_path):
     }
     assert len(resource["blocks"]) == 2
     assert provider.calls == [("surface:top", "map", "full")]
+    saved_html = path.read_text()
+    assert 'id="map-mode-control"' in saved_html
+    assert 'data-map-mode="2d"' in saved_html
+    assert 'data-map-mode="3d"' in saved_html
 
 
 def test_workspace_v2_invalid_view_is_item_local_with_valid_sibling():
@@ -1272,6 +1277,10 @@ def test_workspace_v2_browser_runtime_uses_shared_identity_and_dual_selectors():
         and "activeMode" in source
     )
     assert "function workspaceSharedFill" in source
+    assert "function setWorkspaceMapMode" in source
+    assert "function composeWorkspaceSharedMapScene" in source
+    assert "function runSharedRegularBuild" in source
+    assert "__PETEK_SHARED_MODE_LEDGER" in source
     assert "m.blocks || m.__workspaceBlocks" in source
     assert "function validOverlayIntersections" in source
     assert "fill.categorical" in source and "categorical_codes" in source

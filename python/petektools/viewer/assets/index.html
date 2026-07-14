@@ -98,8 +98,11 @@
   .workspace-shell #stage { grid-template-columns: auto minmax(0, 1fr) auto; position: relative; }
   #view { position: relative; min-width: 0; background: var(--surface-1); }
   .pane { position: absolute; inset: 0; }
-  .pane canvas, #volume-host, #scene3d-host { width: 100%; height: 100%; display: block; }
-  #volume-host, #scene3d-host { position: absolute; inset: 0; }
+  .pane canvas, #volume-host, #scene3d-host, #map-scene3d-host { width: 100%; height: 100%; display: block; }
+  #volume-host, #scene3d-host, #map-scene3d-host { position: absolute; inset: 0; }
+  .map-mode-control { position: absolute; z-index: 7; top: 12px; right: 12px; display: flex; padding: 2px; gap: 2px; border: 1px solid var(--border); border-radius: 6px; background: color-mix(in srgb, var(--surface-2) 92%, transparent); }
+  .map-mode-control button { min-width: 38px; padding: 4px 8px; border: 0; border-radius: 4px; background: transparent; color: var(--muted); font: 600 11px/1.2 system-ui; }
+  .map-mode-control button[aria-pressed="true"] { background: var(--plane); color: var(--text-primary); box-shadow: 0 0 0 1px var(--border); }
   /* --- control panel --- */
   #navigator, #panel { position: relative; background: var(--surface-1); min-width: 0; }
   #navigator { width: var(--navigator-width); border-right: 1px solid var(--border); overflow: hidden; }
@@ -374,6 +377,11 @@
     <section id="view" aria-label="Active workspace view">
       <div class="pane" data-pane="map" role="tabpanel">
         <canvas id="map-canvas" tabindex="0" aria-label="Map. Use arrow keys to pan, plus or minus to zoom, and zero for north up." aria-describedby="map-hud-status"></canvas>
+        <div id="map-scene3d-host" hidden></div>
+        <div id="map-mode-control" class="map-mode-control" role="group" aria-label="Map camera mode" hidden>
+          <button type="button" data-map-mode="2d" aria-pressed="true">2D</button>
+          <button type="button" data-map-mode="3d" aria-pressed="false">3D</button>
+        </div>
         <div id="map-hud" class="map-hud" aria-hidden="true">
           <div id="map-hud-scale" class="map-hud-line"></div>
           <div id="map-hud-meta" class="map-hud-line"></div>

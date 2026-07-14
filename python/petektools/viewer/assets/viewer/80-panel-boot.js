@@ -1,7 +1,8 @@
   // ---- control panel (per tab) ---------------------------------------------
   function buildPanel() {
     var body = document.getElementById("panel-body"); body.innerHTML = "";
-    if (App.tab === "map") buildMapPanel(body);
+    if (App.tab === "map" && workspaceMapMode() === "3d") buildScene3dPanel(body);
+    else if (App.tab === "map") buildMapPanel(body);
     else if (App.tab === "section") buildSectionPanel(body);
     else if (App.tab === "scene3d") buildScene3dPanel(body);
     else if (App.tab === "charts") buildChartsPanel(body);

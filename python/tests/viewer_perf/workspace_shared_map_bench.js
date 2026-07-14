@@ -188,6 +188,8 @@ vm.createContext(context);
 vm.runInContext(helpers, context);
 [
   "virtualConcat", "cloneStamped", "workspaceSharedFill", "composeWorkspaceMapReady",
+  "workspaceSharedElevationRange", "workspaceDecodedBytes", "workspaceSharedSceneMesh",
+  "composeWorkspaceSharedMapScene",
   "setWorkspaceAttribute", "setWorkspaceColorBy",
 ].forEach(name => vm.runInContext(extractFunction(workspace, name), context));
 [

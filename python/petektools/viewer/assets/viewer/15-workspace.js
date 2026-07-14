@@ -23,6 +23,64 @@
   function workspaceColorBy(id, view) {
     return W && W.activeColorBy[id] ? (W.activeColorBy[id][view] == null ? null : W.activeColorBy[id][view]) : null;
   }
+  function workspaceMode(id, view) {
+    return W && W.activeMode[id] ? (W.activeMode[id][view] == null ? null : W.activeMode[id][view]) : null;
+  }
+  function workspaceMapModeItems() {
+    if (!W) return [];
+    return W.order.filter(function (id) {
+      var spec = workspaceSpec(id, "map");
+      return workspaceItemVisible(id, "map") && spec && spec.transport === "shared" &&
+        spec.modes && spec.modes.indexOf("3d") >= 0;
+    });
+  }
+  function workspaceMapMode() {
+    var ids = workspaceMapModeItems();
+    return ids.length && workspaceMode(ids[0], "map") === "3d" ? "3d" : "2d";
+  }
+  function syncWorkspaceMapModeHosts(fallback) {
+    var requested = workspaceMapMode(), rendered = requested === "3d" && !fallback ? "3d" : "2d";
+    var canvas = document.getElementById("map-canvas"), scene = document.getElementById("map-scene3d-host");
+    var hud = document.getElementById("map-hud"), markers = document.getElementById("map-marker-controls");
+    if (canvas) canvas.hidden = rendered !== "2d";
+    if (scene) scene.hidden = rendered !== "3d";
+    if (hud) hud.hidden = rendered !== "2d";
+    if (markers) markers.hidden = rendered !== "2d";
+    var control = document.getElementById("map-mode-control"), ids = workspaceMapModeItems();
+    if (control) {
+      control.hidden = !ids.length;
+      Array.prototype.forEach.call(control.querySelectorAll("[data-map-mode]"), function (button) {
+        button.setAttribute("aria-pressed", button.dataset.mapMode === requested ? "true" : "false");
+      });
+    }
+    if (typeof window !== "undefined") window.__PETEK_MAP_MODE_STATUS = {
+      requested: requested, rendered: rendered, fallback: !!fallback, item_ids: ids.slice(),
+    };
+    return rendered;
+  }
+  function setWorkspaceMapMode(mode) {
+    if (!W || (mode !== "2d" && mode !== "3d")) return false;
+    var ids = workspaceMapModeItems(), changed = false;
+    ids.forEach(function (id) {
+      if (workspaceMode(id, "map") !== mode) { W.activeMode[id].map = mode; changed = true; }
+    });
+    if (changed) W.modeSwitches++;
+    if (window.__PETEK_SHARED_MODE_LEDGER) {
+      window.__PETEK_SHARED_MODE_LEDGER.mode_switches = W.modeSwitches;
+    }
+    syncWorkspaceMapModeHosts(false); exposeWorkspaceState(); buildWorkspaceNavigator(); buildPanel();
+    if (App.tab === "map") renderActive();
+    return changed;
+  }
+  function wireWorkspaceMapModeControl() {
+    var control = document.getElementById("map-mode-control");
+    if (!control || control.__wired) return;
+    control.__wired = true;
+    Array.prototype.forEach.call(control.querySelectorAll("[data-map-mode]"), function (button) {
+      button.addEventListener("click", function () { setWorkspaceMapMode(button.dataset.mapMode); });
+    });
+    syncWorkspaceMapModeHosts(false);
+  }
   function workspaceDetail(id, view) {
     return W && W.activeDetail[id] ? (W.activeDetail[id][view] == null ? null : W.activeDetail[id][view]) : null;
   }
@@ -60,7 +118,8 @@
     W = {
       manifest: manifest, available: (manifest.available_views || []).slice(),
       order: [], items: {}, visible: {}, activeLane: {}, activeAttribute: {}, activeColorBy: {}, activeMode: {}, activeDetail: {}, resources: {}, loading: {}, errors: {}, detailErrors: {}, searchText: {},
-      query: "", expanded: {}, expansionManual: {}, groups: {}, fetches: 0, compositions: 0, searchTimer: null,
+      query: "", expanded: {}, expansionManual: {}, groups: {}, fetches: 0, compositions: 0,
+      sharedDecodes: 0, modeSwitches: 0, searchTimer: null,
       treeBuildMs: [], groupToggleMs: [], panelTimer: null, composeTimers: {},
       focusedTreeId: null, restoreTreeFocus: false, treeScrollTop: 0,
     };
@@ -159,6 +218,7 @@
       loaded: W.order.reduce(function (n, id) { return n + Object.keys(W.resources[id]).length; }, 0),
       loading: Object.keys(W.loading).length, errors: Object.keys(W.errors).length,
       fetches: W.fetches, compositions: W.compositions,
+      sharedDecodes: W.sharedDecodes, modeSwitches: W.modeSwitches,
       treeBuildMs: W.treeBuildMs.slice(), groupToggleMs: W.groupToggleMs.slice(),
     };
     updateWorkspaceChrome();
@@ -381,7 +441,8 @@
       }
     });
     if (!entries.length) {
-      App.payload.map = null; App.payload.wells = []; refreshWorkspaceMapState();
+      App.payload.map = null; App.payload.wells = []; App.payload.__workspaceMapScene3d = null;
+      refreshWorkspaceMapState();
       repaintWorkspaceView("map"); return;
     }
     // Decode sources serially: a later resource can reuse digests populated by
@@ -391,7 +452,7 @@
       while (next < entries.length) {
         var entry = entries[next++], m = entry.payload.map;
         if ((m.blocks || m.__workspaceBlocks) && !m.__blocksReady) {
-          decodeMap2d(entry.payload, decodeNext); return;
+          W.sharedDecodes++; decodeMap2d(entry.payload, decodeNext); return;
         }
       }
       composeWorkspaceMapReady(entries);
@@ -434,7 +495,8 @@
     if (!fill) {
       fill = cache[attributeId] = {
         item_id: id, __workspaceFrame: sourceFrame,
-        __workspaceGeometry: geometry.values, geometry_attribute: attributeId,
+        __workspaceGeometry: geometry.values, __workspaceGeometryRange: geometry.range,
+        __workspacePositive: grid.positive || "down", geometry_attribute: attributeId,
         regular_grid: {
           dimensions: [f.ncol, f.nrow], origin: [f.origin_x, f.origin_y],
           step_i: [f.spacing_x * c, f.spacing_x * s],
@@ -476,6 +538,94 @@
     fill.regular_grid.values = paint.values; fill.regular_grid.mask = mask;
     if (changedPaint) fill.__categoricalClasses = null;
     return fill;
+  }
+
+  function workspaceSharedElevationRange(range, positive) {
+    if (!range || range.length !== 2 || !isFinite(range[0]) || !isFinite(range[1])) return null;
+    return positive === "down" ? [-Number(range[1]), -Number(range[0])]
+      : [Number(range[0]), Number(range[1])];
+  }
+  function workspaceDecodedBytes(value) {
+    var view = value && (value.a || value);
+    return view && typeof view.byteLength === "number" ? view.byteLength : 0;
+  }
+  function workspaceSharedSceneMesh(id, m, fill, detail) {
+    if (!fill || !fill.regular_grid) return null;
+    var cache = m.__workspaceSharedSceneMeshes || Object.defineProperty(m,
+      "__workspaceSharedSceneMeshes", { value: {}, configurable: true, writable: true,
+      }).__workspaceSharedSceneMeshes;
+    var key = fill.geometry_attribute, mesh = cache[key], grid = fill.regular_grid;
+    if (!mesh) {
+      mesh = cache[key] = {
+        item_id: id, name: fill.geometry_attribute, display_name: fill.display_name,
+        regular_surface: {
+          shared_decoded: true, dimensions: grid.dimensions, origin: grid.origin,
+          step_i: grid.step_i, step_j: grid.step_j, elevations: fill.__workspaceGeometry,
+          mask: grid.mask, triangle_count: m.surface_grid && m.surface_grid.triangle_count,
+          positive: fill.__workspacePositive || "down",
+          elevation_range: workspaceSharedElevationRange(fill.__workspaceGeometryRange,
+            fill.__workspacePositive || "down"),
+        },
+      };
+    }
+    mesh.display_name = fill.display_name; mesh.values = grid.values; mesh.range = fill.range;
+    mesh.colormap = fill.colormap; mesh.colormap_reversed = fill.colormap_reversed;
+    mesh.categorical = !!fill.categorical; mesh.categorical_codes = fill.categorical_codes;
+    mesh.regular_surface.elevations = fill.__workspaceGeometry;
+    mesh.regular_surface.values = grid.values; mesh.regular_surface.mask = grid.mask;
+    mesh.regular_surface.positive = fill.__workspacePositive || "down";
+    mesh.regular_surface.elevation_range = workspaceSharedElevationRange(fill.__workspaceGeometryRange,
+      fill.__workspacePositive || "down");
+    mesh.__sharedGeometryIdentity = fill.__workspaceGeometry;
+    mesh.__sharedPaintIdentity = fill.__paintIdentity;
+    mesh.__sharedCacheGroup = id + "|" + (detail || "default");
+    mesh.__sharedLedgerPrefix = mesh.__sharedCacheGroup + "|" + key + "|" +
+      (typeof displayId === "function" ? displayId(m) + "|" + displayId(fill.__workspaceGeometry) : "0|0");
+    mesh.__sharedLedgerKey = mesh.__sharedLedgerPrefix + "|" +
+      (typeof displayId === "function" ? displayId(grid.mask) : 0);
+    return mesh;
+  }
+  function composeWorkspaceSharedMapScene(entries, map, wells) {
+    var scene = { schema_version: 1, points: [], meshes: [], lattices: [], contours: [],
+      wells: wells, outlines: [], layers: [], point_color: null, colormap: null,
+      z_exaggeration: 5, ref_z: 0, detail: null, __workspaceSharedMap: true };
+    var ledgerEntries = [], globalSeen = [], geometrySeen = [];
+    var sourceBytes = 0, allFull = true, anyPreview = false;
+    entries.forEach(function (entry) {
+      var spec = workspaceSpec(entry.id, "map"), source = entry.payload.map;
+      if (!spec || spec.transport !== "shared" || !spec.modes || spec.modes.indexOf("3d") < 0) return;
+      var fill = (map.fills || []).filter(function (candidate) {
+        return candidate.item_id === entry.id && candidate.geometry_attribute === workspaceLane(entry.id, "map");
+      })[0];
+      var resource = workspaceResource(entry.id, "map", workspaceLane(entry.id, "map"), workspaceDetail(entry.id, "map"));
+      var detail = resource && resource.detail || null, mesh = workspaceSharedSceneMesh(entry.id, source, fill, detail);
+      if (!mesh) return;
+      scene.meshes.push(mesh); allFull = allFull && detail === "full"; anyPreview = anyPreview || detail === "preview";
+      var grid = source.surface_grid || {}, localSeen = [], itemBytes = 0, arrays = [grid.mask];
+      (grid.attributes || []).forEach(function (attribute) { arrays.push(attribute.values); });
+      arrays.forEach(function (value) {
+        var view = value && (value.a || value); if (!view || localSeen.indexOf(view) >= 0) return;
+        localSeen.push(view); itemBytes += workspaceDecodedBytes(view);
+        if (globalSeen.indexOf(view) < 0) { globalSeen.push(view); sourceBytes += workspaceDecodedBytes(view); }
+      });
+      var geometryView = fill.__workspaceGeometry && (fill.__workspaceGeometry.a || fill.__workspaceGeometry);
+      if (geometryView && geometrySeen.indexOf(geometryView) < 0) geometrySeen.push(geometryView);
+      ledgerEntries.push({ item_id: entry.id, detail: detail,
+        geometry_identity: typeof displayId === "function" ? displayId(fill.__workspaceGeometry) : 0,
+        paint_identity: typeof displayId === "function" ? displayId(fill.__paintIdentity) : 0,
+        source_decoded_bytes: itemBytes, derived_position_bytes: 0, derived_topology_bytes: 0,
+        derived_paint_bytes: 0, gpu_upload_bytes: 0, key: mesh.__sharedLedgerKey });
+    });
+    if (!scene.meshes.length) { App.payload.__workspaceMapScene3d = null; return; }
+    scene.detail = allFull ? "full" : anyPreview ? "preview" : null;
+    App.payload.__workspaceMapScene3d = scene;
+    window.__PETEK_SHARED_MODE_LEDGER = {
+      fetches: W.fetches, decodes: W.sharedDecodes, geometry_identities: geometrySeen.length,
+      source_decoded_bytes: sourceBytes, descriptor_copy_bytes: 0,
+      source_transfer_bytes: 0, derived_transfer_bytes: 0,
+      mode_switches: W.modeSwitches, geometry_builds: 0, paint_builds: 0,
+      entries: ledgerEntries,
+    };
   }
 
   function composeWorkspaceMapReady(entries) {
@@ -533,6 +683,7 @@
     map.points = virtualConcat(pointParts); map.grid_lines = virtualConcat(gridParts);
     var lod = virtualConcat(gridLodParts); if (lod.length) map.grid_lines_lod = lod;
     App.payload.map = map; App.payload.wells = wells;
+    composeWorkspaceSharedMapScene(entries, map, wells);
     refreshWorkspaceMapState();
     activateWorkspaceMapFrame(map, (map.fills || [])[S.mapFillIdx]);
     repaintWorkspaceView("map");
