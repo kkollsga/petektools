@@ -609,7 +609,8 @@
   function buildWorkspaceTree(body) {
     if (!W) return;
     var started = performance.now();
-    var view = workspaceViewName(App.tab), groupEl = el("div", "workspace-project");
+    var view = workspaceViewName(App.tab), selectionSupported = workspaceViewSupportsSelectionControls(view);
+    var groupEl = el("div", "workspace-project");
     var search = el("input", "workspace-search"); search.type = "search";
     search.placeholder = "Search project"; search.value = W.query; search.setAttribute("aria-label", "Search project");
     search.addEventListener("input", function () {
@@ -690,28 +691,31 @@
           W.focusedTreeId = node.id; W.restoreTreeFocus = true;
           buildWorkspaceNavigator();
         });
-        var cb = el("input"); cb.type = "checkbox"; cb.checked = ids.length > 0 && checked === ids.length;
-        cb.indeterminate = checked > 0 && checked < ids.length; cb.disabled = !ids.length;
-        cb.setAttribute("aria-label", "Show " + groupLabel + " in " + view);
-        cb.onchange = function () {
-          var toggleStarted = performance.now(), next = cb.checked;
-          ids.forEach(function (id) { W.visible[id][view] = cb.checked; });
-          row.querySelector(".workspace-count").textContent = (next ? ids.length : 0) + "/" + ids.length;
-          tree.querySelectorAll("input[data-workspace-item]").forEach(function (input) {
-            input.checked = workspaceItemVisible(input.dataset.workspaceItem, view);
-          });
-          W.groupToggleMs.push(performance.now() - toggleStarted);
-          exposeWorkspaceState();
-          setTimeout(function () {
-            if (next) ensureWorkspaceTab(App.tab);
-            else if (view === "map") composeWorkspaceMap();
-            else if (view === "scene3d") { applyScene3dVisibility(); if (s3d) s3d.render(); }
-            else if (view === "wells") composeWorkspaceWells();
-          }, 0);
-        };
+        var cb;
+        if (selectionSupported) {
+          cb = el("input"); cb.type = "checkbox"; cb.checked = ids.length > 0 && checked === ids.length;
+          cb.indeterminate = checked > 0 && checked < ids.length; cb.disabled = !ids.length;
+          cb.setAttribute("aria-label", "Show " + groupLabel + " in " + view);
+          cb.onchange = function () {
+            var toggleStarted = performance.now(), next = cb.checked;
+            ids.forEach(function (id) { W.visible[id][view] = cb.checked; });
+            row.querySelector(".workspace-count").textContent = (next ? ids.length : 0) + "/" + ids.length;
+            tree.querySelectorAll("input[data-workspace-item]").forEach(function (input) {
+              input.checked = workspaceItemVisible(input.dataset.workspaceItem, view);
+            });
+            W.groupToggleMs.push(performance.now() - toggleStarted);
+            exposeWorkspaceState();
+            setTimeout(function () {
+              if (next) ensureWorkspaceTab(App.tab);
+              else if (view === "map") composeWorkspaceMap();
+              else if (view === "scene3d") { applyScene3dVisibility(); if (s3d) s3d.render(); }
+              else if (view === "wells") composeWorkspaceWells();
+            }, 0);
+          };
+        } else cb = el("span", "workspace-checkbox-spacer");
         var meta = el("span", "workspace-meta");
-        meta.appendChild(el("span", "workspace-count", checked + "/" + ids.length));
-        if (ids.length && workspaceViewSupportsSelectionControls(view)) {
+        if (selectionSupported) meta.appendChild(el("span", "workspace-count", checked + "/" + ids.length));
+        if (ids.length && selectionSupported) {
           meta.appendChild(workspaceIsolateButton(ids.slice(), view, groupLabel));
         }
         row.appendChild(workspaceRails(entry)); row.appendChild(twist); row.appendChild(cb);
@@ -730,10 +734,13 @@
         row.tabIndex = W.focusedTreeId === node.id ? 0 : -1;
         row.addEventListener("focus", function () { W.focusedTreeId = node.id; });
         if (entry.collapsedBore) row.dataset.collapsedBore = "true";
-        var cb = el("input"); cb.type = "checkbox"; cb.checked = has && workspaceItemVisible(node.id, view); cb.disabled = !has;
-        cb.setAttribute("aria-label", (has ? "Show " : "Unavailable: ") + displayLabel + " in " + view);
-        cb.dataset.workspaceItem = node.id;
-        cb.onchange = function () { setWorkspaceVisible(node.id, view, cb.checked); };
+        var cb;
+        if (selectionSupported) {
+          cb = el("input"); cb.type = "checkbox"; cb.checked = has && workspaceItemVisible(node.id, view); cb.disabled = !has;
+          cb.setAttribute("aria-label", (has ? "Show " : "Unavailable: ") + displayLabel + " in " + view);
+          cb.dataset.workspaceItem = node.id;
+          cb.onchange = function () { setWorkspaceVisible(node.id, view, cb.checked); };
+        } else cb = el("span", "workspace-checkbox-spacer");
         row.appendChild(workspaceRails(entry)); row.appendChild(workspaceLeafTwist()); row.appendChild(cb);
         row.appendChild(workspaceIcon(node.role, false));
         var label = el("span", "workspace-label" + (!has ? " workspace-disabled" : ""), displayLabel);
@@ -771,7 +778,7 @@
           var unavailable = el("span", "workspace-status", node.reason);
           unavailable.title = node.reason; meta.appendChild(unavailable);
         }
-        if (has && workspaceViewSupportsSelectionControls(view)) {
+        if (has && selectionSupported) {
           meta.appendChild(workspaceIsolateButton([node.id], view, displayLabel));
         }
         row.appendChild(meta); target.appendChild(row);
@@ -885,7 +892,7 @@
       } else if (key === "Enter" || key === " ") {
         event.preventDefault();
         if (node.children) setGroupExpanded(entry, !W.expanded[node.id]);
-        else if (workspaceItemHasView(node.id, view)) {
+        else if (selectionSupported && workspaceItemHasView(node.id, view)) {
           W.focusedTreeId = node.id; W.restoreTreeFocus = true;
           setWorkspaceVisible(node.id, view, !workspaceItemVisible(node.id, view));
         }
@@ -896,26 +903,23 @@
       var restoreIndex = flat.findIndex(function (entry) { return entry.node.id === W.focusedTreeId; });
       focusFlatIndex(restoreIndex < 0 ? 0 : restoreIndex);
     }
-    var viewLabels = {
-      map: "Map", scene3d: "3-D", wells: "Wells", sections: "Intersection",
-      volume: "Volume", charts: "Charts",
-    };
-    var selectedInView = W.order.filter(function (id) {
-      return workspaceItemHasView(id, view) && workspaceItemVisible(id, view);
-    }).length;
-    var footer = el("div", "workspace-tree-footer");
-    var visibilityNote = el("span");
-    visibilityNote.appendChild(document.createTextNode("Visibility applies to "));
-    visibilityNote.appendChild(el("strong", null, viewLabels[view] || view));
-    footer.appendChild(visibilityNote);
-    if (workspaceViewSupportsSelectionControls(view)) {
+    if (selectionSupported) {
+      var viewLabels = { map: "Map", scene3d: "3-D", wells: "Wells" };
+      var selectedInView = W.order.filter(function (id) {
+        return workspaceItemHasView(id, view) && workspaceItemVisible(id, view);
+      }).length;
+      var footer = el("div", "workspace-tree-footer");
+      var visibilityNote = el("span");
+      visibilityNote.appendChild(document.createTextNode("Visibility applies to "));
+      visibilityNote.appendChild(el("strong", null, viewLabels[view] || view));
+      footer.appendChild(visibilityNote);
       var clear = el("button", "workspace-clear", "Clear all"); clear.type = "button";
       clear.disabled = selectedInView === 0;
       clear.title = "Clear all visible items in " + (viewLabels[view] || view);
       clear.onclick = function () { setWorkspaceViewSelection(view, []); };
       footer.appendChild(clear);
+      groupEl.appendChild(footer);
     }
-    groupEl.appendChild(footer);
     exposeWorkspaceState();
     W.treeBuildMs.push(performance.now() - started); exposeWorkspaceState();
   }

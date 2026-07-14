@@ -804,6 +804,9 @@ def test_workspace_project_tree_design_contract_is_explicit_and_identity_safe():
     assert 'setWorkspaceViewSelection(view, [])' in source
     assert "function workspaceViewSupportsSelectionControls(view)" in source
     assert 'view === "map" || view === "scene3d" || view === "wells"' in source
+    assert 'if (selectionSupported)' in source
+    assert 'else cb = el("span", "workspace-checkbox-spacer")' in source
+    assert 'else if (selectionSupported && workspaceItemHasView(node.id, view))' in source
     assert "activeColorBy" in source and "activeLane" in source
     assert "window.__PETEK_WORKSPACE_STATE" in source
     assert "var projectBacked = !!(W && W.manifest.project)" in source

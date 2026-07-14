@@ -25,6 +25,11 @@ All notable changes to petekTools are recorded here. Format follows
   support lands in the subsequent implementation phases.
 
 ### Fixed
+- **Truthful workspace visibility controls.** Project rows, groups, isolate
+  actions, and the visibility footer are interactive only in Map, 3-D, and Wells,
+  the views with complete composition paths. Intersection, Volume, and Charts
+  retain their catalog labels without controls that could change state but not
+  the rendered view.
 - **Project-tree interaction completeness.** Formal tree semantics now include a
   roving focus target, Arrow/Home/End navigation, disclosure traversal, and
   Enter/Space activation across both ordinary and virtualized catalogs. Focus

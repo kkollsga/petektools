@@ -153,6 +153,7 @@ await page.waitForTimeout(30);
 const unsupportedControls = await page.evaluate(() => ({
   isolates: document.querySelectorAll(".workspace-isolate").length,
   clear: !!document.querySelector(".workspace-clear"),
+  checkboxes: document.querySelectorAll('.workspace-tree input[type="checkbox"]').length,
   footer: document.querySelector(".workspace-tree-footer")?.textContent,
 }));
 await page.locator('.tab[data-tab="map"]').click();
@@ -193,7 +194,7 @@ if (keyboard.initial !== "group:assets" || keyboard.child !== "surface:top" || k
     || keyboard.collapsed !== "group:assets" || keyboard.collapsedState !== false
     || keyboard.expanded !== "group:assets" || keyboard.expandedState !== true
     || keyboard.tabStops !== 1 || keyboard.fetches !== 0) fail("ARIA tree keyboard contract failed");
-if (unsupportedControls.isolates || unsupportedControls.clear
-    || !/Visibility applies to Intersection/.test(unsupportedControls.footer || "")) fail("unsupported view actions were exposed");
+if (unsupportedControls.isolates || unsupportedControls.clear || unsupportedControls.checkboxes
+    || unsupportedControls.footer) fail("unsupported view actions were exposed");
 if (!cleared.allMapHidden || cleared.fetches !== 0 || !cleared.disabled) fail("per-view clear changed fetch/state semantics");
 console.log(JSON.stringify(result));
