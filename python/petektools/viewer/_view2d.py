@@ -3,18 +3,22 @@
 This module is deliberately domain-agnostic. It accepts plain coordinate
 sequences plus duck-typed objects from producer libraries: a point object may
 offer ``xyz()``/``xy()``, a geometry may offer ``node_xy(i, j)`` with ``ncol`` and
-``nrow``, a triangulated mesh may offer ``triangles()`` with ``xyz()``/``points()``,
-and an outline may offer ``rings()``. Two optional value conventions extend
+``nrow``, a triangulated mesh may offer ``triangles()`` with
+``xyz()``/``points()``/``nodes()``, and an outline may offer ``rings()``. Stable
+``kind`` metadata separates point, geometry-shell, and value-surface roles before
+overlapping method ducks are considered. Optional value conventions extend
 these: ``value_layer(attr=None)`` returns a per-node value-coloured trimesh
 (``{"name", "nodes", "triangles", "values", "range"}``; opted in via
-``fill=``), and ``iso_lines(interval=..., levels=..., attr=None)`` returns
+``fill=``), ``attr_names()`` advertises selectable named value layers, and
+``iso_lines(interval=..., levels=..., attr=None)`` returns
 ``[(level, [polyline, ...]), ...]`` contour polylines (opted in via
 ``contours=``). An optional ``name`` attribute on any item becomes the
 layer's legend display name.
 
 ``color=`` and ``fill=`` share one string grammar, parsed by registry match:
 ``"[<attr>_]<cmap>[_<min>_<max>]"`` where ``<cmap>`` is a known colormap
-(``viridis`` / ``magma`` / ``grays`` / ``inferno``). A string with no colormap
+(``viridis`` / ``inferno`` / ``magma`` / ``plasma`` / ``cividis`` / ``turbo`` /
+``coolwarm`` / ``greys``; legacy ``grays`` remains accepted). A string with no colormap
 token is an attribute name (back-compat). See :func:`view2d_payload`.
 """
 
@@ -27,6 +31,7 @@ from typing import Any, Iterable, Sequence
 from . import _blocks
 from ._save import save_view
 from ._server import serve
+from ._well_style import WellStyle, normalize_wells
 
 
 def view2d_payload(
@@ -34,8 +39,11 @@ def view2d_payload(
     *,
     title: str = "2D view",
     color: bool | str = True,
-    fill: bool | str = False,
+    fill: bool | str | None = None,
     contours: float | list[float] | None = None,
+    wells: Any = None,
+    well_labels: bool | str = False,
+    well_style: WellStyle | dict[str, Any] | None = None,
     max_grid_lines: int = 800,
     max_line_points: int = 1000,
     point_limit: int | None = 200_000,
@@ -51,27 +59,40 @@ def view2d_payload(
 
     - points: ``xyz()``/``xy()`` or a sequence of ``[x, y]``/``[x, y, z]`` rows
     - geometry: ``node_xy(i, j)``, ``ncol``, ``nrow`` and optional ``edge``
-    - trimesh: ``triangles()`` index triples over ``xyz()``/``points()`` vertices,
+    - trimesh: ``triangles()`` index triples over
+      ``xyz()``/``points()``/``nodes()`` vertices,
       with optional ``edge`` — the unique triangle edges render as grid lines; an
       optional ``wireframe_edges()`` (index pairs) overrides the drawn edge set,
       e.g. a quad-dominant wireframe with cell diagonals removed
     - outline: ``rings()`` returning rings of ``[x, y]`` or ``[x, y, z]`` rows
-    - value fill (opt-in via ``fill=``): ``value_layer(attr=None)`` returning
+    - value fill: ``value_layer(attr=None)`` returning
       ``{"name", "nodes", "triangles", "values", "range"}`` — a per-node
       value-coloured trimesh rendered UNDER the grid lines
+    - selectable surface attributes: a value-surface role (``kind`` is
+      ``"surface"``, ``"structured_mesh"``, or ``"tri_surface"``) offering
+      callable ``attr_names()`` and ``value_layer()`` automatically emits its
+      primary layer followed by every named attribute when ``fill`` is omitted;
+      ``fill=False`` explicitly opts out
+    - role dispatch: ``"point_set"``/``"points"`` render as points;
+      ``"grid_geometry"``/``"structured_shell"``/``"mesh_shell"`` render as
+      wireframes and never trigger omitted-fill discovery
     - contour lines (opt-in via ``contours=``): ``iso_lines(interval=...,
       levels=..., attr=None)`` returning ``[(level, [polyline, ...]), ...]``
     - structured surface (value-bearing, e.g. petekio's regular ``Surface``):
       an item offering ``value_layer()`` (typically with a 2-D ``.geometry``)
       that matches no convention above renders its STRUCTURE when passed
       bare — the ``.geometry`` lattice lines (clipped to ``edge``), or,
-      geometry-less, its primary value layer's unique triangle edges. Values
-      never colour anything without an explicit ``fill=``
+      geometry-less, its primary value layer's unique triangle edges. A surface
+      that does not offer callable ``attr_names()`` stays structure-only when bare
 
     ``color=`` colours POINTS (and selects the colormap for whatever is
     value-coloured); it never triggers fills. It defaults ON — pass
-    ``color=False`` for monochrome points. ``fill=`` opts items into value
-    fills (``value_layer()``); contours keep their own ``contours=`` parameter.
+    ``color=False`` for monochrome points. Omitted ``fill`` auto-discovers the
+    primary + named layers only on value-surface roles offering callable
+    ``attr_names()`` and ``value_layer()``; ``fill=False`` disables fills,
+    ``fill=True`` requests only the primary layer, and a string requests exactly
+    that attribute. Explicit fill remains method-driven for any producer offering
+    ``value_layer()``. Contours keep their own ``contours=`` parameter.
     Both accept ``bool`` or a string spec parsed by REGISTRY MATCH: the string
     splits on ``"_"``; if a token matches a known colormap name (``viridis`` /
     ``magma`` / ``grays`` / ``inferno``), everything before it is the attribute
@@ -90,6 +111,23 @@ def view2d_payload(
     A malformed spec (e.g. a colormap with a single trailing float, or
     non-float range tokens) raises ``ValueError``.
 
+    Each scene item may also be a DICT — the per-object form (owner ruling)::
+
+        {"object": obj, "color": bool | spec, "fill": bool | spec, "name": str}
+
+    All keys but ``object`` are optional. Per-object settings take PRECEDENCE
+    over the call-level ``color=``/``fill=`` (including omitted-fill auto mode
+    when the dict has no ``fill`` key; ``color=True`` default included), and ``name``
+    overrides the object's duck-typed display name. Colour/ramp/range travel
+    PER LAYER: every points layer entry carries its slice of the shared points
+    array (``start``/``n``) plus its own resolved ``range`` (the explicit spec
+    range, else the layer's finite-z data range; ``colored: false`` for an
+    explicit ``color=False``) and — for a per-object spec — a pinned
+    ``colormap``; a fill entry carries its own ``colormap`` the same way. The
+    legend shows each entry's own ramp/range. The global ``map.point_color`` /
+    ``map.colormap`` stay emitted as a fallback for older payload consumers
+    (the renderer reads the per-layer fields first).
+
     With ``color`` on, plain points carrying a finite third component are
     colour-coded by it; ``map.point_color`` records the range — the explicit
     spec range when given (out-of-range values clamp to the ends), else the
@@ -97,7 +135,10 @@ def view2d_payload(
     wins over ``fill``'s), and an explicit ``fill`` range overrides each fill
     entry's producer range. ``fill=True`` asks every item offering
     ``value_layer()`` for its primary layer; a string spec's attribute asks for
-    that attribute. ``contours=<float>`` requests ``iso_lines(interval=...)``;
+    that attribute. When ``fill`` is omitted, a callable ``attr_names()`` result
+    is validated as an ordered iterable of unique, non-empty strings; malformed
+    metadata fails loudly before any advertised attribute is emitted.
+    ``contours=<float>`` requests ``iso_lines(interval=...)``;
     a list requests ``iso_lines(levels=...)``; the ``color`` spec's attribute
     (if any) is forwarded as ``attr=``. Items without these methods are
     unaffected, and an item that yields a fill still contributes its
@@ -140,8 +181,10 @@ def view2d_payload(
     floats) stays plain JSON regardless. ``encoding="json"`` forces the plain
     (pre-blocks) shape; the viewer renders either.
     """
+    well_entries = normalize_wells(wells, labels=well_labels, style=well_style)
     color_spec = _parse_spec(color, "color")
     fill_spec = _parse_spec(fill, "fill")
+    auto_fill = fill is None
     lod_cfg = _parse_lod(lod)
     scene_items = _scene_items(items)
     points: list[list[float]] = []
@@ -151,21 +194,95 @@ def view2d_payload(
     fills: list[dict[str, Any]] = []
     contour_sets: list[dict[str, Any]] = []
     layers: list[dict[str, Any]] = []
+    item_bindings: list[dict[str, Any]] = []
     frame = None
     summary: dict[str, Any] = {}
 
-    for item in scene_items:
+    colored_zs: list[float] = []  # finite zs of per-layer-coloured points
+    item_cmap: str | None = None  # first per-object colormap (global fallback)
+
+    for scene_entry in scene_items:
+        item, cspec, fspec, name, item_id, c_explicit, f_explicit = _norm_item(
+            scene_entry, color_spec, fill_spec
+        )
+        starts = {
+            "points": len(points),
+            "grid_lines": len(grid_lines),
+            "grid_lines_lod": len(grid_lines_lod),
+            "outline": len(outlines),
+            "fills": len(fills),
+            "contours": len(contour_sets),
+            "layers": len(layers),
+        }
+
+        def finish_binding() -> None:
+            if item_id is None:
+                return
+            binding: dict[str, Any] = {"id": item_id}
+            for key, source, values in (
+                ("point_range", "points", points),
+                ("grid_line_range", "grid_lines", grid_lines),
+                ("grid_line_lod_range", "grid_lines_lod", grid_lines_lod),
+                ("outline_range", "outline", outlines),
+                ("fill_range", "fills", fills),
+                ("contour_range", "contours", contour_sets),
+                ("layer_range", "layers", layers),
+            ):
+                start = starts[source]
+                count = len(values) - start
+                if count:
+                    binding[key] = [start, count]
+            item_bindings.append(binding)
+        role = _render_role(item)
         contributed = False
-        name = _item_name(item)
-        if fill_spec["enabled"]:
-            fill_entry = _value_fill(item, fill_spec["attr"])
+        auto_attrs = (
+            _auto_fill_attrs(item)
+            if auto_fill and not f_explicit and role == "surface"
+            else None
+        )
+        requested_attrs: list[str | None] = []
+        if auto_attrs is not None:
+            requested_attrs = [None, *auto_attrs]
+        elif fspec["enabled"]:
+            requested_attrs = [fspec["attr"]]
+        emitted_fill_names: set[str] = set()
+        canonical_mesh: tuple[list[list[float]], list[list[int]]] | None = None
+        canonical_lod_mesh: tuple[list[list[float]], list[list[int]]] | None = None
+        for requested_attr in requested_attrs:
+            fill_entry = _value_fill(
+                item,
+                requested_attr,
+                canonical_mesh if auto_attrs is not None else None,
+            )
             if fill_entry is not None:
+                if auto_attrs is not None and fill_entry["name"] in emitted_fill_names:
+                    raise ValueError(
+                        f"value_layer() on {type(item).__name__} returned duplicate "
+                        f"layer name {fill_entry['name']!r} while enumerating attr_names()"
+                    )
+                emitted_fill_names.add(fill_entry["name"])
+                if auto_attrs is not None:
+                    if canonical_mesh is None and "nodes" in fill_entry:
+                        canonical_mesh = (fill_entry["nodes"], fill_entry["triangles"])
                 fill_entry["display_name"] = name
-                if fill_spec["range"] is not None:
-                    fill_entry["range"] = list(fill_spec["range"])
-                if lod_cfg["enabled"]:
-                    ring = _value_fill_lod(item, fill_spec["attr"], lod_cfg["stride"])
+                if item_id is not None:
+                    fill_entry["item_id"] = item_id
+                if fspec["range"] is not None:
+                    fill_entry["range"] = list(fspec["range"])
+                if f_explicit and fspec["cmap"]:
+                    fill_entry["colormap"] = fspec["cmap"]  # per-object pin
+                    item_cmap = item_cmap or fspec["cmap"]
+                if lod_cfg["enabled"] and "regular_grid" not in fill_entry:
+                    ring = _value_fill_lod(
+                        item,
+                        requested_attr,
+                        lod_cfg["stride"],
+                        canonical_lod_mesh if auto_attrs is not None else None,
+                    )
                     if ring is not None:
+                        if auto_attrs is not None:
+                            if canonical_lod_mesh is None:
+                                canonical_lod_mesh = (ring["nodes"], ring["triangles"])
                         fill_entry["lod"] = {
                             "stride": lod_cfg["stride"],
                             "nodes": ring["nodes"],
@@ -175,14 +292,34 @@ def view2d_payload(
                         }
                 fills.append(fill_entry)
                 contributed = True
+            elif auto_attrs is not None:
+                label = (
+                    "primary layer"
+                    if requested_attr is None
+                    else f"attribute {requested_attr!r}"
+                )
+                raise TypeError(
+                    f"attr_names() on {type(item).__name__} advertised {label}, "
+                    "but value_layer() returned None"
+                )
         if contours is not None:
-            iso = _iso_contours(item, contours, color_spec["attr"], lod_cfg)
+            iso = _iso_contours(item, contours, cspec["attr"], lod_cfg)
             if iso is not None:
+                if item_id is not None:
+                    for contour in iso:
+                        contour["item_id"] = item_id
                 contour_sets.extend(iso)
-                layers.append({"kind": "contours", "name": name})
+                layers.append({"kind": "contours", "name": name, **({"item_id": item_id} if item_id is not None else {})})
                 contributed = True
 
-        if _is_geometry(item):
+        if role == "geometry" and not (_is_geometry(item) or _is_trimesh(item)):
+            raise TypeError(
+                f"{type(item).__name__} declares geometry kind "
+                f"{getattr(item, 'kind', None)!r} but offers neither the structured "
+                "node_xy/ncol/nrow duck nor triangles with mesh vertices"
+            )
+
+        if _is_geometry(item) and role != "points":
             edge = getattr(item, "edge", None)
             edge_rings = _rings(edge) if edge is not None else []
             grid_lines.extend(
@@ -201,10 +338,22 @@ def view2d_payload(
                 summary["rotation_deg"] = float(rot)
             if not edge_rings:
                 frame = _frame_from_geometry(item)
-            layers.append({"kind": "lines", "name": name})
+            layers.append(
+                {
+                    "kind": "lines",
+                    "name": name,
+                    "standalone": role == "geometry"
+                    or (
+                        role != "surface"
+                        and not callable(getattr(item, "value_layer", None))
+                    ),
+                    **({"item_id": item_id} if item_id is not None else {}),
+                }
+            )
+            finish_binding()
             continue
 
-        if _is_trimesh(item):
+        if _is_trimesh(item) and role != "points":
             edge = getattr(item, "edge", None)
             edge_rings = _rings(edge) if edge is not None else []
             mesh_lines, n_triangles, edge_stride = _mesh_lines(
@@ -221,12 +370,27 @@ def view2d_payload(
             summary["triangles"] = n_triangles
             if edge_stride > 1:
                 summary["mesh_edge_stride"] = edge_stride
-            layers.append({"kind": "lines", "name": name})
+            layers.append(
+                {
+                    "kind": "lines",
+                    "name": name,
+                    "standalone": role == "geometry"
+                    or (
+                        role != "surface"
+                        and not callable(getattr(item, "value_layer", None))
+                    ),
+                    **({"item_id": item_id} if item_id is not None else {}),
+                }
+            )
+            finish_binding()
             continue
 
-        rings = _rings(item)
+        # Stable point metadata is authoritative even if a producer also
+        # exposes topology helpers such as edge/rings for other workflows.
+        rings = _rings(item) if role != "points" else []
         if rings:
             outlines.extend(rings)
+            finish_binding()
             continue
 
         pts = _points(item)
@@ -235,11 +399,33 @@ def view2d_payload(
                 step = max(1, math.ceil(len(pts) / point_limit))
                 pts = pts[::step]
                 summary["point_stride"] = step
+            # Per-layer colour (per-object color ruling): the layer entry
+            # carries its slice of the shared points array (start/n) plus its
+            # OWN resolved colour — clamp range (explicit spec range, else the
+            # layer's finite-z data range) and a per-object colormap pin. The
+            # JS reads these per-layer fields first; the global
+            # map.point_color/colormap stay emitted as the fallback.
+            entry = {"kind": "points", "name": name, "start": len(points), "n": len(pts)}
+            if item_id is not None:
+                entry["item_id"] = item_id
+            zs = [p[2] for p in pts if len(p) > 2 and math.isfinite(p[2])]
+            if cspec["enabled"]:
+                if zs:
+                    rng = cspec["range"] or [min(zs), max(zs)]
+                    entry["range"] = [float(rng[0]), float(rng[1])]
+                    colored_zs.extend(zs)
+            else:
+                entry["colored"] = False
+            if c_explicit and cspec["cmap"]:
+                entry["colormap"] = cspec["cmap"]  # per-object pin
+                item_cmap = item_cmap or cspec["cmap"]
             points.extend(pts)
-            layers.append({"kind": "points", "name": name})
+            layers.append(entry)
+            finish_binding()
             continue
 
         if contributed:
+            finish_binding()
             continue  # a fill/contour-only item carries no further geometry
 
         # STRUCTURE fallback for value-bearing items passed bare (e.g. a
@@ -260,7 +446,15 @@ def view2d_payload(
             summary["grid"] = f"{int(getattr(geom, 'ncol'))} x {int(getattr(geom, 'nrow'))}"
             if not edge_rings:
                 frame = _frame_from_geometry(geom)
-            layers.append({"kind": "lines", "name": name})
+            layers.append(
+                {
+                    "kind": "lines",
+                    "name": name,
+                    "standalone": not callable(getattr(item, "value_layer", None)),
+                    **({"item_id": item_id} if item_id is not None else {}),
+                }
+            )
+            finish_binding()
             continue
         layer = _primary_value_layer(item)
         if layer is not None:
@@ -278,7 +472,15 @@ def view2d_payload(
             summary["triangles"] = n_triangles
             if edge_stride > 1:
                 summary["mesh_edge_stride"] = edge_stride
-            layers.append({"kind": "lines", "name": name})
+            layers.append(
+                {
+                    "kind": "lines",
+                    "name": name,
+                    "standalone": False,
+                    **({"item_id": item_id} if item_id is not None else {}),
+                }
+            )
+            finish_binding()
             continue
 
         raise TypeError(
@@ -287,16 +489,32 @@ def view2d_payload(
         )
 
     if frame is None:
-        frame = _frame_from_extent(_extent(points, grid_lines, outlines))
-    if not outlines:
-        outlines = _rect_outline_from_frame(frame)
+        well_lines = [
+            [[float(p[0]), float(p[1])] for p in well.get("trajectory", [])]
+            for well in well_entries
+            if well.get("trajectory")
+        ]
+        frame = _frame_from_extent(
+            _extent(
+                points,
+                grid_lines,
+                outlines,
+                fills=fills,
+                extra_lines=well_lines,
+            )
+        )
 
+    # The GLOBAL fallback for older payload consumers (the JS reads the
+    # per-layer fields first): present only when at least one layer actually
+    # colours — the call-level explicit clamp range when the call-level
+    # color= is on, else the union of the coloured layers' data.
     point_color = None
-    if color_spec["enabled"]:
-        zs = [p[2] for p in points if len(p) > 2 and math.isfinite(p[2])]
-        if zs:
-            rng = color_spec["range"] or [min(zs), max(zs)]
-            point_color = {"by": "z", "range": [float(rng[0]), float(rng[1])]}
+    if colored_zs:
+        rng = (color_spec["range"] if color_spec["enabled"] else None) or [
+            min(colored_zs),
+            max(colored_zs),
+        ]
+        point_color = {"by": "z", "range": [float(rng[0]), float(rng[1])]}
 
     summary["points"] = len(points)
     summary["grid_lines"] = len(grid_lines)
@@ -307,6 +525,8 @@ def view2d_payload(
         summary["contour_levels"] = len(contour_sets)
     if point_color is not None:
         summary["point_color"] = point_color["by"]
+    if well_entries:
+        summary["wells"] = len(well_entries)
 
     if encoding not in ("blocks", "json"):
         raise ValueError(f"encoding= must be 'blocks' or 'json', got {encoding!r}")
@@ -325,7 +545,7 @@ def view2d_payload(
             "grid_lines": grid_lines,
             "points": points,
             "point_color": point_color,
-            "colormap": color_spec["cmap"] or fill_spec["cmap"],
+            "colormap": color_spec["cmap"] or fill_spec["cmap"] or item_cmap,
             "layers": layers,
             "fills": fills,
             "contours": contour_sets,
@@ -337,7 +557,7 @@ def view2d_payload(
         },
         "sections": [],
         "section_labels": [],
-        "wells": [],
+        "wells": well_entries,
         "charts": [],
     }
     # Additive stride-ladder LOD: the coarse mesh-grid-line ring (fills / contours
@@ -346,6 +566,8 @@ def view2d_payload(
     # shape (no empty `grid_lines_lod` key).
     if grid_lines_lod:
         payload["map"]["grid_lines_lod"] = grid_lines_lod
+    if item_bindings:
+        payload["map"]["items"] = item_bindings
     # Additive: encode the bulk arrays as content-addressed typed blocks (the v3
     # wire format) unless asked for plain JSON or the payload is below threshold.
     # A JSON-shaped payload still renders (the viewer decodes both).
@@ -359,8 +581,11 @@ def view2d(
     *,
     title: str = "2D view",
     color: bool | str = True,
-    fill: bool | str = False,
+    fill: bool | str | None = None,
     contours: float | list[float] | None = None,
+    wells: Any = None,
+    well_labels: bool | str = False,
+    well_style: WellStyle | dict[str, Any] | None = None,
     save: str | Path | None = None,
     port: int = 0,
     block: bool = False,
@@ -376,8 +601,10 @@ def view2d(
     """Open or save a generic 2-D map view.
 
     ``color=`` colours points (and picks the colormap + clamp range through
-    the ``"[<attr>_]<cmap>[_<min>_<max>]"`` spec grammar); ``fill=`` opts
-    items into value-coloured fills; ``contours=`` opts them into contour
+    the ``"[<attr>_]<cmap>[_<min>_<max>]"`` spec grammar); omitted ``fill``
+    auto-enumerates the primary + named layers of objects offering callable
+    ``attr_names()`` and ``value_layer()``, while explicit ``fill=`` controls
+    one value-coloured fill; ``contours=`` opts items into contour
     lines (see :func:`view2d_payload` for the full grammar and duck-typed
     conventions). Returns the local server URL in live mode, the written path
     when ``save=`` is supplied, or the payload when ``open_browser=False`` and
@@ -390,6 +617,9 @@ def view2d(
         color=color,
         fill=fill,
         contours=contours,
+        wells=wells,
+        well_labels=well_labels,
+        well_style=well_style,
         max_grid_lines=max_grid_lines,
         max_line_points=max_line_points,
         point_limit=point_limit,
@@ -407,7 +637,10 @@ def view2d(
 # The known colormap registry — the token-match anchor of the color=/fill=
 # spec grammar. Must stay in sync with the JS renderer's COLORMAPS
 # (assets/viewer/00-app.js).
-_COLORMAPS = ("viridis", "magma", "grays", "inferno")
+_COLORMAPS = (
+    "viridis", "inferno", "magma", "plasma", "cividis", "turbo",
+    "coolwarm", "greys", "grays",
+)
 
 
 def _parse_spec(spec: bool | str, param: str) -> dict[str, Any]:
@@ -466,7 +699,54 @@ def _item_name(item: Any) -> str | None:
     return str(nm) or None
 
 
+# The dict item form (per-object color ruling): a scene entry may be either a
+# bare object or ``{"object": obj, "color": bool|spec, "fill": bool|spec,
+# "name": display-name}``. Per-object settings take PRECEDENCE; the call-level
+# ``color=``/``fill=`` parameters stay the defaults for bare items.
+_ITEM_KEYS = {"object", "color", "fill", "name", "id"}
+
+
+def _norm_item(
+    entry: Any,
+    color_spec: dict[str, Any],
+    fill_spec: dict[str, Any],
+) -> tuple[Any, dict[str, Any], dict[str, Any], str | None, str | None, bool, bool]:
+    """Normalize a scene entry (bare object or the dict item form).
+
+    Returns ``(obj, color_spec, fill_spec, name, color_explicit,
+    fill_explicit)`` — the per-object specs when the dict form supplies them
+    (parsed by the same :func:`_parse_spec` grammar), else the call-level
+    defaults; ``name`` is the dict's display-name override or the object's
+    duck-typed ``name``. The ``*_explicit`` flags mark per-object settings so
+    the payload can pin per-layer colormap/range fields."""
+    if isinstance(entry, dict):
+        if "object" not in entry:
+            raise TypeError(
+                "a dict scene item must carry an 'object' key: "
+                '{"object": obj, "color": ..., "fill": ..., "name": ...}'
+            )
+        unknown = set(entry) - _ITEM_KEYS
+        if unknown:
+            raise ValueError(
+                f"unknown dict-item key(s) {sorted(unknown)}; expected a subset "
+                f"of {sorted(_ITEM_KEYS)}"
+            )
+        obj = entry["object"]
+        c_explicit = "color" in entry
+        f_explicit = "fill" in entry
+        cs = _parse_spec(entry["color"], "color") if c_explicit else color_spec
+        fs = _parse_spec(entry["fill"], "fill") if f_explicit else fill_spec
+        nm = entry.get("name")
+        name = str(nm) if nm is not None else _item_name(obj)
+        raw_id = entry.get("id")
+        item_id = str(raw_id) if raw_id is not None else None
+        return obj, cs, fs, name, item_id, c_explicit, f_explicit
+    return entry, color_spec, fill_spec, _item_name(entry), None, False, False
+
+
 def _scene_items(items: Any) -> list[Any]:
+    if isinstance(items, dict):
+        return [items]  # a single dict item ({"object": ...})
     if isinstance(items, (str, bytes)):
         return [items]
     if _is_point_row(items):
@@ -483,11 +763,39 @@ def _scene_items(items: Any) -> list[Any]:
     return [items]
 
 
+_POINT_KINDS = frozenset(("point_set", "points"))
+_GEOMETRY_KINDS = frozenset(("grid_geometry", "structured_shell", "mesh_shell"))
+_SURFACE_KINDS = frozenset(("surface", "structured_mesh", "tri_surface"))
+
+
+def _render_role(obj: Any) -> str | None:
+    """Normalize stable producer ``kind`` metadata to a viewer render role.
+
+    Producers declare whether an item is point data, a geometry-only shell, or
+    a value-bearing surface. This string seam stays domain-agnostic; an unknown
+    or absent kind retains the historical method-duck classification.
+    """
+    kind = getattr(obj, "kind", None)
+    if not isinstance(kind, str):
+        return None
+    if kind in _POINT_KINDS:
+        return "points"
+    if kind in _GEOMETRY_KINDS:
+        return "geometry"
+    if kind in _SURFACE_KINDS:
+        return "surface"
+    return None
+
+
 def _is_geometry(obj: Any) -> bool:
     return hasattr(obj, "node_xy") and hasattr(obj, "ncol") and hasattr(obj, "nrow")
 
 
-def _value_fill(item: Any, attr: str | None) -> dict[str, Any] | None:
+def _value_fill(
+    item: Any,
+    attr: str | None,
+    shared_geometry: tuple[list[list[float]], list[list[int]]] | None = None,
+) -> dict[str, Any] | None:
     """One value-coloured trimesh fill from an item's ``value_layer()`` duck.
 
     ``attr=None`` asks for the primary layer; a string asks for that attribute.
@@ -500,10 +808,156 @@ def _value_fill(item: Any, attr: str | None) -> dict[str, Any] | None:
     layer = fn(attr=attr) if attr is not None else fn()
     if layer is None:
         return None
-    return _coerce_fill(layer, type(item).__name__)
+    regular = _coerce_regular_grid_fill(item, layer, type(item).__name__)
+    if regular is not None:
+        return regular
+    return _coerce_fill(layer, type(item).__name__, shared_geometry)
 
 
-def _coerce_fill(layer: Any, name: str) -> dict[str, Any]:
+def _coerce_regular_grid_fill(
+    item: Any, layer: Any, name: str
+) -> dict[str, Any] | None:
+    """Compact an affine structured value layer without mesh expansion.
+
+    This is feature detection, not a new producer duck: a layer qualifies only
+    when its nodes exactly cover an affine ``node_xy/ncol/nrow`` geometry in
+    row- or column-major order. Everything else keeps the historical TriFill.
+    """
+    if not isinstance(layer, dict):
+        return None
+    if any(
+        key not in layer
+        for key in ("name", "nodes", "triangles", "values", "range")
+    ):
+        return None
+    geom = item if _is_geometry(item) else getattr(item, "geometry", None)
+    if geom is None or not _is_geometry(geom):
+        return None
+    try:
+        ncol = int(getattr(geom, "ncol"))
+        nrow = int(getattr(geom, "nrow"))
+        raw_nodes = layer["nodes"]
+        raw_values = layer["values"]
+    except (KeyError, TypeError, ValueError):
+        return None
+    if ncol < 2 or nrow < 2 or len(raw_nodes) != ncol * nrow:
+        return None
+    if len(raw_values) != ncol * nrow:
+        return None
+
+    origin = _xy(geom.node_xy(0, 0))
+    node_i = _xy(geom.node_xy(1, 0))
+    node_j = _xy(geom.node_xy(0, 1))
+    step_i = [node_i[0] - origin[0], node_i[1] - origin[1]]
+    step_j = [node_j[0] - origin[0], node_j[1] - origin[1]]
+    if not all(math.isfinite(v) for v in (*origin, *step_i, *step_j)):
+        return None
+    det = step_i[0] * step_j[1] - step_i[1] * step_j[0]
+    if abs(det) <= 1e-15:
+        return None
+
+    def close_xy(raw: Any, expected: list[float]) -> bool:
+        try:
+            point = _xy(raw)
+        except (IndexError, TypeError, ValueError):
+            return False
+        return math.isclose(point[0], expected[0], rel_tol=1e-9, abs_tol=1e-6) and math.isclose(
+            point[1], expected[1], rel_tol=1e-9, abs_tol=1e-6
+        )
+
+    def expected_at(i: int, j: int) -> list[float]:
+        return [
+            origin[0] + i * step_i[0] + j * step_j[0],
+            origin[1] + i * step_i[1] + j * step_j[1],
+        ]
+
+    row_major = all(
+        close_xy(raw_nodes[j * ncol + i], expected_at(i, j))
+        for j in range(nrow)
+        for i in range(ncol)
+    )
+    column_major = False
+    if not row_major:
+        column_major = all(
+            close_xy(raw_nodes[i * nrow + j], expected_at(i, j))
+            for j in range(nrow)
+            for i in range(ncol)
+        )
+    if not row_major and not column_major:
+        return None
+
+    ordered = (
+        list(raw_values)
+        if row_major
+        else [raw_values[i * nrow + j] for j in range(nrow) for i in range(ncol)]
+    )
+    values = [
+        float(value)
+        if value is not None and math.isfinite(float(value))
+        else None
+        for value in ordered
+    ]
+    rng = list(layer.get("range", ()))
+    if len(rng) != 2:
+        raise TypeError(f"value_layer() on {name}: range must be [min, max], got {rng!r}")
+    return {
+        "name": str(layer["name"]),
+        "regular_grid": {
+            "dimensions": [ncol, nrow],
+            "origin": origin,
+            "step_i": step_i,
+            "step_j": step_j,
+            "values": values,
+            "mask": [value is not None for value in values],
+        },
+        "range": [float(rng[0]), float(rng[1])],
+    }
+
+
+def _auto_fill_attrs(item: Any) -> list[str] | None:
+    """Return ordered named attributes for omitted-``fill`` auto mode.
+
+    Auto mode is deliberately a two-duck handshake: both ``attr_names`` and
+    ``value_layer`` must be callable. A non-participating item returns ``None``
+    and retains the historical omitted-fill behaviour. Once an item participates,
+    malformed metadata fails loudly and deterministically rather than producing an
+    ambiguous selector or silently dropping a layer.
+    """
+    names_fn = getattr(item, "attr_names", None)
+    value_fn = getattr(item, "value_layer", None)
+    if not callable(names_fn) or not callable(value_fn):
+        return None
+    raw = names_fn()
+    if isinstance(raw, (str, bytes)) or not isinstance(raw, Iterable):
+        raise TypeError(
+            f"attr_names() on {type(item).__name__} must return an iterable of strings"
+        )
+    names: list[str] = []
+    seen: set[str] = set()
+    for index, value in enumerate(raw):
+        if not isinstance(value, str):
+            raise TypeError(
+                f"attr_names() on {type(item).__name__}: item {index} must be a string, "
+                f"got {type(value).__name__}"
+            )
+        if not value:
+            raise ValueError(
+                f"attr_names() on {type(item).__name__}: item {index} must not be empty"
+            )
+        if value in seen:
+            raise ValueError(
+                f"attr_names() on {type(item).__name__} returned duplicate name {value!r}"
+            )
+        seen.add(value)
+        names.append(value)
+    return names
+
+
+def _coerce_fill(
+    layer: Any,
+    name: str,
+    shared_geometry: tuple[list[list[float]], list[list[int]]] | None = None,
+) -> dict[str, Any]:
     """Validate and normalize a ``value_layer()`` dict into a fill entry."""
     if not isinstance(layer, dict):
         raise TypeError(
@@ -512,7 +966,15 @@ def _coerce_fill(layer: Any, name: str) -> dict[str, Any]:
     missing = [k for k in ("name", "nodes", "triangles", "values", "range") if k not in layer]
     if missing:
         raise TypeError(f"value_layer() on {name} is missing key(s) {missing}")
-    nodes = [_xy(n) for n in layer["nodes"]]
+    raw_nodes = layer["nodes"]
+    raw_triangles = layer["triangles"]
+    if shared_geometry is not None and _same_fill_geometry(
+        raw_nodes, raw_triangles, shared_geometry
+    ):
+        nodes, triangles = shared_geometry
+    else:
+        nodes = [_xy(n) for n in raw_nodes]
+        triangles = [[int(t[0]), int(t[1]), int(t[2])] for t in raw_triangles]
     values = [
         float(v) if v is not None and math.isfinite(float(v)) else None
         for v in layer["values"]
@@ -521,7 +983,6 @@ def _coerce_fill(layer: Any, name: str) -> dict[str, Any]:
         raise TypeError(
             f"value_layer() on {name}: {len(values)} values for {len(nodes)} nodes"
         )
-    triangles = [[int(t[0]), int(t[1]), int(t[2])] for t in layer["triangles"]]
     rng = list(layer["range"])
     if len(rng) != 2:
         raise TypeError(f"value_layer() on {name}: range must be [min, max], got {rng!r}")
@@ -534,7 +995,33 @@ def _coerce_fill(layer: Any, name: str) -> dict[str, Any]:
     }
 
 
-def _value_fill_lod(item: Any, attr: str | None, stride: int) -> dict[str, Any] | None:
+def _same_fill_geometry(
+    nodes: Any,
+    triangles: Any,
+    canonical: tuple[list[list[float]], list[list[int]]],
+) -> bool:
+    """Compare a producer lane to normalized canonical geometry without copies."""
+    cnodes, ctris = canonical
+    try:
+        if len(nodes) != len(cnodes) or len(triangles) != len(ctris):
+            return False
+        if any(float(node[0]) != ref[0] or float(node[1]) != ref[1]
+               for node, ref in zip(nodes, cnodes)):
+            return False
+        return not any(
+            int(tri[0]) != ref[0] or int(tri[1]) != ref[1] or int(tri[2]) != ref[2]
+            for tri, ref in zip(triangles, ctris)
+        )
+    except (IndexError, TypeError, ValueError):
+        return False
+
+
+def _value_fill_lod(
+    item: Any,
+    attr: str | None,
+    stride: int,
+    shared_geometry: tuple[list[list[float]], list[list[int]]] | None = None,
+) -> dict[str, Any] | None:
     """A coarse value-fill ring via ``value_layer(stride=...)``.
 
     Feature-detects producer support: returns ``None`` when the item offers no
@@ -550,7 +1037,7 @@ def _value_fill_lod(item: Any, attr: str | None, stride: int) -> dict[str, Any] 
         return None
     if layer is None:
         return None
-    return _coerce_fill(layer, type(item).__name__)
+    return _coerce_fill(layer, type(item).__name__, shared_geometry)
 
 
 def _parse_lod(lod: bool | tuple) -> dict[str, Any]:
@@ -712,7 +1199,21 @@ def _major_step(interval: float) -> float:
 
 
 def _is_trimesh(obj: Any) -> bool:
-    return hasattr(obj, "triangles") and (hasattr(obj, "xyz") or hasattr(obj, "points"))
+    return hasattr(obj, "triangles") and any(
+        hasattr(obj, name) for name in ("xyz", "points", "nodes")
+    )
+
+
+def _mesh_vertices(mesh: Any) -> Any:
+    """Return a trimesh's vertex rows through the supported producer ducks."""
+    for name in ("xyz", "points", "nodes"):
+        fn = getattr(mesh, name, None)
+        if callable(fn):
+            return fn()
+    raise TypeError(
+        f"{type(mesh).__name__} offers triangles() but no callable "
+        "xyz(), points(), or nodes() vertex source"
+    )
 
 
 def _primary_value_layer(item: Any) -> dict[str, Any] | None:
@@ -754,7 +1255,7 @@ def _mesh_lines(
     typically the quad-dominant wireframe with cell diagonals removed;
     otherwise the unique triangle edges are derived from ``triangles()``.
     """
-    verts = mesh.xyz() if hasattr(mesh, "xyz") else mesh.points()
+    verts = _mesh_vertices(mesh)
     tris = list(mesh.triangles())
     n_triangles = len(tris)
     edges: set[tuple[int, int]] = set()
@@ -795,7 +1296,7 @@ def _mesh_lines_lod(
         pairs = wireframe(stride=stride)
     except TypeError:
         return None
-    verts = mesh.xyz() if hasattr(mesh, "xyz") else mesh.points()
+    verts = _mesh_vertices(mesh)
     edges: set[tuple[int, int]] = set()
     for pair in pairs:
         u, v = int(pair[0]), int(pair[1])
@@ -1065,13 +1566,16 @@ def _extent(
     points: list[list[float]],
     grid_lines: list[list[list[float]]],
     outlines: list[list[list[float]]],
+    *,
+    fills: list[dict[str, Any]] | None = None,
+    extra_lines: list[list[list[float]]] | None = None,
 ) -> tuple[float, float, float, float]:
     xs: list[float] = []
     ys: list[float] = []
     for p in points:
         xs.append(p[0])
         ys.append(p[1])
-    for line in grid_lines:
+    for line in [*grid_lines, *(extra_lines or [])]:
         for p in line:
             xs.append(p[0])
             ys.append(p[1])
@@ -1079,14 +1583,24 @@ def _extent(
         for p in ring:
             xs.append(p[0])
             ys.append(p[1])
+    for fill in fills or []:
+        regular = fill.get("regular_grid")
+        if regular:
+            ncol, nrow = regular["dimensions"]
+            origin = regular["origin"]
+            step_i = regular["step_i"]
+            step_j = regular["step_j"]
+            for i, j in (
+                (0, 0),
+                (ncol - 1, 0),
+                (0, nrow - 1),
+                (ncol - 1, nrow - 1),
+            ):
+                xs.append(origin[0] + i * step_i[0] + j * step_j[0])
+                ys.append(origin[1] + i * step_i[1] + j * step_j[1])
+        for p in fill.get("nodes", []):
+            xs.append(float(p[0]))
+            ys.append(float(p[1]))
     if not xs:
         return (0.0, 0.0, 1.0, 1.0)
     return (min(xs), min(ys), max(xs), max(ys))
-
-
-def _rect_outline_from_frame(frame: dict[str, float | int]) -> list[list[list[float]]]:
-    x0 = float(frame["origin_x"])
-    y0 = float(frame["origin_y"])
-    x1 = x0 + float(frame["spacing_x"]) * (int(frame["ncol"]) - 1)
-    y1 = y0 + float(frame["spacing_y"]) * (int(frame["nrow"]) - 1)
-    return [[[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]]]

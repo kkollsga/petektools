@@ -106,10 +106,25 @@ from .asset import (
     write_petrel_tops,
     write_wellpath,
 )
-from .viewer import view2d, view2d_payload, view3d, view3d_payload
+from .viewer import (
+    CorrelationTemplate,
+    CorrelationTrack,
+    WellLabelStyle,
+    WellMarkerStyle,
+    WellPathStyle,
+    WellStyle,
+    WorkspaceSession,
+    view,
+    view2d,
+    view2d_payload,
+    view3d,
+    view3d_payload,
+)
 
 __all__ = [
     "Clamped",
+    "CorrelationTemplate",
+    "CorrelationTrack",
     "AnisotropicVariogram",
     "ExperimentalVariogram",
     "Georef",
@@ -119,6 +134,11 @@ __all__ = [
     "Rng",
     "Sampler",
     "Variogram",
+    "WellLabelStyle",
+    "WellMarkerStyle",
+    "WellPathStyle",
+    "WellStyle",
+    "WorkspaceSession",
     "ZoneSpec",
     "__version__",
     "aggregate",
@@ -171,6 +191,7 @@ __all__ = [
     "synth_trend_map_flat",
     "tops_from_surface",
     "variance",
+    "view",
     "view2d",
     "view2d_payload",
     "view3d",

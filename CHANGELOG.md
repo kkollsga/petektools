@@ -6,6 +6,312 @@ All notable changes to petekTools are recorded here. Format follows
 
 ## [Unreleased]
 
+## [0.2.15] - 2026-07-14
+
+### Added
+- **One-resource Map 2-D/3-D runtime.** Workspace-v2 shared surfaces now switch
+  camera modes inside the Map viewport without another fetch, decode, or source
+  geometry copy. The chunked shared builder references the decoded
+  elevation/value/mask blocks, caches topology separately from continuous or
+  declared categorical paint, rejects stale geometry/paint attachment, and exposes an exact memory
+  and task ledger. Mode roundtrips retain selectors, visibility, clamp, extent,
+  both cameras, and well-cycle state; saved HTML works fully offline. Missing
+  Three.js/WebGL truthfully falls back to usable 2-D while preserving the 3-D
+  request. Center-aware positions prevent visibility recomposition drift; null
+  masks allocate no hidden raster; full detail evicts only the matching preview;
+  and paint-only or staggered per-item refinement preserves the stable scene,
+  orbit camera, and GPU topology. The lifetime ledger now counts pending,
+  attached, and retiring CPU/GPU allocations through atomic overlap and
+  cancellation instead of reporting cache ownership as memory release. Its
+  decoded-source total scans all loaded resource tiers and digest-cache values,
+  so distinct preview/full and hidden-item buffers stay counted and aliases are
+  deduplicated by underlying buffer; encoded strings are excluded. Legacy
+  separate Map/3-D resources remain unchanged.
+- **Truthful behavioral Map rendering.** The fixed screen-space HUD now exposes
+  exact inverse cursor world/i/j/value state, fit-relative zoom, known-only
+  CRS/units, a constant 2-D scale bar, and camera-aware north; perspective/3-D
+  omits the scale bar. Focusable keyboard pan/zoom/north-up and accessible
+  intersection controls match pointer behavior. Shared geometry and paint
+  selectors remain independent: geometry resets paint once, colour-only changes
+  preserve geometry/cache identity and never refetch. Continuous clamp/reverse
+  legends and discrete categorical keys follow the selected visible layer.
+- **All-visible well intersection markers.** The Map composes producer all-hit
+  records across every visible surface, selects greatest finite MD by a stable
+  catalog/record order, retains deterministic cycling until the candidate set
+  changes, and updates locally on visibility. No-hit falls back to the wellhead;
+  per-surface ambiguous/error diagnostics survive valid hits elsewhere.
+- **Oriented lattice and Map transforms.** Rust and Python `Lattice` now expose
+  finite normalized intrinsic rotation/y-flip, exact step vectors and forward /
+  inverse intrinsic-world transforms; `Georef` can construct/place the same
+  frame, and grid resampling maps arbitrary oriented source and target lattices
+  through world coordinates. The Map camera is independently rotatable with a
+  north-up reset/HUD, centre-preserving control, exact inverse inspection, and
+  full Frame+camera cache identities.
+- **Viewer workspace schema v2 runtime.** Provider catalogs now normalize project
+  identity and metadata-rich attributes per item/view; shared Map resources use
+  selector-free live/cache/retry identity, one envelope-level block table, and
+  local geometry/paint selectors across the same affine surface grid. Static
+  visible/selected exports embed one full-tier shared envelope with separate UI
+  snapshot state, while transitional selector-backed v2, legacy workspace v1,
+  singular well picks, and separate scene3d resources remain isolated
+  compatibility lanes. Malformed descriptors, echoes, blocks, ranges,
+  categorical values, and all-hit overlays fail locally and remain retryable.
+- **Inspector-owned Map and Intersection legends.** Continuous ramps, units, and
+  exact editable ranges now live beside their layer visibility; categorical
+  fills use class keys instead of false gradients. The rendered picker exposes
+  all eight canonical colormaps plus an independent reverse modifier, with
+  per-layer paint pins and renderer cache identities kept in sync. Entity keys
+  cap at six rows, duplicate plot legends and the invalid generic Grid
+  statistics block are removed, while Volume and Charts retain legacy legends.
+- **Refined project-tree design.** The viewer now uses a complete SVG role-icon
+  registry, true hierarchy rails and elbows, fixed 28 px row geometry, explicit
+  multi-bore disclosure, and a canonical-ID-preserving single-bore collapse.
+  CSS-driven selected/loading/error/unavailable states, a wider attribute lane,
+  independent paint metadata, per-row isolate actions, and a per-view visibility
+  footer keep dense projects readable without changing lazy expansion or fetch
+  semantics. Workspace project titles also receive the subdued `.pproj` suffix.
+- **Viewer workspace schema v2 contract.** The frozen additive contract preserves
+  `{id,label,kind,units,codes}` attribute metadata, separates geometry
+  `attribute` from paint `color_by`, adds optional rotated/georeferenced Frame
+  metadata, all-hit well overlays, `colormap_reversed`, and project identity.
+  One shared Map resource/block table feeds both 2-D/3-D modes and every
+  attribute without Cartesian static-export growth. Workspace v1, legacy
+  `lane`, singular `intersection`, and separate `scene3d` payloads remain
+  explicit compatibility paths.
+
+### Compatibility
+- Rust and Python kernel changes are additive: axis-aligned `Lattice::regular`,
+  existing resampling calls, and legacy viewer entry points retain their public
+  signatures and defaults. Rotation/y-flip are opt-in through the new frame
+  methods and optional metadata.
+- Workspace v1 catalogs, `lane=` providers, singular well intersections,
+  separate scene3d resources, and existing saved payloads remain supported.
+  Producers adopting shared workspace v2 should return one selector-free Map
+  envelope per item/detail containing all declared attribute blocks; geometry,
+  paint, and 2-D/3-D switching are then client-local.
+- Compact affine Map output now follows the declared node-centred frame exactly.
+  Screenshots that depended on the former four-node averaging or inconsistent
+  rotated-edge handling will change, but source values and payload compatibility
+  are preserved.
+
+### Fixed
+- **Rotated Map frame parity.** ScalarLayer, shared affine fills, contacts,
+  linework, points, wells, contextual overlays, clipping, fit, and hit testing
+  now use one frame→world→camera composition. Compact affine fills paint the
+  exact `ncol×nrow` node samples over the same half-cell footprint as direct
+  rasters—no four-node averaging or categorical synthesis. Executable 0°/30°
+  fixtures cover flipped J, several camera rotations, edge fit, cursor indices,
+  overlay co-location, north orientation, and cache invalidation.
+- **Inspector state and asynchronous paint alignment.** Scalar paint omission
+  now remains inheritance rather than a false pin; point segments retain their
+  own range, paint, and visibility; aggregate section keys mirror aggregate
+  renderer state; and categorical availability uses the renderer's exact data
+  predicate. Blank exact-range endpoints are rejected, undeclared section units
+  stay absent, and request-keyed Volume/3-D completions cannot attach stale
+  colours under a newer material or cache identity. Point-segment visibility now
+  governs drawing, fit extents, and picking through one slice plan, and discarded
+  recolours clear their pending identity before a later request is considered.
+- **Truthful workspace visibility controls.** Project rows, groups, isolate
+  actions, and the visibility footer are interactive only in Map, 3-D, and Wells,
+  the views with complete composition paths. Intersection, Volume, and Charts
+  retain their catalog labels without controls that could change state but not
+  the rendered view.
+- **Project-tree interaction completeness.** Formal tree semantics now include a
+  roving focus target, Arrow/Home/End navigation, disclosure traversal, and
+  Enter/Space activation across both ordinary and virtualized catalogs. Focus
+  and scroll position survive disclosure rebuilds. Isolate and bulk-clear
+  actions appear only for views with complete composition paths, while `.pproj`
+  styling is limited to the persisted project title and never an application
+  title override.
+- **Workspace tree virtualization.** Project rows now share one 28 px CSS/JS
+  geometry token, and the virtual window derives its row count from the rendered
+  tree height instead of fixed 25 px/13-row assumptions. Large catalogs reach
+  their final row without spacer drift or blank tails across viewport heights.
+
+## [0.2.14] - 2026-07-14
+
+### Added
+- **Contextual Map well overlays.** Workspace Map resources may carry
+  producer-declared trajectories keyed by stable surface/fill and base-well
+  item identities. Surface switches select draw/fit paths atomically without
+  moving the camera; attribute fills retain their surface context, base
+  wellhead/style/visibility remain unchanged, and legacy or malformed records
+  fall back locally without any new provider request or depth/MD computation.
+- **Progressive compact 3-D surfaces.** Workspace scene resources may advertise
+  preview/full detail tiers. Preview becomes usable first; full affine-surface
+  elevation/mask/value blocks build transferable render buffers in the shared
+  worker and swap without camera movement or a global Loading reset. Static
+  exports embed full detail directly, while no-tier and legacy Mesh3D resources
+  remain unchanged.
+- **Compact affine Map grids.** Exact structured surface layers now travel as
+  dimensions, origin, affine I/J step vectors, and typed row-major values/mask,
+  with no expanded mesh nodes or triangles. Direct Canvas rasterization and
+  inverse-affine click inspection preserve rotated grids, flipped J axes, and
+  NaN holes; legacy ScalarLayer/TriFill JSON and block payloads remain valid.
+- **Parallel workspace materialization.** Lazy workspace resources now use
+  per-item/view/lane single-flight caching: duplicate concurrent requests share
+  one producer call while distinct resources materialize in parallel. Failures
+  remain isolated and retryable, and refresh cannot publish stale in-flight
+  results into the new snapshot.
+- **Workspace application shell.** Workspace payloads now render as a deliberate
+  three-region application: a persistent, resizable Project navigator on the
+  left, the active viewport in the centre, and a collapsible contextual
+  Inspector on the right. Tabs are derived from real payload/catalog
+  capabilities; the app bar and status bar expose live/offline, loading, empty,
+  ready, and resource-failure states. Pointer and keyboard controls include
+  panel toggles/resizers, `/` search, `1`–`3` view switching, `F` fit, and a
+  focus-trapped `?` shortcut reference. Bounded browser preferences retain only
+  theme/layout/selected-tab UI state—never project data. Narrow notebook widths
+  use overlay panels. Non-workspace payload chrome remains unchanged.
+- **Lazy multi-view project workspaces.** New top-level `petektools.view()` and
+  `petektools.viewer.view()` entry points return an inspectable
+  `WorkspaceSession` over either an ordered nested Python tree or the generic
+  `view_catalog()` / `view_resource()` provider duck. Workspace manifest v1
+  carries stable item IDs, independent per-view visibility, deferred resource
+  links, and additive Map/3-D item bindings. Live resources materialize once on
+  first request; `.save(..., include="visible"|"selected")` freezes the same
+  resources into the existing self-contained HTML contract. Its virtualized,
+  searchable project tree has tri-state groups and independent Map/3-D/Wells
+  visibility; composed surface resources preserve their attribute selector and
+  lazy content-addressed decoding. Existing single-view payloads and `view2d` /
+  `view3d` / `serve` / `save_view` are unchanged.
+- **Provider workspace lanes and disabled assets.** Workspace-v1 provider
+  catalogs can retain ordered unavailable leaves with a visible reason and
+  JSON diagnostic metadata, and can declare ordered `{id, label}` lanes with an
+  active lane per view. The project tree switches lanes lazily, caches each
+  item/view/lane once, and keeps Map/3-D/Wells lane state independent. Visible
+  static exports freeze active lanes only; selected exports freeze every lane
+  for zero-network switching. Old unlaned manifests remain unchanged.
+- **Correlation view templates.** Public frozen `CorrelationTemplate` and
+  `CorrelationTrack` values provide chainable curve/flag overlays, ordered and
+  grouped weighted tracks, linear/log/reversed scales, styles/fills, layout,
+  tops/connectors/zones, and a default TVD/flatten hang. They round-trip through
+  versioned JSON, validate curve references when applied to a `WellLogBundle`,
+  leave a missing per-well curve blank, and reject curves absent from every
+  well. The additive `wells_logs.template` renderer draws actual same-horizon
+  connectors between adjacent visible/reordered wells and exposes stable layout
+  instrumentation; no-template payloads retain the existing layout exactly.
+- **First-class polished wells in `view2d` and `view3d`.** Both adapters accept
+  `wells=` as a bare well, project-wells collection, or explicit dictionary,
+  with `well_labels=False|True|"auto"`. Shared frozen `WellStyle` /
+  `WellPathStyle` / `WellMarkerStyle` / `WellLabelStyle` values round-trip
+  through JSON dictionaries. The map draws projected XY trajectories, polished
+  co-located wellheads, and bounded collision-led labels; 3-D draws the same
+  styled trajectories and updates crisp screen-space labels only on render,
+  orbit, or resize. Existing item-detected 3-D wells and payloads with omitted
+  well arguments retain their exact wire shape and click-only inspection.
+
+### Fixed
+- **Viewer application correctness and interaction state.** Map fit now derives
+  from visible drawable content (no synthetic extent outlines), never zooms
+  closer than a 10 km horizontal span, and survives deferred decode, LOD, idle,
+  and resize paints after the user takes control; `F` is the explicit refit.
+  Filled surfaces default their 2-D grid and 3-D lattice off while geometry-only
+  views default on, with manual choices retained. Lazy 3-D/Wells views distinguish
+  loading, empty, malformed, runtime, WebGL, and build failures. The Project
+  navigator uses bounded auto-disclosure, singleton breadcrumbs, hierarchy/type/
+  selection states and fetch-free persistent manual expansion. All buttons use
+  one accessible hover/focus tooltip channel; Map and 3-D data remain
+  click-to-toggle inspection. Late renderer success callbacks are guarded from
+  overwriting a newer workspace loading/empty/malformed state. Dense 198²/500²
+  gesture gates additionally pin the settled camera, >12 wheel ticks, >1
+  viewport pan, and cached A→B→A return.
+- **Large multi-attribute surfaces now share and load lazily.** Automatic
+  primary/attribute fills retain one normalized full+LOD mesh, pack/hash that
+  geometry once, and reference one content-addressed block. The browser decodes
+  only the active fill values at startup and lazily caches later selections;
+  rapid choices are latest-request-wins and saved HTML remains offline. Plain
+  JSON keeps its legacy array shape. A reproduced default-LOD 198²/8-lane build
+  drops peak retention from 175.8 MB to 51.1 MB and build time from 3175 to
+  1785 ms (71% less peak, 44% faster).
+- **Dense map overlays are composition-only during navigation.** Grid/contour/
+  outline paint is cached below points and contact paint above them; the outline
+  path is precompiled and 1M-cell contact masks travel as additive `u8` blocks.
+  Hot-frame overlay rebuild counters remain zero and the dense acceptance
+  198² fixture records p95 0.3 ms / max 0.4 ms; the separate 500² acceptance
+  records p95 0.5 ms / max 0.6 ms (40 frames each).
+- **Surface gesture frames are composition-only.** Wheel/drag now always
+  affine-transform the last valid point and active-fill bitmaps, including
+  outside their original bake band/margin; no point-path/fill reconstruction,
+  canvas backing resize, legend DOM mutation, or live theme-style read occurs
+  until one trailing settle. Repaints remain coalesced to at most one per rAF.
+  Fill bitmaps use a bounded four-entry LRU keyed by field/ring + ramp/range,
+  preserving A/B at full+LOD so A→B→A reuses A without re-triangulation.
+- The v3 volume panel now uses declared metadata while its asynchronous mesh
+  decode is in flight, avoiding transient triangle-count/depth-range console
+  errors before the decoded render fields become available.
+- **Surface-role navigation across petekIO's six-level seam.** Viewer dispatch
+  now trusts stable `kind` metadata before overlapping method ducks: point sets
+  render as points, `grid_geometry` / `structured_shell` / `mesh_shell` render
+  as wireframes without omitted auto-fill, and `surface` / `structured_mesh` /
+  `tri_surface` auto-enumerate primary + named attributes. Explicit `fill=`
+  remains exact for any `value_layer()` producer, `MeshShell.nodes()` is an
+  accepted vertex source, and `view3d` uses the same geometry-shell versus
+  value-surface distinction.
+
+## [0.2.13] - 2026-07-13
+
+### Added
+- **Bare `view2d(surface)` attribute switching.** When `fill` is omitted, an
+  object exposing callable `attr_names()` + `value_layer()` now contributes its
+  primary value layer followed by every named attribute in producer order; the
+  existing Fill picker switches among ordinary `TriFill` entries labelled
+  `source · layer`, with shared mesh geometry deduplicated by the existing block
+  wire. Explicit behavior remains exact and unchanged: `fill=False` disables
+  fills, `fill=True` requests primary only, `fill="name"` requests that one lane,
+  per-object dict overrides win, and `color=` never triggers a fill. Producers
+  without the two-duck handshake retain their omitted-fill behavior. Malformed,
+  empty, or duplicate attribute metadata fails loudly and deterministically.
+- **Per-object colour — the dict item form** (owner ruling; `view2d` AND
+  `view3d`). A scene item may now be a dict `{"object": obj, "color":
+  bool|spec, "fill": bool|spec, "name": str}`: per-object settings take
+  precedence over the call-level `color=`/`fill=` (which remain the defaults
+  for bare items — back-compat, `color=True` default unchanged) and `name`
+  overrides the duck-typed legend display name; the spec grammar is unchanged
+  (`_parse_spec`, shared by both builders). Colour/ramp/range now travel PER
+  LAYER: a 2-D points layer carries its slice of the shared points array
+  (`start`/`n`) plus its own resolved `range` (+ a pinned `colormap` for a
+  per-object spec; `colored: false` for an explicit `color=False`), a 3-D
+  point cloud carries the same fields, and fills/meshes carry their own
+  `colormap` — the renderer and the per-layer legend read these FIRST (each
+  legend entry shows its own ramp/range), and the global
+  `map.colormap`/`point_color` (+ `scene3d.*`) stay emitted as a fallback for
+  older payload consumers. Note: with several bare point items, each layer
+  now normalizes over its OWN data range (previously one merged range).
+
+### Changed
+- **view3d: geometry renders flat — solid layers are for surfaces only**
+  (owner ruling). Only a TRUE regular surface (`kind == "surface"`, the
+  petekio `Surface` duck) passed bare renders a SOLID surface layer (the
+  neutral elevation mesh; value-coloured under `fill=`). Every other
+  geometry-ish item passed bare — a trimesh (e.g. the petekio
+  `infer_geometry` TriSurface fallback), a GridGeometry lattice, a
+  `.geometry`-bearing value item — now renders as a FLAT WIREFRAME GRID
+  placed at the SHALLOWEST point of its own nodes (z is elevation, negative
+  down → max finite node z; a z-less geometry falls back to the scene's
+  shallowest point), with its edge rings at that same level. `fill=` on a
+  value-bearing item still yields the value-coloured mesh (explicit opt-in
+  unchanged). Payload: `Lattice3D` gains `z: float | null` (`null` → `ref_z`)
+  and `scene3d.outlines` accepts object-form `{points, z}` rings — both
+  additive; `view3d`/`view3d_payload` gain `max_mesh_edges` (wireframe edge
+  budget, view2d parity). The rendered flat level is exposed for tests as
+  `__PETEK_SCENE3D_STATUS.latticeZ`. The 2-D map already renders these items
+  flat — no view2d change.
+- **Click-to-inspect replaces hover tooltips** on the viewer's Map and 3D tabs
+  (owner ruling). Hover shows nothing; a still click on/near an object (2-D:
+  the grid-bucket point hit-test, then a raster cell; 3-D: `THREE.Raycaster`
+  picking over points/meshes/lines with the pick radius sized to the on-screen
+  marker) anchors a readout at the clicked location — dataset/layer name, x,
+  y, z/value — that persists until the next click. Clicking empty space, or
+  the same target again, dismisses it; a press that moved more than a few px
+  between down/up is a pan/orbit drag, never an inspect. Pan/zoom and the
+  well-marker click (section along the bore; ties stay in the layer panel) are
+  unchanged. In the 3-D scene the click **also re-targets the orbit rotation
+  pivot** (`controls.target`) to the picked point without moving the camera —
+  orbiting then rotates around the clicked location; an empty-space dismiss
+  keeps the last pivot. Exposed for tests as `window.__PETEK_SCENE3D_PICK`.
+  The Intersection / Wells / Charts tabs keep their hover readouts.
+
 ## [0.2.12] - 2026-07-10
 
 ### Changed
@@ -938,16 +1244,16 @@ All notable changes to petekTools are recorded here. Format follows
   ResampleMethod::{Bilinear, Nearest})` resamples a native regular grid (values on
   a georeferencing `Lattice`) onto a foreign target `Lattice`, the counterpart to
   the scattered → grid kernels (a private trend-surface resampler downstream will
-  retire onto it). **Axis-aligned only** (`rotation_deg == 0`; `yflip` honoured
-  through the coordinate maps — Petrel exports are axis-aligned, rotation is future
-  work); no new georef type (the source `Lattice` already carries origin + spacing
-  + counts in world coordinates). **Null / extent policy** (fixed + documented):
+  retire onto it). Source and target may independently carry arbitrary finite
+  intrinsic rotation and `yflip`: every target node maps to world XY and through
+  the exact inverse source frame before the unchanged interpolation kernel. No
+  new georef type is required. **Null / extent policy** (fixed + documented):
   outside the source extent → `NaN` (never extrapolate); `Nearest` snaps to the
   closest node; `Bilinear` returns `NaN` if the *nearest* corner is `NaN`, else the
   weighted mean over the **finite** corners with weights renormalized (a `NaN`
   corner is dropped). Tested: bit-equal identity, bilinear exact on an affine field
   under 2× refinement, nearest snap, null-hole propagation, outside-extent `NaN`,
-  and an offset-origin world-coords case (georeference honoured, not index-space).
+  offset-origin world coordinates, and analytic rotated source/target fixtures.
   Re-exported at the crate root. Additive and non-breaking.
 - `units`: the **SI/metric reporting layer** (family standard,
   `decision_si_units_standard`) — `m3_to_mcm`/`mcm_to_m3` (`M3_PER_MCM = 1e6`),

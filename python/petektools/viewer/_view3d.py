@@ -25,18 +25,24 @@ from typing import Any, Sequence
 
 from ._save import save_view
 from ._server import serve
-from ._v3 import _le_bytes
+from ._v3 import NAN_F32, _le_bytes
 from ._view2d import (
+    _LayerMesh,
     _grid_lines,
     _is_geometry,
     _is_trimesh,
     _iso_contours,
-    _item_name,
+    _mesh_vertices,
+    _mesh_lines,
+    _norm_item,
     _parse_spec,
     _points,
+    _render_role,
     _rings,
     _scene_items,
+    _coerce_regular_grid_fill,
 )
+from ._well_style import WellStyle, normalize_wells
 
 
 def view3d_payload(
@@ -46,9 +52,13 @@ def view3d_payload(
     color: bool | str = True,
     fill: bool | str = False,
     contours: float | list[float] | None = None,
+    wells: Any = None,
+    well_labels: bool | str = False,
+    well_style: WellStyle | dict[str, Any] | None = None,
     max_grid_lines: int = 800,
     max_line_points: int = 1000,
     point_limit: int | None = 200_000,
+    max_mesh_edges: int | None = 150_000,
     z_exaggeration: float = 5.0,
 ) -> dict[str, Any]:
     """Build a generic 3-D scene payload from the view2d item conventions.
@@ -58,13 +68,19 @@ def view3d_payload(
 
     - points: ``xyz()``/``xy()`` or a sequence of ``[x, y, z?]`` rows — a
       colour-coded 3-D point cloud (compact base64 ``f32`` block on the wire)
-    - geometry: ``node_xy(i, j)``, ``ncol``, ``nrow``, optional ``edge`` — the
-      lattice lines render as a flat grid at the scene's reference elevation
-      (``scene3d.ref_z``, the midpoint of the scene's z extent; geometries
-      carry no z of their own), clipped to ``edge`` exactly as in 2-D
-    - trimesh: ``triangles()`` over ``xyz()``/``points()`` vertices — a 3-D
-      surface mesh; neutral-shaded (with a wireframe toggle) unless ``fill=``
-      opts it into value colouring
+    - geometry: ``node_xy(i, j)``, ``ncol``, ``nrow``, optional ``edge`` — a
+      FLAT lattice grid, clipped to ``edge`` exactly as in 2-D, placed at the
+      scene's SHALLOWEST point (a geometry carries no z of its own; z is
+      elevation, negative down → shallowest = the scene's max finite z; an
+      all-flat scene parks it at ``ref_z``), edge rings at the same level
+    - geometry-shell trimesh passed BARE (``kind == "mesh_shell"`` and
+      ``triangles()`` over ``xyz()``/``points()``/``nodes()`` vertices, e.g.
+      petekio's ``infer_geometry`` result): a
+      FLAT WIREFRAME GRID — its unique triangle edges (or
+      ``wireframe_edges()``) as lattice lines placed at the SHALLOWEST point
+      of its own nodes (max finite vertex z), edge rings at that same level.
+      An explicit ``fill=`` remains available for any producer that also
+      offers ``value_layer()``
     - value fill (opt-in via ``fill=``): ``value_layer(attr=None)`` — the
       returned ``{"name", "nodes", "triangles", "values", "range"}`` layer IS
       the surface: it renders once, value-coloured. A node row may carry
@@ -81,13 +97,13 @@ def view3d_payload(
       z ELEVATION (negative down) — a 3-D bore path with a wellhead marker,
       identity-coloured; optional ``id``/``name`` labels it
     - outline: ``rings()`` of ``[x, y]`` rows — flat rings at ``ref_z``
-    - structured surface passed BARE (value-bearing, e.g. petekio's regular
-      ``Surface`` — ``value_layer()`` + a 2-D ``.geometry``, no top-level
-      trimesh/geometry ducks): renders its STRUCTURE as a NEUTRAL elevation
-      mesh from the primary value layer (value-as-elevation; ``values`` stay
-      null → neutral shading + the wireframe toggle — never value-coloured
-      without ``fill=``); an item with only a 2-D ``.geometry`` falls back
-      to lattice lines at ``ref_z``
+    - a value-bearing surface passed BARE (``kind`` is ``"surface"``,
+      ``"structured_mesh"``, or ``"tri_surface"``): its STRUCTURE renders as
+      a NEUTRAL elevation mesh from the primary value layer
+      (value-as-elevation; ``values`` stay null → neutral shading + the
+      wireframe toggle — never value-coloured without ``fill=``). Unclassified
+      legacy ``.geometry``-bearing / value-bearing items passed bare retain the
+      flat lattice fallback at the shallowest point of their own nodes
 
     ``color=`` / ``fill=`` / ``contours=`` keep their exact view2d semantics
     and grammar: ``color=`` colours POINTS by z (default ON; ``color=False``
@@ -99,6 +115,17 @@ def view3d_payload(
     string with no colormap token stays an attribute name; a malformed spec
     raises ``ValueError``. An explicit range clamps the normalization (values
     outside it render at the ramp ends).
+
+    Each scene item may also be a DICT — the per-object form (owner ruling,
+    identical to view2d): ``{"object": obj, "color": bool | spec, "fill":
+    bool | spec, "name": str}``. Per-object settings take PRECEDENCE over the
+    call-level parameters (which stay the defaults for bare items), ``name``
+    overrides the duck-typed display name, and colour/ramp/range travel PER
+    LAYER — each point cloud carries its own resolved ``range`` (+ a pinned
+    ``colormap`` for a per-object spec; ``colored: false`` for an explicit
+    ``color=False``) and each value mesh its own ``colormap``; the legend
+    shows each entry's own ramp/range. The global ``scene3d.point_color`` /
+    ``scene3d.colormap`` stay emitted as a fallback for older consumers.
 
     Point clouds cap at ``point_limit`` (default 200k) by striding, exactly
     like view2d (``summary.point_stride``). ``z_exaggeration`` seeds the 3D
@@ -118,65 +145,187 @@ def view3d_payload(
     meshes: list[dict[str, Any]] = []
     lattices: list[dict[str, Any]] = []
     contour_sets: list[dict[str, Any]] = []
-    wells: list[dict[str, Any]] = []
-    outlines: list[list[list[float]]] = []
+    well_entries: list[dict[str, Any]] = normalize_wells(
+        wells, labels=False, style=well_style
+    )
+    outlines: list[Any] = []  # plain rings (ref_z) + {"points", "z"} flat rings
+    flat_rings: list[dict[str, Any]] = []  # rings tied to a flat item's level
     layers: list[dict[str, Any]] = []
     summary: dict[str, Any] = {}
     point_zs: list[float] = []
+    colored_zs: list[float] = []  # finite zs of per-cloud-coloured points
+    item_cmap: str | None = None  # first per-object colormap (global fallback)
     n_points = 0
     n_triangles = 0
 
-    for item in scene_items:
+    def extend_outlines(rings: list[Any], item_id: str | None) -> None:
+        if item_id is None:
+            outlines.extend(rings)
+        else:
+            outlines.extend({"points": ring, "item_id": item_id} for ring in rings)
+
+    for scene_entry in scene_items:
+        item, cspec, fspec, name, item_id, c_explicit, f_explicit = _norm_item(
+            scene_entry, color_spec, fill_spec
+        )
+        role = _render_role(item)
         contributed = False
         mesh_added = False
-        name = _item_name(item)
 
-        if fill_spec["enabled"]:
-            entry = _value_mesh(item, fill_spec["attr"])
+        if fspec["enabled"]:
+            entry = _value_mesh(item, fspec["attr"])
             if entry is not None:
                 entry["display_name"] = name
-                if fill_spec["range"] is not None:
-                    entry["range"] = list(fill_spec["range"])
+                if item_id is not None:
+                    entry["item_id"] = item_id
+                if fspec["range"] is not None:
+                    entry["range"] = list(fspec["range"])
+                if f_explicit and fspec["cmap"]:
+                    entry["colormap"] = fspec["cmap"]  # per-object pin
+                    item_cmap = item_cmap or fspec["cmap"]
                 meshes.append(entry)
-                n_triangles += len(entry["triangles"])
+                n_triangles += _mesh_triangle_count(entry)
                 contributed = True
                 mesh_added = True
         if contours is not None:
-            iso = _iso_contours(item, contours, color_spec["attr"])
+            iso = _iso_contours(item, contours, cspec["attr"])
             if iso is not None:
+                if item_id is not None:
+                    for contour in iso:
+                        contour["item_id"] = item_id
                 contour_sets.extend(iso)
-                layers.append({"kind": "contours", "name": name})
+                layers.append({"kind": "contours", "name": name, **({"item_id": item_id} if item_id is not None else {})})
                 contributed = True
 
-        if _is_geometry(item):
+        # Role metadata wins over overlapping method ducks. All three
+        # value-bearing surface levels render as surfaces; their corresponding
+        # geometry-only shells continue through the lattice/wireframe paths.
+        if role == "surface":
+            edge = getattr(item, "edge", None)
+            edge_rings = _rings(edge) if edge is not None else []
+            if mesh_added:
+                extend_outlines(edge_rings, item_id)
+                continue
+            entry = _value_mesh(item, None)
+            if entry is None:
+                raise TypeError(
+                    f"{type(item).__name__} declares surface kind "
+                    f"{getattr(item, 'kind', None)!r} but offers no value_layer()"
+                )
+            if "regular_surface" in entry:
+                entry["regular_surface"]["values"] = None
+                entry["values"] = None
+            else:
+                entry["values"] = None
+            entry["range"] = None
+            entry["name"] = "mesh"
+            entry["display_name"] = name
+            if item_id is not None:
+                entry["item_id"] = item_id
+            meshes.append(entry)
+            n_triangles += _mesh_triangle_count(entry)
+            continue
+
+        if role == "geometry" and not (_is_geometry(item) or _is_trimesh(item)):
+            raise TypeError(
+                f"{type(item).__name__} declares geometry kind "
+                f"{getattr(item, 'kind', None)!r} but offers neither the structured "
+                "node_xy/ncol/nrow duck nor triangles with mesh vertices"
+            )
+
+        if _is_geometry(item) and role != "points":
+            # a z-less geometry renders as a FLAT lattice at the SCENE's
+            # shallowest point (z=None resolves after the loop), edge rings at
+            # the same level (owner ruling: flat, never a solid layer).
             edge = getattr(item, "edge", None)
             edge_rings = _rings(edge) if edge is not None else []
             lines = _grid_lines(
                 item, max_grid_lines, max_line_points, clip_rings=edge_rings
             )
-            lattices.append({"name": name, "lines": lines})
-            outlines.extend(edge_rings)
+            lattices.append({"name": name, "lines": lines, "z": None, **({"item_id": item_id} if item_id is not None else {})})
+            for ring in edge_rings:
+                flat_rings.append({"points": ring, "z": None, **({"item_id": item_id} if item_id is not None else {})})
             summary["grid"] = f"{int(getattr(item, 'ncol'))} x {int(getattr(item, 'nrow'))}"
-            layers.append({"kind": "lines", "name": name})
+            layers.append(
+                {
+                    "kind": "lines",
+                    "name": name,
+                    "standalone": role == "geometry"
+                    or (
+                        role != "surface"
+                        and not callable(getattr(item, "value_layer", None))
+                    ),
+                    **({"item_id": item_id} if item_id is not None else {}),
+                }
+            )
             continue
 
-        if _is_trimesh(item):
-            if not mesh_added:
-                meshes.append(_neutral_mesh(item, name))
-                n_triangles += len(meshes[-1]["triangles"])
+        if _is_trimesh(item) and role != "points":
             edge = getattr(item, "edge", None)
-            if edge is not None:
-                outlines.extend(_rings(edge))
+            edge_rings = _rings(edge) if edge is not None else []
+            if mesh_added:
+                # fill= opted this mesh into the value-coloured surface;
+                # its edge rings keep the ref_z plane (pre-ruling behaviour)
+                extend_outlines(edge_rings, item_id)
+                continue
+            # A bare geometry-shell trimesh (e.g. infer_geometry's MeshShell):
+            # a FLAT WIREFRAME GRID at the item's own shallowest point
+            # (max finite vertex elevation), edge rings at the same level —
+            # value-bearing surface roles were handled above.
+            lines, n_tris, edge_stride = _mesh_lines(
+                item, max_mesh_edges, max_line_points
+            )
+            z_flat = _verts_shallowest(_mesh_vertices(item))
+            lattices.append({"name": name, "lines": lines, "z": z_flat, **({"item_id": item_id} if item_id is not None else {})})
+            for ring in edge_rings:
+                flat_rings.append({"points": ring, "z": z_flat, **({"item_id": item_id} if item_id is not None else {})})
+            summary["triangles"] = summary.get("triangles", 0) + n_tris
+            if edge_stride > 1:
+                summary["mesh_edge_stride"] = edge_stride
+            layers.append(
+                {
+                    "kind": "lines",
+                    "name": name,
+                    "standalone": role == "geometry"
+                    or (
+                        role != "surface"
+                        and not callable(getattr(item, "value_layer", None))
+                    ),
+                    **({"item_id": item_id} if item_id is not None else {}),
+                }
+            )
             continue
 
-        if _is_well(item):
-            wells.append(_well_entry(item, name, len(wells)))
-            layers.append({"kind": "wells", "name": wells[-1]["id"]})
+        if _is_well(item) and role != "points":
+            if well_style is None and well_labels is False:
+                # Exact compatibility: item-detected wells predate the first-class
+                # wells= seam and retain their original two-key wire shape.
+                added = [_well_entry(item, name, len(well_entries))]
+            else:
+                added = normalize_wells(
+                    {"object": item, "name": name, "style": well_style or WellStyle()},
+                    labels=False,
+                    style=well_style,
+                )
+            well_entries.extend(added)
+            if item_id is not None:
+                for well in added:
+                    well["item_id"] = item_id
+            layers.extend(
+                {
+                    "kind": "wells",
+                    "name": w["id"],
+                    **({"item_id": item_id} if item_id is not None else {}),
+                }
+                for w in added
+            )
             continue
 
-        rings = _rings(item)
+        # Stable point metadata is authoritative even if a producer also
+        # exposes topology helpers such as edge/rings for other workflows.
+        rings = _rings(item) if role != "points" else []
         if rings:
-            outlines.extend(rings)
+            extend_outlines(rings, item_id)
             continue
 
         pts = _points(item)
@@ -185,36 +334,79 @@ def view3d_payload(
                 step = max(1, math.ceil(len(pts) / point_limit))
                 pts = pts[::step]
                 summary["point_stride"] = step
-            point_zs.extend(p[2] for p in pts if len(p) > 2 and math.isfinite(p[2]))
-            clouds.append({"name": name, "n": len(pts), "xyz": _xyz_block(pts)})
+            zs = [p[2] for p in pts if len(p) > 2 and math.isfinite(p[2])]
+            point_zs.extend(zs)
+            # Per-cloud colour (per-object color ruling): each cloud carries
+            # its OWN resolved clamp range (explicit spec range, else its
+            # finite-z data range) and a per-object colormap pin; the global
+            # scene3d.point_color/colormap stay the fallback.
+            cloud: dict[str, Any] = {"name": name, "n": len(pts), "xyz": _xyz_block(pts)}
+            if item_id is not None:
+                cloud["item_id"] = item_id
+            if cspec["enabled"]:
+                if zs:
+                    rng = cspec["range"] or [min(zs), max(zs)]
+                    cloud["range"] = [float(rng[0]), float(rng[1])]
+                    colored_zs.extend(zs)
+            else:
+                cloud["colored"] = False
+            if c_explicit and cspec["cmap"]:
+                cloud["colormap"] = cspec["cmap"]  # per-object pin
+                item_cmap = item_cmap or cspec["cmap"]
+            clouds.append(cloud)
             n_points += len(pts)
-            layers.append({"kind": "points", "name": name})
+            layers.append({"kind": "points", "name": name, **({"item_id": item_id} if item_id is not None else {})})
             continue
 
         if contributed:
             continue  # a fill/contour-only item carries no further geometry
 
-        # STRUCTURE fallback for value-bearing items passed bare (the petekio
-        # regular-Surface duck: value_layer()/iso_lines() + a 2-D .geometry,
-        # no top-level node_xy/triangles/xyz): the primary value layer's
-        # nodes ARE the surface — render it as a NEUTRAL elevation mesh
-        # (``values``/``range`` null → the neutral material + wireframe
-        # toggle; colouring stays a ``fill=`` opt-in). An item carrying only
-        # a 2-D ``.geometry`` falls back to lattice lines at ``ref_z``.
+        # STRUCTURE fallback for unclassified value-bearing items passed bare.
+        # Recognized surfaces were handled above; legacy geometry-ish items
+        # render FLAT through their ``.geometry`` lattice lines
+        # (or, geometry-less, the primary layer's triangle edges) at the
+        # SHALLOWEST point of its own nodes — max finite elevation, the
+        # scene's shallowest point when it carries no z — with edge rings at
+        # that same level.
         entry = _value_mesh(item, None)
-        if entry is not None:
-            entry["values"] = None
-            entry["range"] = None
-            entry["name"] = "mesh"
-            entry["display_name"] = name
-            meshes.append(entry)
-            n_triangles += len(entry["triangles"])
-            continue
+        z_flat = _verts_shallowest(entry["nodes"]) if entry is not None else None
         geom = getattr(item, "geometry", None)
         if geom is not None and _is_geometry(geom):
-            lines = _grid_lines(geom, max_grid_lines, max_line_points, clip_rings=[])
-            lattices.append({"name": name, "lines": lines})
-            layers.append({"kind": "lines", "name": name})
+            edge = getattr(item, "edge", None)
+            if edge is None:
+                edge = getattr(geom, "edge", None)
+            edge_rings = _rings(edge) if edge is not None else []
+            lines = _grid_lines(
+                geom, max_grid_lines, max_line_points, clip_rings=edge_rings
+            )
+            lattices.append({"name": name, "lines": lines, "z": z_flat, **({"item_id": item_id} if item_id is not None else {})})
+            for ring in edge_rings:
+                flat_rings.append({"points": ring, "z": z_flat, **({"item_id": item_id} if item_id is not None else {})})
+            layers.append(
+                {
+                    "kind": "lines",
+                    "name": name,
+                    "standalone": not callable(getattr(item, "value_layer", None)),
+                    **({"item_id": item_id} if item_id is not None else {}),
+                }
+            )
+            continue
+        if entry is not None:
+            lines, n_tris, edge_stride = _mesh_lines(
+                _LayerMesh(entry), max_mesh_edges, max_line_points
+            )
+            lattices.append({"name": name, "lines": lines, "z": z_flat, **({"item_id": item_id} if item_id is not None else {})})
+            summary["triangles"] = summary.get("triangles", 0) + n_tris
+            if edge_stride > 1:
+                summary["mesh_edge_stride"] = edge_stride
+            layers.append(
+                {
+                    "kind": "lines",
+                    "name": name,
+                    "standalone": False,
+                    **({"item_id": item_id} if item_id is not None else {}),
+                }
+            )
             continue
 
         raise TypeError(
@@ -222,19 +414,49 @@ def view3d_payload(
             "item can be value-coloured with fill=)"
         )
 
+    # The GLOBAL fallback for older payload consumers (per-cloud fields win):
+    # present only when at least one cloud actually colours — the call-level
+    # explicit clamp range when the call-level color= is on, else the union
+    # of the coloured clouds' data.
     point_color = None
-    if color_spec["enabled"] and point_zs:
-        rng = color_spec["range"] or [min(point_zs), max(point_zs)]
+    if colored_zs:
+        rng = (color_spec["range"] if color_spec["enabled"] else None) or [
+            min(colored_zs),
+            max(colored_zs),
+        ]
         point_color = {"by": "z", "range": [float(rng[0]), float(rng[1])]}
+
+    # Resolve z-less flat items (a bare GridGeometry lattice + its rings) to
+    # the SCENE's shallowest point (z is elevation, negative down → max
+    # finite z over the scene's own data); null when the scene is all-flat
+    # (the JS falls back to ref_z).
+    show_well_labels = bool(
+        well_labels is True or (well_labels == "auto" and len(well_entries) <= 12)
+    )
+    if well_labels not in (False, True, "auto"):
+        raise ValueError("well_labels must be False, True, or 'auto'")
+    if well_labels is not False:
+        for well in well_entries:
+            well["label"] = show_well_labels
+    scene_shallowest = _scene_shallowest(
+        point_zs, meshes, well_entries, lattices, flat_rings
+    )
+    for lat in lattices:
+        if lat["z"] is None:
+            lat["z"] = scene_shallowest
+    for fr in flat_rings:
+        if fr["z"] is None:
+            fr["z"] = scene_shallowest
+    outlines.extend(flat_rings)
 
     summary["points"] = n_points
     if meshes:
         summary["meshes"] = len(meshes)
-        summary["triangles"] = n_triangles
+        summary["triangles"] = summary.get("triangles", 0) + n_triangles
     if lattices:
         summary["lattices"] = len(lattices)
-    if wells:
-        summary["wells"] = len(wells)
+    if well_entries:
+        summary["wells"] = len(well_entries)
     if contour_sets:
         summary["contour_levels"] = len(contour_sets)
     if point_color is not None:
@@ -254,13 +476,13 @@ def view3d_payload(
             "meshes": meshes,
             "lattices": lattices,
             "contours": contour_sets,
-            "wells": wells,
+            "wells": well_entries,
             "outlines": outlines,
             "layers": layers,
             "point_color": point_color,
-            "colormap": color_spec["cmap"] or fill_spec["cmap"],
+            "colormap": color_spec["cmap"] or fill_spec["cmap"] or item_cmap,
             "z_exaggeration": float(z_exaggeration),
-            "ref_z": _ref_z(point_zs, meshes, wells),
+            "ref_z": _ref_z(point_zs, meshes, well_entries),
         },
         "sections": [],
         "section_labels": [],
@@ -276,6 +498,9 @@ def view3d(
     color: bool | str = True,
     fill: bool | str = False,
     contours: float | list[float] | None = None,
+    wells: Any = None,
+    well_labels: bool | str = False,
+    well_style: WellStyle | dict[str, Any] | None = None,
     save: str | Path | None = None,
     port: int = 0,
     block: bool = False,
@@ -283,6 +508,7 @@ def view3d(
     max_grid_lines: int = 800,
     max_line_points: int = 1000,
     point_limit: int | None = 200_000,
+    max_mesh_edges: int | None = 150_000,
     z_exaggeration: float = 5.0,
 ) -> str | dict[str, Any]:
     """Open or save a generic 3-D scene view (the viewer's **3D** tab).
@@ -299,9 +525,13 @@ def view3d(
         color=color,
         fill=fill,
         contours=contours,
+        wells=wells,
+        well_labels=well_labels,
+        well_style=well_style,
         max_grid_lines=max_grid_lines,
         max_line_points=max_line_points,
         point_limit=point_limit,
+        max_mesh_edges=max_mesh_edges,
         z_exaggeration=z_exaggeration,
     )
     if save is not None:
@@ -369,6 +599,9 @@ def _value_mesh(item: Any, attr: str | None) -> dict[str, Any] | None:
     layer = fn(attr=attr) if attr is not None else fn()
     if layer is None:
         return None
+    compact = _regular_surface_mesh(item, layer, attr, fn)
+    if compact is not None:
+        return compact
     name = type(item).__name__
     if not isinstance(layer, dict):
         raise TypeError(
@@ -407,23 +640,114 @@ def _value_mesh(item: Any, attr: str | None) -> dict[str, Any] | None:
     }
 
 
-def _neutral_mesh(item: Any, name: str | None) -> dict[str, Any]:
-    """A trimesh item's raw 3-D surface (no value colouring — neutral shading)."""
-    verts = item.xyz() if hasattr(item, "xyz") else item.points()
-    nodes: list[list[float | None]] = []
-    for row in verts:
-        vals = list(row)
-        z = float(vals[2]) if len(vals) > 2 else math.nan
-        nodes.append([float(vals[0]), float(vals[1]), z if math.isfinite(z) else None])
-    triangles = [[int(t[0]), int(t[1]), int(t[2])] for t in item.triangles()]
+def _typed_block(values: list[Any], dtype: str) -> dict[str, Any]:
+    normalized = [
+        (float(value) if value is not None and math.isfinite(float(value)) else NAN_F32)
+        if dtype == "f32"
+        else (1 if value else 0)
+        for value in values
+    ]
+    raw = _le_bytes(normalized, dtype)
     return {
-        "name": "mesh",
-        "display_name": name,
-        "nodes": nodes,
-        "triangles": triangles,
-        "values": None,
-        "range": None,
+        "dtype": dtype,
+        "shape": [len(values)],
+        "data": base64.b64encode(raw).decode("ascii"),
     }
+
+
+def _regular_surface_mesh(
+    item: Any,
+    layer: Any,
+    attr: str | None,
+    value_fn: Any,
+) -> dict[str, Any] | None:
+    """Compact affine elevation surface; non-affine layers keep Mesh3D."""
+    value_grid = _coerce_regular_grid_fill(item, layer, type(item).__name__)
+    if value_grid is None:
+        return None
+    elevation_grid = value_grid
+    if attr is not None:
+        primary = value_fn()
+        elevation_grid = _coerce_regular_grid_fill(
+            item, primary, type(item).__name__
+        )
+        if elevation_grid is None:
+            return None
+    grid = value_grid["regular_grid"]
+    elevations = elevation_grid["regular_grid"]["values"]
+    mask = [value is not None for value in elevations]
+    finite = [float(value) for value in elevations if value is not None]
+    if not finite:
+        return None
+    ncol, nrow = grid["dimensions"]
+    triangle_count = 0
+    for j in range(nrow - 1):
+        for i in range(ncol - 1):
+            a = j * ncol + i
+            if mask[a] and mask[a + 1] and mask[a + ncol] and mask[a + ncol + 1]:
+                triangle_count += 2
+    return {
+        "name": value_grid["name"],
+        "regular_surface": {
+            "dimensions": list(grid["dimensions"]),
+            "origin": list(grid["origin"]),
+            "step_i": list(grid["step_i"]),
+            "step_j": list(grid["step_j"]),
+            "elevations": _typed_block(elevations, "f32"),
+            "mask": _typed_block(mask, "u8"),
+            "values": _typed_block(grid["values"], "f32"),
+            "elevation_range": [min(finite), max(finite)],
+            "triangle_count": triangle_count,
+        },
+        "range": list(value_grid["range"]),
+    }
+
+
+def _mesh_triangle_count(mesh: dict[str, Any]) -> int:
+    regular = mesh.get("regular_surface")
+    if regular:
+        return int(regular["triangle_count"])
+    return len(mesh["triangles"])
+
+
+def _verts_shallowest(rows: Any) -> float | None:
+    """The SHALLOWEST elevation among vertex/node rows — z is elevation
+    (negative down), so shallowest = the max finite third component. ``None``
+    when no row carries a finite z (a z-less item defers to the scene)."""
+    best: float | None = None
+    for row in rows:
+        vals = list(row)
+        if len(vals) < 3 or vals[2] is None:
+            continue
+        z = float(vals[2])
+        if math.isfinite(z) and (best is None or z > best):
+            best = z
+    return best
+
+
+def _scene_shallowest(
+    point_zs: list[float],
+    meshes: list[dict[str, Any]],
+    wells: list[dict[str, Any]],
+    lattices: list[dict[str, Any]],
+    flat_rings: list[dict[str, Any]],
+) -> float | None:
+    """The scene's shallowest point (max finite elevation over its own data) —
+    the fallback level for z-less flat items. ``None`` for an all-flat scene."""
+    zs = [z for z in point_zs if math.isfinite(z)]
+    for mesh in meshes:
+        regular = mesh.get("regular_surface")
+        if regular:
+            zs.extend(regular["elevation_range"])
+        else:
+            zs.extend(n[2] for n in mesh["nodes"] if n[2] is not None)
+    for well in wells:
+        zs.extend(p[2] for p in well["trajectory"] if p[2] is not None)
+    zs.extend(lat["z"] for lat in lattices if lat["z"] is not None)
+    zs.extend(fr["z"] for fr in flat_rings if fr["z"] is not None)
+    if not zs:
+        return None
+    return float(max(zs))
 
 
 def _ref_z(
@@ -433,12 +757,17 @@ def _ref_z(
 ) -> float:
     """The flat-element elevation: midpoint of the scene's finite z extent.
 
-    Geometries and outline rings carry no z of their own, so their lattice
-    lines / rings render at this reference plane (0.0 for an all-flat scene).
+    Plain outline rings carry no z of their own and render at this reference
+    plane (0.0 for an all-flat scene); it is also the JS fallback for a flat
+    lattice whose ``z`` is null (an all-flat scene).
     """
     zs = list(point_zs)
     for mesh in meshes:
-        zs.extend(n[2] for n in mesh["nodes"] if n[2] is not None)
+        regular = mesh.get("regular_surface")
+        if regular:
+            zs.extend(regular["elevation_range"])
+        else:
+            zs.extend(n[2] for n in mesh["nodes"] if n[2] is not None)
     for well in wells:
         zs.extend(p[2] for p in well["trajectory"] if p[2] is not None)
     if not zs:

@@ -183,9 +183,58 @@ declares and computes nothing itself; new cross-sections come from a consumer's
 The viewer is horizontal capability: it serves every layer of the ecosystem, so
 it lives here. The full guide is in `VIEWER.md`.
 
+### Project workspaces
+
+For a project-scale view, `petektools.view()` wraps the same typed renderers in
+a lazy multi-view workspace. An ordered nested mapping is enough for ordinary
+Python objects; domain packages can instead provide a generic `view_catalog()` /
+`view_resource()` adapter with stable item IDs. Construction catalogs metadata
+only. Map, 3-D and Wells resources materialize independently when selected,
+duplicate concurrent requests share one producer call, and unrelated resources
+can build in parallel:
+
+```python
+session = petektools.view({
+    "Interpretation": {
+        "Surfaces": {
+            "Synthetic Top Alpha": {"object": synthetic_top_alpha, "visible": True},
+            "Synthetic Base Alpha": {"object": synthetic_base_alpha, "visible": False},
+        }
+    }
+}, title="Synthetic Alpha workspace")
+
+session.tree()                         # metadata only
+session.save("visible.html")           # complete offline snapshot
+session.save("selected.html", include="selected")
+```
+
+The workspace uses a persistent searchable Project navigator, central viewport,
+and contextual Inspector. It keeps visibility and provider-declared attribute
+lanes independent per view, retains disabled catalogue entries with a reason,
+and reports loading/empty/malformed/runtime failures locally. Expansion never
+fetches data; deferred decode and LOD work never reclaim a user-controlled
+camera. Buttons share accessible hover/focus help, while Map and 3-D data
+inspection remains click-to-toggle.
+
+Providers can declare ordered Map/3-D/Wells lanes without adding a second
+request protocol. A 3-D surface resource may additionally expose
+`preview`/`full` detail tiers: the preview becomes usable first and full compact
+buffers replace it in the background without moving the camera or returning the
+whole workspace to Loading. Static snapshots embed full detail directly.
+
+Map resources may carry producer-computed `well_overlays` keyed by the active
+surface item and a base well item. Switching surfaces then selects the matching
+display trajectory atomically for both draw and fit; changing an attribute on
+the same surface keeps its context. petekTools does not calculate intersections,
+measured depth, clipping or depth conversion, and missing/diagnostic records
+fall back to the base path.
+
 For lightweight map QC, `petektools.view2d([...])` accepts point-like objects,
-geometry-like objects, and triangulated meshes. Point sets render as points
-only. Geometry-like objects render grid lines, and when they expose an `edge`
+geometry-like objects, and triangulated meshes. Stable `kind` metadata separates
+point sets (`point_set`), geometry-only shells (`grid_geometry`,
+`structured_shell`, `mesh_shell`), and value surfaces (`surface`,
+`structured_mesh`, `tri_surface`). Point sets render as points only.
+Geometry-like objects render grid lines, and when they expose an `edge`
 polygon the grid-line overlay is clipped to that edge so inferred grids,
 structured surfaces, and point clouds line up in the same view. Mesh-like
 objects (`triangles()` over `xyz()`/`points()` vertices) render their unique
@@ -193,11 +242,15 @@ triangle edges as grid lines with the mesh `edge` rings as the outline; a mesh
 that also offers `wireframe_edges()` index pairs draws exactly those instead —
 quad-dominant, with interior cell diagonals removed.
 
-Three kwargs add value rendering, each explicit. `color=` colours **points**
+Three kwargs add value rendering. `color=` colours **points**
 by their z value (and selects the colormap for whatever is value-coloured) —
 it never triggers fills, and it defaults ON (pass `color=False` for
-monochrome points). `fill=` asks each item offering
-`value_layer()` for a per-node value layer and paints it as a value-coloured
+monochrome points). When `fill` is omitted, only a value-surface role offering
+callable `attr_names()` and `value_layer()` contributes its primary layer
+followed by every named attribute to the Fill selector; geometry shells remain
+wireframes. Explicit `fill=False` disables fills, `fill=True` requests primary
+only, and `fill="name"` requests that one attribute from any producer offering
+`value_layer()`. Each per-node value layer paints as a value-coloured
 fill *under* the grid lines (each triangle flat-filled with the colormap
 colour of its mean node value; a triangle touching a NaN node is left
 unfilled). `contours=25.0` asks each item offering `iso_lines()` for contour
@@ -214,18 +267,38 @@ values clamp to the ramp ends), `color="porosity"` stays an attribute name
 three. A malformed spec (e.g. one trailing float) raises `ValueError`. The
 viewer panel gets a fill selector (when several items contribute fills),
 "Fill"/"Contours" toggles, and a per-layer legend — type icon + the item's
-duck-typed `name` (e.g. `"Top Dome"`) + the colour ramp and clamped range on
-value-coloured layers. Items without these methods are silently unaffected:
+duck-typed `name` and active lane (e.g. `"Top Dome · thickness"`) + the colour
+ramp and clamped range on value-coloured layers. Items without these methods are
+silently unaffected:
 
 ```python
 petektools.view2d([surface, well_points], color="inferno_-2700_-2500",
                   fill=True, contours=25.0)
 ```
 
+Colour can also be set **per object** (view2d and view3d): pass a dict item
+`{"object": obj, "color": ..., "fill": ..., "name": ...}` anywhere a bare
+object is accepted. Per-object settings win over the call-level
+`color=`/`fill=` (including omitted-fill attribute discovery for a dict item
+without its own `fill`), `name` overrides the legend display name, and each
+layer then carries — and the legend shows — its own colormap ramp and clamp
+range:
+
+```python
+petektools.view2d([
+    {"object": top_points, "color": "inferno_-2700_-2500"},
+    {"object": base_points, "color": "viridis", "name": "Base Dome"},
+    grid_geometry,
+])
+```
+
 Two more `view2d` kwargs tune the wire and the feel, not the picture.
 `encoding="blocks"` (the default) ships the map's bulk arrays as compact
 typed binary blocks — roughly 3× smaller than JSON floats on a large payload,
-decoded off the main thread; pass `encoding="json"` for a plain-JSON payload
+decoded off the main thread. Automatic attributes share their mesh, and only
+the active attribute's values decode initially; selecting another attribute
+decodes it once. The complete table is still inside a saved HTML view, so this
+works offline. Pass `encoding="json"` for a plain-JSON payload
 (small payloads are unaffected either way). `lod=True` (the default) adds a
 coarse display-only ring beside each fill / mesh grid / contour set from
 producers that support striding; the viewer switches to it when zoomed far
@@ -234,21 +307,79 @@ as you zoom in — **the data itself is never decimated**. `lod=(stride,)` /
 `lod=(stride, simplify)` tune it; `lod=False` turns it off. See the schema
 doc's MapBundle notes for the exact payload shapes.
 
+An exact affine structured surface takes a still more compact path: dimensions,
+origin, two world-coordinate step vectors, and row-major typed values/mask—no
+expanded nodes or triangles. Rotation, a flipped J axis and NaN holes are
+preserved. Non-affine surfaces retain the existing triangulated compatibility
+path.
+
+Wheel and drag frames are composition-only: the viewer affine-transforms the
+last valid point/fill and structural/contact-overlay bitmaps at most once per
+animation frame, even after the view leaves their original bake margin or zoom
+band. One trailing settle then selects the LOD ring and rebuilds invalid
+bitmaps. A bounded four-entry fill LRU keeps two selectable fields at both full
+and coarse LOD, so switching A→B→A normally returns to A without
+re-triangulating it.
+
 `petektools.view3d([...])` renders the same items in **one Three.js scene**
 (the viewer's "3D" tab) at full view2d parity: the same duck-typed item
 handling plus wells (`trajectory()` of `[x, y, z]` rows, z elevation —
 negative down), the same `color=` / `fill=` / `contours=` semantics and spec
 grammar, and the same per-layer legend. Points render as a colour-coded 3-D
-cloud (compact binary blocks, smooth at the 200k default cap),
-surfaces/trimeshes value-colour under `fill=` (neutral + wireframe toggle
-otherwise), geometry lattices/outlines draw flat at the scene's reference
-elevation, and contours draw at their level. A `z_exaggeration=` kwarg seeds
+cloud (compact binary blocks, smooth at the 200k default cap). **Solid
+surface layers are for value surfaces only**: `surface`, `structured_mesh`,
+and `tri_surface` roles passed bare render neutral elevation meshes
+(value-coloured under `fill=`); every geometry-only item passed bare —
+a bare trimesh, a grid-geometry lattice, a `.geometry`-bearing value item —
+renders as a flat wireframe grid at the shallowest point of its own nodes
+(z is elevation, negative down; a z-less geometry uses the scene's
+shallowest point), edge rings at the same level. Contours draw at their
+level. A `z_exaggeration=` kwarg seeds
 the tab's z-exaggeration slider (display-only, default 5x — the volume tab's
-control):
+control). Inspection on both the Map and 3D tabs is **click-driven**: hover
+shows nothing; a still click on/near an object anchors a readout (dataset
+name, x, y, z/value) at the clicked location until the next click — and in
+the 3-D scene the click also re-targets the orbit rotation pivot to the
+picked point (camera position unchanged), so orbiting rotates around what
+you clicked:
 
 ```python
 petektools.view3d([pts, geom], color="inferno_-2700_-2500")
 ```
+
+Exact affine 3-D surfaces likewise ship compact elevation/mask/value blocks.
+Their transferable position/index/colour buffers are built in the shared worker
+and attached without a main-thread normal pass; non-affine `Mesh3D` payloads
+remain valid.
+
+Both `view2d` and `view3d` accept `wells=` plus
+`well_labels=False|True|"auto"`. Frozen `WellStyle`, `WellPathStyle`,
+`WellMarkerStyle` and `WellLabelStyle` values control trajectories, heads and
+bounded labels while remaining ordinary versioned JSON. Co-located Map wells
+share one wellhead with a bore-count badge; 3-D labels update only when the scene
+renders, orbits or resizes.
+
+For repeatable log-correlation layouts, build a named template in the viewer
+unit and apply it to any plain `wells_logs` bundle. The result remains ordinary
+versioned JSON and can be saved offline or persisted by a project owner:
+
+```python
+from petektools import CorrelationTemplate, CorrelationTrack
+
+reservoir = (
+    CorrelationTemplate("reservoir", default_hang="flatten", flatten_pick="TopShale")
+    .add_track(CorrelationTrack("facies", width=.45).flag("FACIES"))
+    .add_track(CorrelationTrack("petro", minimum=0, maximum=1)
+               .curve("PHIE", cutoff=.12)
+               .curve("SW", id="sw", overlay=True, style={"dash": [3, 2]}))
+)
+viewer.save_view(reservoir(well_log_bundle), "correlation.html")
+```
+
+Templates are immutable-ish values: `.add_track()` / `.curve()` return new
+values, `.replace()` makes an edited copy, and `.to_dict()` / `.from_dict()`
+round-trip through JSON. A curve absent in one well renders blank; a mnemonic
+absent from all wells is rejected when the template is applied.
 
 ## Where to go next
 

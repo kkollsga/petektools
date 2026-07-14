@@ -44,11 +44,17 @@ node render_bench.mjs <view.html> [flags]
 #   --heap-cap-mb=N   --frame-cap-ms=N   --tri-budget=N   --expect-degraded
 #   --screenshot=PATH --tab=map|section|volume|charts
 #   --drag-events=N   --drag-frame-cap-ms=N   (synthetic map drag + hover sweep)
+#   --surface-gesture --wheel-events=N --pan-events=N
+#   --gesture-p95-cap-ms=N --gesture-max-cap-ms=N
 ```
 
 Prints one JSON line: `{decodeRenderMs, mapRenderMs, sectionRenderMs,
 chartsRenderMs, usedJSHeapMB, volBadge, degradedBanner, consoleErrors}` (plus
-`dragFrames/dragFrameMsMedian/hoverAvgMs/hoverReadout` with `--drag-events`).
+`dragFrames/dragFrameMsMedian/hoverAvgMs/hoverReadout/clickReadout` with
+`--drag-events` — hover must show NOTHING under the click-to-inspect ruling;
+the still-click probe must reveal the readout).
+With `--surface-gesture`, the JSON also includes `surfaceGesture`: wheel/pan
+frame p50/p95/max, hot-path work counters, settle counts, and A→B→A cache reuse.
 
 Driven + budget-asserted by `test_viewer_perf.py` at the ledger scales — it builds
 a `save_view` HTML with a v3 volume **and** an areal map, then asserts a JS-heap
@@ -76,9 +82,11 @@ crashing.
 The worst case that made `view2d` unusable: 200k points with `point_color` set
 plus an inferred-geometry grid-line overlay. `--drag-events=N` dispatches a
 synthetic map drag (~3 mousemove events per animation frame — the rAF-coalesced
-path must repaint at most once per frame; exit 8 when it doesn't) and a non-drag
-hover sweep, and `--drag-frame-cap-ms` budget-asserts the median coalesced
-repaint (exit 9). Driven by `test_render_200k_points_pan_hover_budget`.
+path must repaint at most once per frame; exit 8 when it doesn't), a non-drag
+hover sweep (which must show NOTHING — click-to-inspect ruling) and a
+still-click probe (which must reveal the readout), and `--drag-frame-cap-ms`
+budget-asserts the median coalesced repaint (exit 9). Driven by
+`test_render_200k_points_pan_hover_budget`.
 
 Measured (this machine, headless Chromium), 200k coloured points + ~160 overlay
 lines, before → after the batched/baked/rAF point path:
@@ -87,8 +95,26 @@ lines, before → after the batched/baked/rAF point path:
 |---|---:|---:|
 | map render (`__PETEK_RENDER_MS`) | 145.3 ms | 0.5 ms |
 | drag repaint | 138.9 ms/event (sync per event) | 30 frames / 90 events, median 0.1 ms |
-| wheel zoom | 138.8 ms/event | ≤ ~10 ms worst frame (immediate), sub-ms blit |
+| wheel zoom | 138.8 ms/event | affine bitmap composition only; p95 <8 ms, max <16.7 ms acceptance |
 | hover mousemove | 2.6 ms (O(n) scan) | 0.1 ms (grid bucket) |
+
+## 3b. Click-to-inspect semantics (Playwright) — `inspect_bench.mjs`
+
+Drives the owner-ruled interaction semantics on the Map tab end to end: HOVER
+shows nothing; a still CLICK on/near a point reveals the readout anchored at
+the clicked location (dataset name + x/y/z) and it persists through plain
+mouse movement; clicking empty space — or the same target again — dismisses
+it; a moved press pans and never inspects. Zero-console-error watch.
+
+```bash
+node inspect_bench.mjs <view.html> --blob=WX,WY --empty=WX,WY
+```
+
+Driven by `test_map_click_inspect_hover_shows_nothing`. The 3-D twin
+(raycaster pick + readout + orbit re-target with the camera position
+unchanged, empty-click dismiss keeping the pivot, and the flat-wireframe
+lattice level) is asserted through `scene3d_bench.mjs`
+(`window.__PETEK_SCENE3D_PICK` / `__PETEK_SCENE3D_STATUS.latticeZ`).
 
 ## 4. 2-D map binary blocks (Node) — `map_decode_bench.js`
 
@@ -118,7 +144,7 @@ vs the JSON floats it replaces: the map no longer parses megabytes of float text
 on the main thread — the base64 blocks decode off-thread into typed arrays,
 transferred zero-copy, and identical arrays decode once per session.
 
-## 5. Stride-ladder LOD + fill baking (P2b/P3)
+## 5. Stride-ladder LOD + cached composition (P2b/P3/P4/P5)
 
 **LOD rings (`view2d(lod=…)`).** A payload may carry ONE coarse display ring
 beside each full-resolution field — `fills[i].lod`, `map.grid_lines_lod`,
@@ -147,14 +173,42 @@ Browserless measure (`test_map_lod_coarse_ring_shrinks_wire`), a 198×198-node
 - `lod=False` (and any LOD-unsupported payload) is byte-identical to the pre-LOD
   shape — the full rings render exactly as before.
 
-**Fill baking (P3).** The active value-fill rasterizes once into an offscreen
+**Fill baking (P3/P4).** The active value-fill rasterizes once into an offscreen
 bitmap (viewport + margin, clamped to the fill bbox and the shared bake caps);
-pan blits it (one `drawImage`), an in-band zoom blits it scaled, and a zoom out
-of band / an LOD ring switch / over-the-caps re-bakes on the shared settle — the
+every active wheel/drag frame affine-blits the last valid bitmap (one
+`drawImage`), including outside its bake window/zoom band, and an LOD ring
+switch / invalid view re-bakes only on the shared settle — the
 same baked-blit pattern (and the same `PT_*` caps, band and margin) the 200k
 point cloud uses, so a 78k-triangle fill never re-triangulates per pan frame. The
-bake key is `(colormap, range)` + the ring object identity, so switching rings
-invalidates the bitmap.
+bake key is `(colormap, range)` + ring object identity. Four entries are kept
+with explicit LRU eviction, enough for A/B at full+LOD; returning A→B→A hits A.
+
+`test_surface_navigation_hot_frames_are_compositing_only` builds a realistic
+200k-point + 78k-triangle eight-field surface, with a stride-4 ring for each field,
+full 198² wireframe, contours, and a block-encoded 1M-cell contact mask,
+then drives 16 outward wheel events (crossing both the bitmap band and the
+scale-derived point-radius threshold) and a >1000 px out-and-back pan. The browser harness
+asserts at most one paint per rAF; p95 <8 ms and max <16.7 ms; zero point-path,
+tri-fill, canvas-backing, legend-DOM, or theme-style work while hot; exactly one
+settle rebuild; bounded cache size; and zero heavy builders on the final A of
+A→B→A. It also asserts lazy initial values, one decode for B, no re-decode for
+A, latest-request-wins rapid selection, and zero grid/contour/outline/contact
+builders while hot. Current cached-Chromium run: 40 frames, p50 0.1 ms, p95
+0.3 ms, max 0.4 ms; settle performs two overlay bakes and one contact scan.
+The test skips cleanly when Playwright/Chromium is unavailable.
+
+`test_surface_navigation_500_grid_hot_frames_are_compositing_only` repeats the
+same eight-attribute/full-wireframe/contour gesture at 500×500 (the 198 case
+alone carries the separate 1M contact mask). Current cached-Chromium result:
+40 frames, p95 0.5 ms, max 0.6 ms, zero hot builders and 80 overlay blits.
+
+`surface_attribute_build_bench.py` reproduces payload construction for 198² and
+500² meshes at 1/2/4/8 lanes. Run `PYTHONPATH=python python
+python/tests/viewer_perf/surface_attribute_build_bench.py --grid 198`. Against
+the pre-P5 local 198² baseline, eight lanes without LOD improve from 2845 ms /
+167.1 MB to 1711 ms / 49.3 MB. With default LOD the comparison is 3175 ms /
+175.8 MB to 1785 ms / 51.1 MB. Both retain one full nodes digest and one full
+triangles digest (and one shared pair for the LOD ring).
 
 **Visibility-driven rendering (P3).** This viewer renders ON DEMAND — only the
 active tab's render fn runs (`renderActive`), scene3d/volume repaint on

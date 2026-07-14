@@ -83,3 +83,133 @@ def save_view(
     # viewer.js is assembled from its ordered concat parts (see `_bundle`).
     html = html.replace('<script src="./viewer.js"></script>', inline_code(viewer_js()))
     Path(path).write_text(html)
+
+
+def save_workspace(
+    session, path: Union[str, Path], *, include: str = "visible"
+) -> None:
+    """Freeze a workspace into the existing zero-network single-file export."""
+    if include not in ("visible", "selected"):
+        raise ValueError("workspace save include= must be 'visible' or 'selected'")
+    payload = session.manifest()
+    workspace = payload["workspace"]
+    workspace["mode"] = "static"
+    resources: dict[str, dict[str, Any]] = {}
+    embedded: list[str] = []
+    state: dict[str, dict[str, Any]] = {}
+    for item in session._items.values():
+        for view, _ in item.views:
+            if include == "visible" and not item.visible_in(view):
+                continue
+            attributes = item.attributes_for(view)
+            details = item.details_for(view)
+            if item.shared_for(view):
+                detail = (
+                    "full"
+                    if any(detail_id == "full" for detail_id, _ in details)
+                    else item.active_detail(view)
+                )
+                resources.setdefault(item.id, {})[view] = session.resource(
+                    item.id, view, detail=detail
+                )
+                state.setdefault(item.id, {})[view] = {
+                    "active_attribute": item.active_attribute(view),
+                    "active_color_by": item.active_color_by(view),
+                    "mode": (item.modes_for(view) or ("2d",))[0],
+                    "detail": detail,
+                }
+                embedded.append(
+                    "::".join(
+                        part for part in (item.id, view, detail) if part is not None
+                    )
+                )
+                continue
+            if attributes:
+                if include == "selected" and len(attributes) > 1:
+                    raise ValueError(
+                        "selected static export cannot enumerate a multi-attribute "
+                        "non-shared workspace v2 resource"
+                    )
+                attribute = item.active_attribute(view)
+                color_by = item.active_color_by(view)
+                detail = (
+                    "full"
+                    if any(detail_id == "full" for detail_id, _ in details)
+                    else item.active_detail(view)
+                )
+                resources.setdefault(item.id, {})[view] = session.resource(
+                    item.id,
+                    view,
+                    detail=detail,
+                    attribute=attribute,
+                    color_by=color_by,
+                )
+                state.setdefault(item.id, {})[view] = {
+                    "active_attribute": attribute,
+                    "active_color_by": color_by,
+                    "detail": detail,
+                }
+                embedded.append(
+                    "::".join(
+                        part
+                        for part in (item.id, view, attribute, color_by, detail)
+                        if part is not None
+                    )
+                )
+                continue
+            lanes = item.lanes_for(view)
+            if lanes or details:
+                lane_ids = (
+                    (
+                        [item.active_lane(view)]
+                        if include == "visible"
+                        else [lane_id for lane_id, _ in lanes]
+                    )
+                    if lanes
+                    else [None]
+                )
+                # A static file has no progressive network phase: freeze the
+                # advertised complete tier directly and open on it offline.
+                detail_ids = (
+                    (
+                        ["full"]
+                        if any(detail_id == "full" for detail_id, _ in details)
+                        else [item.active_detail(view)]
+                    )
+                    if details
+                    else [None]
+                )
+                packed = [
+                    session.resource(item.id, view, lane, detail)
+                    for lane in lane_ids
+                    for detail in detail_ids
+                    if (not lanes or lane is not None)
+                    and (not details or detail is not None)
+                ]
+                resources.setdefault(item.id, {})[view] = packed
+                embedded.extend(
+                    "::".join(
+                        part
+                        for part in (item.id, view, lane, detail)
+                        if part is not None
+                    )
+                    for lane in lane_ids
+                    for detail in detail_ids
+                )
+            else:
+                resources.setdefault(item.id, {})[view] = session.resource(
+                    item.id, view
+                )
+                embedded.append(f"{item.id}::{view}")
+    workspace["resources"] = resources
+    workspace["snapshot"] = {
+        "include": include,
+        "embedded": embedded,
+        **({"state": state} if state else {}),
+        "message": (
+            "This static snapshot embeds initially visible resources only."
+            if include == "visible"
+            else "This static snapshot embeds every selected workspace resource and declared lane."
+        ),
+    }
+    save_view(payload, path)

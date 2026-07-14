@@ -16,6 +16,7 @@
   /* --- design tokens (dataviz reference palette; light + dark, SELECTED) --- */
   .viz-root {
     --surface-1: #fcfcfb;      --plane: #f9f9f7;
+    --row-h: 28px;
     --text-primary: #0b0b0b;   --text-secondary: #52514e;  --muted: #898781;
     --grid: #e1e0d9;           --baseline: #c3c2b7;
     --border: rgba(11,11,11,0.10);
@@ -47,6 +48,7 @@
   [hidden] { display: none !important; }
   html, body { margin: 0; height: 100%; }
   .viz-root {
+    --navigator-width: 264px; --inspector-width: 268px;
     height: 100vh; display: flex; flex-direction: column;
     font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
     background: var(--plane); color: var(--text-primary); font-size: 13px;
@@ -59,7 +61,12 @@
   }
   .brand { display: flex; align-items: center; gap: 8px; font-weight: 600; }
   .brand .mark { width: 12px; height: 12px; border-radius: 3px; background: var(--accent); }
-  #title { letter-spacing: .01em; }
+  #title { letter-spacing: .01em; min-width: 0; }
+  .workspace-shell #title.workspace-project-title { font-weight: 650; }
+  .workspace-shell #title.workspace-project-title::after {
+    content: attr(data-project-suffix); margin-left: 3px; color: var(--muted);
+    font-size: .86em; font-weight: 500;
+  }
   #tabs { display: flex; gap: 2px; margin-left: 8px; }
   .tab {
     appearance: none; border: 0; background: transparent; cursor: pointer;
@@ -71,14 +78,50 @@
   .badge { font-size: 11px; color: var(--text-secondary); padding: 3px 8px; border: 1px solid var(--border); border-radius: 20px; }
   .ghost { appearance: none; background: transparent; border: 1px solid var(--border); color: var(--text-primary); border-radius: 7px; width: 30px; height: 30px; cursor: pointer; font-size: 14px; }
   .ghost:hover { background: var(--plane); }
+  :where(button, input, select, [tabindex]):focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px;
+  }
+  .sr-only { position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+  .workspace-only { display: none; }
+  .workspace-shell #navigator.workspace-only { display: block; }
+  .workspace-shell .topright > .workspace-only { display: inline-flex; align-items: center; justify-content: center; }
+  .workspace-shell .region-heading.workspace-only { display: flex; }
+  .workspace-shell .panel-resizer.workspace-only { display: block; }
+  .workspace-shell #topbar { gap: 12px; }
+  .workspace-shell #tabs { min-width: 0; }
+  .workspace-shell .brand { min-width: 150px; }
+  .workspace-shell #title { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .icon-label { font-size: 11px; margin-left: 5px; }
   /* --- stage --- */
   #stage { flex: 1 1 auto; display: grid; grid-template-columns: 1fr 268px; min-height: 0; }
+  .workspace-shell #stage { grid-template-columns: auto minmax(0, 1fr) auto; position: relative; }
   #view { position: relative; min-width: 0; background: var(--surface-1); }
   .pane { position: absolute; inset: 0; }
-  .pane canvas, #volume-host, #scene3d-host { width: 100%; height: 100%; display: block; }
-  #volume-host, #scene3d-host { position: absolute; inset: 0; }
+  .pane canvas, #volume-host, #scene3d-host, #map-scene3d-host { width: 100%; height: 100%; display: block; }
+  #volume-host, #scene3d-host, #map-scene3d-host { position: absolute; inset: 0; }
+  .map-mode-control { position: absolute; z-index: 7; top: 12px; right: 12px; display: flex; padding: 2px; gap: 2px; border: 1px solid var(--border); border-radius: 6px; background: color-mix(in srgb, var(--surface-2) 92%, transparent); }
+  .map-mode-control button { min-width: 38px; padding: 4px 8px; border: 0; border-radius: 4px; background: transparent; color: var(--muted); font: 600 11px/1.2 system-ui; }
+  .map-mode-control button[aria-pressed="true"] { background: var(--plane); color: var(--text-primary); box-shadow: 0 0 0 1px var(--border); }
   /* --- control panel --- */
-  #panel { border-left: 1px solid var(--border); background: var(--surface-1); overflow-y: auto; }
+  #navigator, #panel { position: relative; background: var(--surface-1); min-width: 0; }
+  #navigator { width: var(--navigator-width); border-right: 1px solid var(--border); overflow: hidden; }
+  #navigator-body { height: calc(100% - 39px); padding: 10px 10px 24px; overflow: hidden; }
+  #panel { border-left: 1px solid var(--border); overflow-y: auto; }
+  .workspace-shell #panel { width: var(--inspector-width); }
+  .region-heading {
+    position: sticky; z-index: 2; top: 0; height: 39px; display: flex; align-items: center; padding: 0 12px;
+    background: var(--surface-1);
+    border-bottom: 1px solid var(--border); color: var(--text-secondary);
+    font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+  }
+  .panel-resizer {
+    position: absolute; z-index: 10; top: 0; bottom: 0; width: 7px; cursor: col-resize;
+    touch-action: none;
+  }
+  #navigator-resizer { right: -4px; }
+  #inspector-resizer { left: -4px; }
+  .panel-resizer:hover, .panel-resizer:focus-visible { background: color-mix(in srgb, var(--accent) 25%, transparent); }
   .panel-body { padding: 14px 14px 40px; }
   .group { margin-bottom: 16px; }
   .group > h2 {
@@ -96,6 +139,98 @@
   input[type="range"] { width: 130px; }
   .toggle { display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 3px 0; }
   .toggle input { accent-color: var(--accent); }
+  .inspector-layer { margin: 6px 0 10px; }
+  .inspector-layer-row { display: flex; align-items: center; gap: 7px; min-height: 24px; color: var(--text-secondary); }
+  .inspector-visible { width: 14px; height: 14px; margin: 0; accent-color: var(--accent); flex: none; }
+  .inspector-layer-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .inspector-layer-hidden .inspector-layer-label, .inspector-layer.inspector-layer-hidden .inspector-layer-label {
+    color: var(--muted); text-decoration: line-through;
+  }
+  .inspector-swatch { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+  .inspector-swatch.line { width: 17px; height: 0; border-radius: 0; border-top: 2px solid; background: none !important; }
+  .inspector-units { color: var(--muted); font-size: 10px; }
+  .inspector-colormap { position: relative; margin: 3px 0 0 21px; }
+  .inspector-ramp-button { display: block; width: 100%; height: 18px; padding: 3px; border: 1px solid var(--border); border-radius: 5px; background: var(--plane); cursor: pointer; }
+  .inspector-ramp-fill, .inspector-ramp-preview { display: block; height: 100%; border-radius: 2px; }
+  .inspector-colormap-picker { position: absolute; z-index: 30; top: 22px; left: 0; right: 0; min-width: 180px; padding: 7px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 7px; box-shadow: 0 8px 24px rgba(0,0,0,.2); }
+  .inspector-picker-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; color: var(--text-secondary); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; }
+  .inspector-reverse, .inspector-more { border: 0; background: transparent; color: var(--accent); font: inherit; cursor: pointer; padding: 3px 4px; }
+  .inspector-colormap-list { display: grid; gap: 2px; }
+  .inspector-colormap-option { display: grid; grid-template-columns: 90px 1fr; align-items: center; gap: 7px; width: 100%; padding: 4px; border: 1px solid transparent; border-radius: 4px; background: transparent; color: var(--text-primary); font: inherit; text-align: left; cursor: pointer; }
+  .inspector-colormap-option[aria-selected="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+  .inspector-ramp-preview { height: 10px; }
+  .inspector-range { margin: 2px 0 0 21px; }
+  .inspector-scale { display: flex; justify-content: space-between; width: 100%; padding: 2px 0; border: 0; background: transparent; color: var(--muted); font: 10px/1.2 inherit; font-variant-numeric: tabular-nums; cursor: text; }
+  .inspector-range-edit { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr) auto auto; gap: 3px; align-items: center; }
+  .inspector-range-edit input { min-width: 0; width: 100%; box-sizing: border-box; padding: 3px 4px; border: 1px solid var(--border); border-radius: 4px; background: var(--plane); color: var(--text-primary); font: inherit; }
+  .inspector-range-edit button { border: 1px solid var(--border); border-radius: 4px; background: var(--plane); color: var(--text-primary); cursor: pointer; padding: 2px 5px; }
+  .inspector-class-list { display: grid; gap: 3px; margin: 3px 0 0 21px; }
+  .inspector-class { display: grid; grid-template-columns: 22px 10px minmax(0,1fr); align-items: center; gap: 6px; color: var(--text-secondary); font-size: 11px; }
+  .inspector-class-index { color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
+  .inspector-more { margin-left: 20px; }
+  .workspace-search {
+    width: 100%; font: inherit; color: var(--text-primary); background: var(--plane);
+    border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; margin-bottom: 7px;
+    flex: none;
+  }
+  .workspace-project { height: 100%; display: flex; flex-direction: column; min-height: 0; }
+  .workspace-tree { flex: 1 1 auto; min-height: 0; overflow: auto; border-block: 1px solid var(--border); padding: 4px 0; }
+  .workspace-tree-virtual { position: relative; padding: 0; }
+  .workspace-tree-spacer { width: 1px; opacity: 0; }
+  .workspace-tree-window { position: absolute; inset: 0 0 auto 0; }
+  .workspace-row {
+    display: flex; align-items: center; gap: 0; white-space: nowrap;
+    height: var(--row-h); min-height: var(--row-h); padding-right: 4px;
+    position: relative;
+  }
+  .workspace-group { padding-block: 0; }
+  .workspace-row:hover, .workspace-row:focus-within { background-color: color-mix(in srgb, var(--accent) 6%, transparent); }
+  .workspace-selected { background-color: color-mix(in srgb, var(--accent) 13%, transparent); }
+  .workspace-selected::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 2px; background: var(--accent); }
+  .workspace-error { box-shadow: inset 2px 0 var(--swing-lo); }
+  .workspace-loading .workspace-label, .workspace-loading .workspace-icon { opacity: .55; }
+  .workspace-error .workspace-label { color: var(--swing-lo); }
+  .workspace-unavailable { opacity: .45; }
+  .workspace-label { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .workspace-group { font-weight: 600; }
+  .workspace-rails { display: flex; align-self: stretch; flex: none; }
+  .workspace-rail { width: 15px; align-self: stretch; position: relative; }
+  .workspace-rail::before { content: ""; position: absolute; left: 7px; inset-block: 0; border-left: 1px solid color-mix(in srgb, var(--border) 78%, transparent); }
+  .workspace-rail-gap::before { display: none; }
+  .workspace-rail-last::before { bottom: 50%; }
+  .workspace-rail-last::after { content: ""; position: absolute; left: 7px; top: 50%; width: 7px; border-top: 1px solid color-mix(in srgb, var(--border) 78%, transparent); }
+  .workspace-row:hover .workspace-rail-active::before, .workspace-row:focus-within .workspace-rail-active::before { border-left-color: var(--accent); }
+  .workspace-twist { appearance: none; border: 0; background: transparent; color: var(--muted); width: 18px; height: var(--row-h); padding: 0; cursor: pointer; display: grid; place-items: center; flex: none; }
+  .workspace-twist svg { width: 9px; height: 9px; transition: transform .12s ease; }
+  .workspace-twist[aria-expanded="true"] svg { transform: rotate(90deg); }
+  .workspace-twist-leaf { visibility: hidden; }
+  .workspace-row input[type="checkbox"] { width: 14px; height: 14px; margin: 0 7px 0 1px; flex: none; }
+  .workspace-checkbox-spacer { width: 22px; flex: none; }
+  .workspace-icon { width: 16px; height: 16px; flex: none; margin-right: 8px; color: var(--text-secondary); display: block; }
+  .workspace-icon [stroke] { stroke: currentColor; stroke-width: 1.5; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+  .workspace-icon [fill]:not([stroke]) { fill: currentColor; }
+  .workspace-icon-folder { color: var(--accent); }
+  .workspace-icon-folder .workspace-folder-body { fill: currentColor; opacity: .16; stroke: none; }
+  .workspace-identity-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; margin-left: 8px; }
+  .workspace-meta { margin-left: auto; display: flex; align-items: center; gap: 6px; padding-left: 10px; min-width: 0; }
+  .workspace-count { color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; background: var(--plane); border: 1px solid var(--border); border-radius: 20px; padding: 1px 7px; line-height: 1.5; }
+  .workspace-status { color: var(--muted); font-size: 10px; max-width: 82px; overflow: hidden; text-overflow: ellipsis; }
+  .workspace-lane-select { width: 132px; max-width: 132px; min-width: 88px; padding: 2px 4px; font-size: 10px; }
+  .workspace-paint { color: var(--c3); flex: none; display: grid; place-items: center; }
+  .workspace-paint svg { width: 13px; height: 13px; }
+  .workspace-isolate { appearance: none; border: 0; background: transparent; padding: 0; width: 20px; height: 20px; border-radius: 5px; cursor: pointer; color: var(--muted); display: grid; place-items: center; opacity: 0; transition: opacity .1s; }
+  .workspace-row:hover .workspace-isolate, .workspace-isolate:focus-visible { opacity: 1; }
+  .workspace-isolate:hover { background: var(--border); color: var(--text-primary); }
+  .workspace-isolate svg { width: 14px; height: 14px; }
+  .workspace-spinner { width: 12px; height: 12px; flex: none; color: var(--accent); animation: workspace-spin 1s linear infinite; }
+  @keyframes workspace-spin { to { transform: rotate(360deg); } }
+  .workspace-disabled { color: var(--muted); }
+  .workspace-retry { appearance: none; border: 0; background: transparent; color: var(--swing-lo); font: inherit; font-size: 10px; cursor: pointer; margin-left: auto; }
+  .workspace-region-state { color: var(--muted); font-size: 11px; line-height: 1.45; padding: 10px 4px; }
+  .workspace-tree-footer { height: 32px; flex: none; display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 10px; padding: 0 4px; }
+  .workspace-tree-footer strong { color: var(--text-primary); font-weight: 600; }
+  .workspace-clear { appearance: none; border: 0; background: transparent; color: var(--accent); font: inherit; cursor: pointer; padding: 3px 0; }
+  .workspace-clear[disabled] { color: var(--muted); cursor: default; }
   .swatch { width: 11px; height: 11px; border-radius: 3px; flex: none; }
   .swatch.line { height: 0; border-top: 2px solid; border-radius: 0; width: 14px; }
   .btn {
@@ -115,6 +250,23 @@
   .readout .val { font-weight: 600; font-size: 14px; }
   .readout .lbl { color: var(--text-secondary); }
   .readout .key { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:5px; vertical-align: middle; }
+  .map-hud {
+    position: absolute; left: 12px; bottom: 12px; z-index: 4; pointer-events: none;
+    display: grid; gap: 3px; min-width: 170px; max-width: min(520px, calc(100% - 24px));
+    color: var(--text-secondary); font-size: 10px; line-height: 1.35;
+    font-variant-numeric: tabular-nums;
+  }
+  .map-hud-line { display: flex; align-items: center; gap: 8px; min-height: 13px; }
+  .map-hud-line:empty { display: none; }
+  .map-scale-bar { display: inline-grid; gap: 2px; }
+  .map-scale-rule { height: 5px; border: solid var(--text-secondary); border-width: 0 1px 1px; }
+  .map-marker-controls { position: absolute; inset: 0; z-index: 6; pointer-events: none; }
+  .map-pick-control {
+    position: absolute; width: 24px; height: 24px; margin: -12px 0 0 -12px;
+    padding: 0; border: 0; border-radius: 50%; background: transparent;
+    color: transparent; pointer-events: auto; cursor: pointer;
+  }
+  .map-pick-control:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .legend {
     position: absolute; left: 14px; bottom: 14px; z-index: 4;
     background: color-mix(in srgb, var(--surface-1) 88%, transparent);
@@ -132,6 +284,12 @@
     position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
     text-align: center; color: var(--muted); padding: 40px; font-size: 13px; line-height: 1.6;
   }
+  .button-tooltip {
+    position: fixed; z-index: 40; max-width: min(280px, calc(100vw - 16px));
+    padding: 5px 8px; border-radius: 5px; pointer-events: none;
+    background: var(--text-primary); color: var(--surface-1); border: 1px solid var(--border);
+    box-shadow: 0 4px 14px rgba(0,0,0,.22); font-size: 11px; line-height: 1.35;
+  }
   /* a LOUD failure surface — the ledger's silent-death mode is the enemy: a
      too-large mesh, an oversize inline payload, or a decode/parse error never
      leaves a blank page; it says so here with the suggested remedy. */
@@ -144,6 +302,50 @@
   }
   .banner b { color: var(--swing-lo); }
   .banner .hint { margin-top: 4px; }
+  #statusbar {
+    height: 28px; flex: none; align-items: center; gap: 14px; padding: 0 12px;
+    background: var(--surface-1); border-top: 1px solid var(--border);
+    color: var(--text-secondary); font-size: 11px;
+  }
+  .workspace-shell #statusbar { display: flex; }
+  #statusbar .status-primary { color: var(--text-primary); font-weight: 600; }
+  #statusbar .status-detail { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #shortcut-help {
+    position: fixed; z-index: 20; inset: 0; background: rgba(0,0,0,.32);
+    align-items: center; justify-content: center; padding: 20px;
+  }
+  #shortcut-help:not([hidden]) { display: flex; }
+  .shortcut-card {
+    position: relative;
+    width: min(420px, 100%); background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: 10px; padding: 18px; box-shadow: 0 12px 40px rgba(0,0,0,.25);
+  }
+  .shortcut-card h2 { margin: 0 0 12px; font-size: 16px; }
+  #shortcut-close { position: absolute; right: 12px; top: 12px; }
+  .shortcut-grid { display: grid; grid-template-columns: auto 1fr; gap: 8px 14px; }
+  kbd { border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; padding: 1px 6px; font: inherit; text-align: center; }
+  @media (max-width: 1100px) {
+    .workspace-shell #navigator { width: min(var(--navigator-width), 230px); }
+    .workspace-shell #panel { width: min(var(--inspector-width), 240px); }
+    .workspace-shell #title { max-width: 190px; }
+    .workspace-shell .tab { padding-inline: 9px; }
+    .workspace-shell .icon-label { display: none; }
+  }
+  @media (max-width: 780px) {
+    .workspace-shell #topbar { padding-inline: 8px; }
+    .workspace-shell .brand { min-width: 0; }
+    .workspace-shell #title { max-width: 140px; }
+    .workspace-shell #stage { grid-template-columns: minmax(0, 1fr); }
+    .workspace-shell #navigator, .workspace-shell #panel {
+      position: absolute; z-index: 12; top: 0; bottom: 0; max-width: calc(100% - 48px);
+      box-shadow: 0 8px 28px rgba(0,0,0,.18);
+    }
+    .workspace-shell #navigator { left: 0; }
+    .workspace-shell #panel { right: 0; }
+    .workspace-shell #view { grid-column: 1; }
+    .workspace-shell #tabs { overflow-x: auto; }
+    .workspace-shell .tab { padding-inline: 7px; white-space: nowrap; }
+  }
 </style>
 </head>
 <body>
@@ -159,25 +361,72 @@
       <button class="tab" data-tab="charts" role="tab" aria-selected="false">Charts</button>
     </nav>
     <div class="topright">
-      <span id="mode-badge" class="badge" title="capability mode"></span>
-      <button id="theme-toggle" class="ghost" title="Toggle light / dark">☾</button>
+      <span id="mode-badge" class="badge" title="capability mode">starting</span>
+      <button id="navigator-toggle" class="ghost workspace-only" type="button" aria-label="Toggle Project navigator" aria-controls="navigator" aria-expanded="true" title="Toggle Project navigator">☰</button>
+      <button id="inspector-toggle" class="ghost workspace-only" type="button" aria-label="Toggle Inspector" aria-controls="panel" aria-expanded="true" title="Toggle Inspector">◧</button>
+      <button id="help-toggle" class="ghost workspace-only" type="button" aria-label="Keyboard shortcuts" aria-haspopup="dialog" aria-controls="shortcut-help" title="Keyboard shortcuts (?)">?</button>
+      <button id="theme-toggle" class="ghost" type="button" aria-label="Toggle light or dark theme" title="Toggle light / dark">☾</button>
     </div>
   </header>
   <main id="stage">
-    <section id="view">
-      <div class="pane" data-pane="map"><canvas id="map-canvas"></canvas></div>
-      <div class="pane" data-pane="section" hidden><canvas id="section-canvas"></canvas></div>
-      <div class="pane" data-pane="volume" hidden><div id="volume-host"></div></div>
-      <div class="pane" data-pane="scene3d" hidden><div id="scene3d-host"></div></div>
-      <div class="pane" data-pane="wells" hidden><canvas id="wells-canvas"></canvas></div>
-      <div class="pane" data-pane="charts" hidden><canvas id="charts-canvas"></canvas></div>
+    <aside id="navigator" class="workspace-only" aria-labelledby="navigator-heading" hidden>
+      <div id="navigator-heading" class="region-heading">Project</div>
+      <div id="navigator-body"></div>
+      <div id="navigator-resizer" class="panel-resizer" role="separator" tabindex="0" aria-label="Resize Project navigator" aria-orientation="vertical"></div>
+    </aside>
+    <section id="view" aria-label="Active workspace view">
+      <div class="pane" data-pane="map" role="tabpanel">
+        <canvas id="map-canvas" tabindex="0" aria-label="Map. Use arrow keys to pan, plus or minus to zoom, and zero for north up." aria-describedby="map-hud-status"></canvas>
+        <div id="map-scene3d-host" hidden></div>
+        <div id="map-mode-control" class="map-mode-control" role="group" aria-label="Map camera mode" hidden>
+          <button type="button" data-map-mode="2d" aria-pressed="true">2D</button>
+          <button type="button" data-map-mode="3d" aria-pressed="false">3D</button>
+        </div>
+        <div id="map-hud" class="map-hud" aria-hidden="true">
+          <div id="map-hud-scale" class="map-hud-line"></div>
+          <div id="map-hud-meta" class="map-hud-line"></div>
+          <div id="map-hud-cursor" class="map-hud-line"></div>
+        </div>
+        <div id="map-marker-controls" class="map-marker-controls" aria-label="Well intersection markers"></div>
+        <span id="map-hud-status" class="sr-only" role="status" aria-live="polite"></span>
+      </div>
+      <div class="pane" data-pane="section" role="tabpanel" hidden><canvas id="section-canvas"></canvas></div>
+      <div class="pane" data-pane="volume" role="tabpanel" hidden><div id="volume-host"></div></div>
+      <div class="pane" data-pane="scene3d" role="tabpanel" hidden><div id="scene3d-host"></div></div>
+      <div class="pane" data-pane="wells" role="tabpanel" hidden><canvas id="wells-canvas"></canvas></div>
+      <div class="pane" data-pane="charts" role="tabpanel" hidden><canvas id="charts-canvas"></canvas></div>
       <div id="readout" class="readout" hidden></div>
       <div id="legend" class="legend"></div>
       <div id="banner" class="banner" hidden></div>
       <div id="empty" class="empty" hidden></div>
     </section>
-    <aside id="panel"><div class="panel-body" id="panel-body"></div></aside>
+    <aside id="panel" aria-labelledby="inspector-heading">
+      <div id="inspector-heading" class="region-heading workspace-only">Inspector</div>
+      <div class="panel-body" id="panel-body"></div>
+      <div id="inspector-resizer" class="panel-resizer workspace-only" role="separator" tabindex="0" aria-label="Resize Inspector" aria-orientation="vertical"></div>
+    </aside>
   </main>
+  <footer id="statusbar" class="workspace-only" role="status" aria-live="polite">
+    <span id="status-view" class="status-primary">Starting</span>
+    <span id="status-detail" class="status-detail">Preparing workspace…</span>
+  </footer>
+  <div id="shortcut-help" role="dialog" aria-modal="true" aria-labelledby="shortcut-title" hidden>
+    <div class="shortcut-card" tabindex="-1">
+      <h2 id="shortcut-title">Keyboard shortcuts</h2>
+      <button id="shortcut-close" class="ghost" type="button" aria-label="Close keyboard shortcuts">×</button>
+      <div class="shortcut-grid">
+        <kbd>/</kbd><span>Search the Project navigator</span>
+        <kbd>1–3</kbd><span>Switch among available views</span>
+        <kbd>F</kbd><span>Fit the active view</span>
+        <kbd>Arrows</kbd><span>Pan the focused Map</span>
+        <kbd>+ / −</kbd><span>Zoom the focused Map</span>
+        <kbd>0</kbd><span>Set the focused Map north up</span>
+        <kbd>?</kbd><span>Open or close this reference</span>
+        <kbd>Esc</kbd><span>Close this reference</span>
+      </div>
+    </div>
+  </div>
+  <div id="button-tooltip" class="button-tooltip" role="tooltip" hidden></div>
   <script src="./decode.js"></script>
   <script src="./three.global.js"></script>
   <script src="./orbitcontrols.global.js"></script>

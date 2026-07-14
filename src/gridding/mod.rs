@@ -15,7 +15,8 @@
 //! Alongside the scattered → grid kernels, [`resample`] is the **grid → grid**
 //! counterpart: resample a native regular grid (values on a georeferencing
 //! [`Lattice`]) onto a foreign target lattice, bilinear or nearest, null- and
-//! extent-aware (axis-aligned; see the module docs for the null/extent policy).
+//! extent-aware across independently rotated/flipped source and target frames;
+//! see the module docs for the null/extent policy.
 
 mod band_lu;
 mod convergent;

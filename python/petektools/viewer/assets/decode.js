@@ -41,7 +41,8 @@
   // fresh, element-aligned buffer so an unaligned sidecar slice is safe and the
   // result is detached from the source ArrayBuffer (transferable-friendly).
   function blockToTyped(bytes, dtype) {
-    var ctor = dtype === "f32" ? Float32Array : dtype === "u32" ? Uint32Array : Uint16Array;
+    var ctor = dtype === "f32" ? Float32Array : dtype === "u32" ? Uint32Array :
+      dtype === "u8" ? Uint8Array : Uint16Array;
     var buf = new ArrayBuffer(bytes.byteLength);
     new Uint8Array(buf).set(bytes);
     return new ctor(buf);
@@ -76,6 +77,106 @@
       if (cache[d] == null) cache[d] = decodeBlockDesc(table[d]);
     }
     return cache;
+  }
+
+  // Compact affine regular surface -> ready Three.js position/index/colour
+  // buffers. Geometry construction is deliberately DOM/Three-free: legacy
+  // scene resources run the complete pass in the shared worker, while an
+  // already-decoded workspace surface advances the same state in bounded
+  // main-thread chunks without copying or transferring its source arrays.
+  function regularSurfaceArray(value) {
+    if (!value) return null;
+    if (value.a && typeof value.a.length === "number") return value.a;
+    if (typeof ArrayBuffer !== "undefined" && ArrayBuffer.isView(value)) return value;
+    if (Array.isArray(value)) return value;
+    return decodeBlockDesc(value);
+  }
+  function regularCategoryColor(categories, value) {
+    var record = categories && categories[String(value)], css = record && record.color;
+    var hex = typeof css === "string" && /^#([0-9a-f]{6})$/i.exec(css);
+    if (hex) return [parseInt(hex[1].slice(0, 2), 16), parseInt(hex[1].slice(2, 4), 16), parseInt(hex[1].slice(4, 6), 16)];
+    var rgb = typeof css === "string" && /rgba?\(\s*([0-9]+)[, ]+\s*([0-9]+)[, ]+\s*([0-9]+)/i.exec(css);
+    return rgb ? [Number(rgb[1]), Number(rgb[2]), Number(rgb[3])] : [127.5, 127.5, 127.5];
+  }
+  function startRegularSurfaceColors(surface, range, stops, categories) {
+    var values = surface.values ? regularSurfaceArray(surface.values) : null;
+    if (!values) return { done: true, result: null };
+    var col = new Float32Array(values.length * 3), lo = range ? range[0] : 0;
+    var span = range ? ((range[1] - range[0]) || 1) : 1;
+    return { values: values, col: col, lo: lo, span: span, stops: stops,
+      categories: categories, q: 0, done: false, result: null };
+  }
+  function stepRegularSurfaceColors(state, limit) {
+    if (state.done) return true;
+    var end = Math.min(state.values.length, state.q + Math.max(1, limit | 0));
+    for (; state.q < end; state.q++) {
+      var v = state.values[state.q], c = !isFinite(v) ? [127.5, 127.5, 127.5]
+        : state.categories ? regularCategoryColor(state.categories, v)
+          : ramp(state.stops, (v - state.lo) / state.span);
+      state.col[state.q * 3] = c[0] / 255;
+      state.col[state.q * 3 + 1] = c[1] / 255;
+      state.col[state.q * 3 + 2] = c[2] / 255;
+    }
+    if (state.q >= state.values.length) { state.done = true; state.result = state.col; }
+    return state.done;
+  }
+  function buildRegularSurfaceColors(surface, range, stops, categories) {
+    var state = startRegularSurfaceColors(surface, range, stops, categories);
+    while (!stepRegularSurfaceColors(state, 0x3fffffff)) {}
+    return state.result;
+  }
+  function startRegularSurface(surface, center, range, stops, categories) {
+    var dims = surface.dimensions, nc = dims[0] | 0, nr = dims[1] | 0;
+    var elev = regularSurfaceArray(surface.elevations);
+    var mask = regularSurfaceArray(surface.mask);
+    var n = nc * nr, pos = new Float32Array(n * 3);
+    var colors = surface.values ? startRegularSurfaceColors(surface, range, stops, categories) : null;
+    var ox = surface.origin[0], oy = surface.origin[1];
+    var ix = surface.step_i[0], iy = surface.step_i[1];
+    var jx = surface.step_j[0], jy = surface.step_j[1];
+    var cx = center[0], cy = center[1], cz = center[2];
+    var maxTris = Math.max(0, nc - 1) * Math.max(0, nr - 1) * 2;
+    return { surface: surface, nc: nc, nr: nr, elev: elev, mask: mask, pos: pos,
+      colors: colors, ox: ox, oy: oy, ix: ix, iy: iy, jx: jx, jy: jy,
+      cx: cx, cy: cy, cz: cz, index: new Uint32Array(maxTris * 3), d: 0,
+      q: 0, cell: 0, phase: "positions", done: false, result: null };
+  }
+  function stepRegularSurface(state, limit) {
+    if (state.done) return true;
+    var budget = Math.max(1, limit | 0), used = 0;
+    if (state.phase === "positions") {
+      var n = state.nc * state.nr, end = Math.min(n, state.q + budget);
+      for (; state.q < end; state.q++, used++) {
+        var i = state.q % state.nc, j = (state.q / state.nc) | 0;
+        var rawZ = state.elev[state.q], z = state.surface.positive === "down" ? -rawZ : rawZ;
+        state.pos[state.q * 3] = state.ox + i * state.ix + j * state.jx - state.cx;
+        state.pos[state.q * 3 + 1] = z - state.cz;
+        state.pos[state.q * 3 + 2] = state.oy + i * state.iy + j * state.jy - state.cy;
+      }
+      if (state.colors) stepRegularSurfaceColors(state.colors, used || budget);
+      if (state.q >= n) state.phase = "topology";
+    }
+    var cells = Math.max(0, state.nc - 1) * Math.max(0, state.nr - 1);
+    while (state.phase === "topology" && state.cell < cells && used < budget) {
+      var ii = state.cell % Math.max(1, state.nc - 1), jj = (state.cell / Math.max(1, state.nc - 1)) | 0;
+      state.cell++; used++;
+      var a = jj * state.nc + ii, b = a + 1, c2 = a + state.nc, d2 = c2 + 1;
+      if ((state.mask && (!state.mask[a] || !state.mask[b] || !state.mask[c2] || !state.mask[d2])) ||
+          !isFinite(state.elev[a]) || !isFinite(state.elev[b]) || !isFinite(state.elev[c2]) || !isFinite(state.elev[d2])) continue;
+      state.index[state.d++] = a; state.index[state.d++] = b; state.index[state.d++] = c2;
+      state.index[state.d++] = b; state.index[state.d++] = d2; state.index[state.d++] = c2;
+    }
+    if (state.phase === "topology" && state.cell >= cells && (!state.colors || state.colors.done)) {
+      if (state.d !== state.index.length) state.index = state.index.slice(0, state.d);
+      state.done = true; state.result = { pos: state.pos, index: state.index,
+        col: state.colors ? state.colors.result : null, triangleCount: state.d / 3 };
+    }
+    return state.done;
+  }
+  function buildRegularSurface(surface, center, range, stops, categories) {
+    var state = startRegularSurface(surface, center, range, stops, categories);
+    while (!stepRegularSurface(state, 0x3fffffff)) {}
+    return state.result;
   }
 
   // Envelope + optional sidecar bytes -> the five decoded typed arrays + counts.
@@ -192,7 +293,8 @@
       _keep = { triCell: triCell, cellValues: d.cellValues }; // retained for recolour
       var tc = triCell.slice(), cv = d.cellValues.slice(), zi = d.zoneIds.slice();
       postMessage({
-        cmd: "decoded", pos: pos.buffer, col: col.buffer,
+        cmd: "decoded", requestId: m.requestId, paintKey: m.paintKey,
+        pos: pos.buffer, col: col.buffer,
         triCell: tc.buffer, cellValues: cv.buffer, zoneIds: zi.buffer,
         center: center, depthRange: depthRange(d.positions),
         vertexCount: d.vertexCount, triangleCount: triCell.length,
@@ -201,7 +303,7 @@
       }, [pos.buffer, col.buffer, tc.buffer, cv.buffer, zi.buffer]);
     } else if (m.cmd === "recolor") {
       var c2 = bakeColors(_keep.triCell, _keep.cellValues, m.vmin, m.vmax, m.stops);
-      postMessage({ cmd: "recolored", col: c2.buffer }, [c2.buffer]);
+      postMessage({ cmd: "recolored", requestId: m.requestId, paintKey: m.paintKey, col: c2.buffer }, [c2.buffer]);
     } else if (m.cmd === "decode2d") {
       // Decode a 2-D map's block table off the main thread; post the decoded
       // buffers back as transferables (zero-copy) keyed by digest, plus the
@@ -213,7 +315,18 @@
         if (!Object.prototype.hasOwnProperty.call(dec, dg)) continue;
         bufs[dg] = dec[dg].buffer; dtypes[dg] = m.table[dg].dtype; transfer.push(dec[dg].buffer);
       }
-      postMessage({ cmd: "decoded2d", blocks: bufs, dtypes: dtypes, decodeMs: Date.now() - t2 }, transfer);
+      postMessage({ cmd: "decoded2d", requestId: m.requestId, blocks: bufs, dtypes: dtypes, decodeMs: Date.now() - t2 }, transfer);
+    } else if (m.cmd === "buildRegularSurface") {
+      var t3 = Date.now();
+      var built = buildRegularSurface(m.surface, m.center, m.range, m.stops, m.categories);
+      var transfer3 = [built.pos.buffer, built.index.buffer];
+      if (built.col) transfer3.push(built.col.buffer);
+      postMessage({
+        cmd: "regularSurfaceBuilt", requestId: m.requestId,
+        pos: built.pos.buffer, index: built.index.buffer,
+        col: built.col ? built.col.buffer : null,
+        triangleCount: built.triangleCount, buildMs: Date.now() - t3,
+      }, transfer3);
     }
   }
 
@@ -228,6 +341,14 @@
       "var getBlockBytes=" + getBlockBytes.toString() + ";",
       "var decodeBlockDesc=" + decodeBlockDesc.toString() + ";",
       "var decodeBlockTable=" + decodeBlockTable.toString() + ";",
+      "var regularSurfaceArray=" + regularSurfaceArray.toString() + ";",
+      "var regularCategoryColor=" + regularCategoryColor.toString() + ";",
+      "var startRegularSurfaceColors=" + startRegularSurfaceColors.toString() + ";",
+      "var stepRegularSurfaceColors=" + stepRegularSurfaceColors.toString() + ";",
+      "var buildRegularSurfaceColors=" + buildRegularSurfaceColors.toString() + ";",
+      "var startRegularSurface=" + startRegularSurface.toString() + ";",
+      "var stepRegularSurface=" + stepRegularSurface.toString() + ";",
+      "var buildRegularSurface=" + buildRegularSurface.toString() + ";",
       "var decodeBlocks=" + decodeBlocks.toString() + ";",
       "var computeCenter=" + computeCenter.toString() + ";",
       "var depthRange=" + depthRange.toString() + ";",
@@ -261,6 +382,12 @@
   return {
     b64ToBytes: b64ToBytes, blockToTyped: blockToTyped, getBlockBytes: getBlockBytes,
     decodeBlockDesc: decodeBlockDesc, decodeBlockTable: decodeBlockTable,
+    regularSurfaceArray: regularSurfaceArray, regularCategoryColor: regularCategoryColor,
+    startRegularSurfaceColors: startRegularSurfaceColors,
+    stepRegularSurfaceColors: stepRegularSurfaceColors,
+    buildRegularSurfaceColors: buildRegularSurfaceColors,
+    startRegularSurface: startRegularSurface, stepRegularSurface: stepRegularSurface,
+    buildRegularSurface: buildRegularSurface,
     decodeBlocks: decodeBlocks, computeCenter: computeCenter, depthRange: depthRange,
     expandRenderPositions: expandRenderPositions, decimateTriCell: decimateTriCell,
     ramp: ramp, bakeColors: bakeColors,

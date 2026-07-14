@@ -119,6 +119,7 @@ def build_well_log_bundle(
     step_m: float = 0.5,
     seed: int = 7,
     flatten_default: str = "TopShale",
+    template: Any = None,
 ) -> Dict[str, Any]:
     """A believable multi-well ``WellLogBundle`` fixture (kind ``wells_logs``, v4).
 
@@ -207,9 +208,19 @@ def build_well_log_bundle(
             "ties": ties,
         })
 
-    return {
+    bundle = {
         "kind": "wells_logs",
         "schema_version": 4,
         "flatten_default": flatten_default,
         "wells": wells,
     }
+    if template is None:
+        return bundle
+    from ._correlation import CorrelationTemplate
+
+    spec = (
+        template
+        if isinstance(template, CorrelationTemplate)
+        else CorrelationTemplate.from_dict(template)
+    )
+    return spec.apply(bundle)

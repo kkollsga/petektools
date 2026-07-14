@@ -4,7 +4,7 @@
   // swatch = value fill, squiggle = contours, marker-with-leader = wells.
   // Drawn from the live tokens/colormap, so a theme flip or colormap change
   // restyles it on the next legend rebuild.
-  function typeIcon(kind, color) {
+  function typeIcon(kind, color, cmap, reversed) {
     var c = document.createElement("canvas");
     c.width = 18; c.height = 12; c.className = "type-icon";
     var x = c.getContext("2d");
@@ -28,9 +28,9 @@
       x.strokeStyle = token("--surface-1"); x.lineWidth = 1.2; x.stroke();
       x.strokeStyle = color || token("--text-secondary"); x.lineWidth = 1;
       x.beginPath(); x.moveTo(11, 6); x.lineTo(16, 6); x.stroke();
-    } else { // "fill": a filled swatch carrying the active colormap ramp
+    } else { // "fill": a filled swatch carrying the layer's colormap ramp
       var g = x.createLinearGradient(0, 0, 18, 0);
-      var stops = COLORMAPS[S.colormap] || COLORMAPS.viridis;
+      var stops = colormapStops(cmap || S.colormap, reversed);
       stops.forEach(function (s, i) { g.addColorStop(i / (stops.length - 1), "rgb(" + s[0] + "," + s[1] + "," + s[2] + ")"); });
       x.fillStyle = g;
       x.fillRect(1, 1, 16, 10);
@@ -45,13 +45,14 @@
   }
   // One value-coloured legend block: [icon] name header + colormap ramp +
   // min/max scale (the range already reflects any user clamp — out-of-range
-  // values render at the ramp ends).
-  function rampBlock(lg, icon, label, lo, hi) {
+  // values render at the ramp ends). `cmap` pins the layer's own ramp
+  // (per-object colour); default: the panel colormap.
+  function rampBlock(lg, icon, label, lo, hi, cmap, reversed) {
     var h = el("h3");
     if (icon) h.appendChild(icon);
     h.appendChild(el("span", null, label));
     lg.appendChild(h);
-    var ramp = el("div", "ramp"); ramp.style.background = rampGradient(S.colormap);
+    var ramp = el("div", "ramp"); ramp.style.background = rampGradient(cmap || S.colormap, reversed);
     lg.appendChild(ramp);
     var sc = el("div", "scale");
     sc.appendChild(el("span", null, fmt(lo)));
@@ -69,71 +70,17 @@
     if ((m.contours || []).length) out.push({ kind: "contours", name: null });
     return out;
   }
-  function drawFieldLegend(layer, fill) {
-    var lg = document.getElementById("legend"); lg.innerHTML = "";
-    if (layer) {
-      rampBlock(lg, App.tab === "map" ? typeIcon("fill") : null,
-        (layer.display || layer.name) + (layer.units ? "  (" + layer.units + ")" : ""),
-        layer.range.min, layer.range.max);
-    }
-    // active value-coloured fill: type icon + display name + ramp + min/max.
-    // Its `range` is the seam's two-float [min, max] (not the {min, max}
-    // object) — the user's fill= clamp range when one was specified.
-    if (fill) {
-      var fr = fill.range || [];
-      rampBlock(lg, typeIcon("fill"), disp(fill, fill.name), fr[0], fr[1]);
-    }
-    // identity keys present in this view
-    var keys = el("div", "keys");
-    if (App.tab === "map") {
-      var m = App.payload.map;
-      // one entry per visible layer: type icon + display name (fallback: the
-      // layer kind); value-coloured points get the ramp + their clamped range.
-      var pc = m.point_color;
-      var pointsRampDrawn = false;
-      mapLegendLayers(m).forEach(function (ly) {
-        if (ly.kind === "points") {
-          if (!S.showPoints || !(m.points || []).length) return;
-          var plabel = ly.name ? pretty(ly.name) : "points";
-          if (pc && pc.range && !pointsRampDrawn) {
-            pointsRampDrawn = true;
-            rampBlock(lg, typeIcon("points", rampCss(S.colormap, 0.75)),
-              plabel + " · " + (pc.by || "z"), pc.range[0], pc.range[1]);
-          } else {
-            keys.appendChild(iconKeyRow("points", plabel,
-              pc && pc.range ? rampCss(S.colormap, 0.75) : token("--accent")));
-          }
-        } else if (ly.kind === "lines") {
-          if (!S.showGridLines || !(m.grid_lines || []).length) return;
-          keys.appendChild(iconKeyRow("lines", ly.name ? pretty(ly.name) : "grid lines", token("--muted")));
-        } else if (ly.kind === "contours") {
-          if (!S.showContours || !(m.contours || []).length) return;
-          keys.appendChild(iconKeyRow("contours", ly.name ? pretty(ly.name) : "contours", token("--text-secondary")));
-        }
-      });
-      (m.contacts || []).forEach(function (c, i) { if (S.contactVis[i]) keys.appendChild(keyRow(disp(c, c.kind), idColor("ct:" + c.kind), false)); });
-      (App.payload.wells || []).forEach(function (w, i) { if (S.wellVis[i]) keys.appendChild(iconKeyRow("wells", disp(w, w.id), idColor("well:" + w.id))); });
-    } else if (App.tab === "section") {
-      var b = S.sections[S.sectionIdx];
-      if (b) {
-        // zone-colour mode: lead with the ZONE CHIPS (the categorical fill legend)
-        // — a declared hex, else the fixed identity slot for the zone name (the
-        // same colour the volume/wells zone legend shows for that zone).
-        if (S.sectionColorBy === "zone" && b.zones && b.zones.length) {
-          lg.appendChild(el("h3", null, "zones"));
-          b.zones.forEach(function (z) { keys.appendChild(keyRow(pretty(z.name), z.color || idColor("zone:" + z.name), false)); });
-        }
-        keys.appendChild(keyRow(pretty(b.top_name), idColor("hz:" + b.top_name), true)); keys.appendChild(keyRow(pretty(b.base_name), idColor("hz:" + b.base_name), true)); (b.contacts || []).forEach(function (c) { keys.appendChild(keyRow(pretty(c.kind), idColor("ct:" + c.kind), true)); });
-      }
-    }
-    if (keys.childNodes.length) lg.appendChild(keys);
-    lg.style.display = lg.childNodes.length ? "block" : "none";
+  function clearInspectorOwnedPlotLegend() {
+    var lg = document.getElementById("legend");
+    if (!lg) return;
+    if (lg.childNodes.length || lg.style.display !== "none") perfCount("legendMutations");
+    lg.innerHTML = ""; lg.style.display = "none";
   }
   function drawVolumeLegend() {
     var lg = document.getElementById("legend"); lg.innerHTML = "";
     var v = App.payload.volume;
     lg.appendChild(el("h3", null, v.property + "  (fraction)"));
-    var ramp = el("div", "ramp"); ramp.style.background = rampGradient(S.colormap); lg.appendChild(ramp);
+    var ramp = el("div", "ramp"); ramp.style.background = rampGradient(S.colormap, S.colormapReversed); lg.appendChild(ramp);
     var sc = el("div", "scale"); sc.appendChild(el("span", null, fmt(v.value_range.min))); sc.appendChild(el("span", null, fmt(v.value_range.max))); lg.appendChild(sc);
     var keys = el("div", "keys");
     (v.zone_names || []).forEach(function (z, i) { if (S.zoneVis[i]) keys.appendChild(keyRow(z, idColor("zone:" + z), false)); });
@@ -156,7 +103,7 @@
       var cb = ch.color_by || {};
       if (cb.kind === "continuous") {
         lg.appendChild(el("h3", null, (cb.name || "colour") + (cb.units ? "  (" + cb.units + ")" : "")));
-        var ramp = el("div", "ramp"); ramp.style.background = rampGradient(S.colormap); lg.appendChild(ramp);
+        var ramp = el("div", "ramp"); ramp.style.background = rampGradient(S.colormap, S.colormapReversed); lg.appendChild(ramp);
         var sc = el("div", "scale"); var cr = cb.range || { min: 0, max: 1 };
         sc.appendChild(el("span", null, fmt(cr.min))); sc.appendChild(el("span", null, fmt(cr.max))); lg.appendChild(sc);
       } else if (cb.name) {
@@ -217,6 +164,8 @@
       .then(function (r) { if (!r.ok) return r.text().then(function (t) { throw new Error(t); }); return r.json(); })
       .then(function (bundle) {
         S.sections.push(bundle); S.sectionLabels.push(label + " " + S.sections.length);
+        var sourceRange = bundle.value_range || (App.payload.volume && App.payload.volume.value_range) || { min: 0, max: 1 };
+        S.sectionRanges.push({ min: Number(sourceRange.min), max: Number(sourceRange.max) });
         S.sectionIdx = S.sections.length - 1;
         selectTab("section");
       })
@@ -229,4 +178,3 @@
     if (App.mode === "server") requestSection({ well: well.id }, well.id);
     else showEmpty("No pre-computed section for well " + well.id + " in this file export.");
   }
-

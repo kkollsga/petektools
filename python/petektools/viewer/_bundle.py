@@ -2,7 +2,7 @@
 
 The viewer SPA is one shared-closure IIFE, maintained as ordered fragments under
 ``assets/viewer/`` (``NN-name.js``, one feature area per file: app core, chrome,
-map, section, volume, wells, charts, overlays, panel+boot). They are **not**
+workspace shell, map, section, volume, wells, charts, overlays, panel+boot). They are **not**
 standalone scripts or ES modules — the zero-CDN / zero-external-fetch constraint
 rules out runtime imports, so the packaging layer concatenates them (in numeric
 filename order, byte-for-byte) into the single ``viewer.js`` the page loads:

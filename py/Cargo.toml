@@ -16,7 +16,7 @@ name = "_petektools"
 crate-type = ["cdylib"]
 
 [dependencies]
-petektools = { path = "..", version = "0.2.8" }
+petektools = { path = "..", version = "0.2.15" }
 # Only to reshape the kriging/SGS `Array2<f64>` fields at the boundary — same
 # version the library uses (no numpy on the Python side).
 ndarray = "0.17"

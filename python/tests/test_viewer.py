@@ -11,6 +11,7 @@ and the standalone demo (the second-consumer proof of the owner ruling).
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 import sys
@@ -22,6 +23,7 @@ from pathlib import Path
 
 import pytest
 
+import petektools
 from petektools import viewer
 from petektools.viewer import demo
 
@@ -46,8 +48,8 @@ VOLUME_KEYS = {
     "value_range", "encoding", "blocks",
 }
 VOLUME_BLOCK_KEYS = {"positions", "indices", "tri_cell", "cell_values", "zone_ids"}
-_DTYPE_FMT = {"f32": "f", "u32": "I", "u16": "H"}
-_DTYPE_SIZE = {"f32": 4, "u32": 4, "u16": 2}
+_DTYPE_FMT = {"f32": "f", "u32": "I", "u16": "H", "u8": "B"}
+_DTYPE_SIZE = {"f32": 4, "u32": 4, "u16": 2, "u8": 1}
 
 
 def _decode_block(block: dict) -> tuple:
@@ -263,6 +265,64 @@ class _Mesh:
         return Edge()
 
 
+class _MeshShell:
+    """Geometry-only level-3 mesh duck: XY comes from ``nodes()``, not points."""
+
+    kind = "mesh_shell"
+    name = "Top Dome geometry"
+
+    def nodes(self):
+        return [
+            [0.0, 0.0],
+            [10.0, 0.0],
+            [0.0, 10.0],
+            [10.0, 10.0],
+        ]
+
+    def triangles(self):
+        return [(0, 1, 2), (1, 3, 2)]
+
+    def wireframe_edges(self, stride=None):
+        return [(0, 1), (1, 3), (3, 2), (2, 0)]
+
+    @property
+    def edge(self):
+        return _Mesh().edge
+
+
+def test_view2d_role_dispatch_exact_points_plus_mesh_shell_shape():
+    class IrapPoints:
+        kind = "point_set"
+        name = "Top Dome"
+
+        def xyz(self):
+            return [
+                [0.0, 0.0, -2600.0],
+                [10.0, 0.0, -2610.0],
+                [0.0, 10.0, -2620.0],
+                [10.0, 10.0, -2630.0],
+            ]
+
+    p = viewer.view2d_payload(
+        [_MeshShell(), IrapPoints()], lod=False, encoding="json"
+    )
+    m = p["map"]
+    assert m["fills"] == []
+    assert m["points"] == IrapPoints().xyz()  # complete source cloud, in order
+    assert sum(len(line) - 1 for line in m["grid_lines"]) == 4
+    assert m["outline"] == [_Mesh().edge.rings()[0]]
+    assert m["layers"] == [
+        {"kind": "lines", "name": "Top Dome geometry", "standalone": True},
+        {
+            "kind": "points",
+            "name": "Top Dome",
+            "start": 0,
+            "n": 4,
+            "range": [-2630.0, -2600.0],
+        },
+    ]
+
+
 def test_view2d_payload_renders_trimesh_edges_and_edge_outline():
     p = viewer.view2d_payload([_Mesh()], title="Top Dome trimesh")
 
@@ -346,7 +406,7 @@ def test_view2d_payload_strides_trimesh_edges_over_budget():
     assert p["summary"]["mesh_edge_stride"] == 3
 
 
-def test_view2d_payload_trimesh_without_edge_falls_back_to_frame_rect():
+def test_view2d_payload_trimesh_without_edge_uses_content_frame_without_fake_outline():
     class BareMesh:
         def points(self):
             return [(0.0, 0.0, 1.0), (10.0, 0.0, 2.0), (0.0, 10.0, 3.0)]
@@ -358,7 +418,40 @@ def test_view2d_payload_trimesh_without_edge_falls_back_to_frame_rect():
 
     assert p["summary"]["triangles"] == 1
     assert sum(len(line) - 1 for line in p["map"]["grid_lines"]) == 3
-    assert p["map"]["outline"]  # frame-rect fallback still supplies an outline
+    assert p["map"]["frame"] == {
+        "origin_x": 0.0,
+        "origin_y": 0.0,
+        "spacing_x": 10.0,
+        "spacing_y": 10.0,
+        "ncol": 2,
+        "nrow": 2,
+    }
+    assert p["map"]["outline"] == []
+
+
+def test_view2d_frame_includes_real_fill_and_well_without_fake_outline():
+    surface = _AttributedSurfaceDuck()
+    well = {
+        "id": "far",
+        "x": 10_000.0,
+        "y": 12_000.0,
+        "trajectory": [[10_000.0, 12_000.0, 0.0], [16_000.0, 18_000.0, 100.0]],
+    }
+
+    p = viewer.view2d_payload(surface, wells=[well], lod=False, encoding="json")
+
+    # The frame is metadata for raster/index conversion, not a manufactured
+    # boundary. It encloses all actual drawable content, including the fill and
+    # the distant well, while the outline remains absent unless supplied.
+    assert p["map"]["frame"] == {
+        "origin_x": 0.0,
+        "origin_y": 0.0,
+        "spacing_x": 16_000.0,
+        "spacing_y": 18_000.0,
+        "ncol": 2,
+        "nrow": 2,
+    }
+    assert p["map"]["outline"] == []
 
 
 # --- the color=/fill= spec grammar (registry match) ---------------------------
@@ -385,7 +478,7 @@ def test_spec_grammar_registry_match():
         "enabled": True, "attr": "net_pay", "cmap": "viridis", "range": [-1.0, 1.0],
     }
     # every registry name resolves
-    for cmap in ("viridis", "magma", "grays", "inferno"):
+    for cmap in ("viridis", "inferno", "magma", "plasma", "cividis", "turbo", "coolwarm", "greys", "grays"):
         assert _parse_spec(cmap, "color")["cmap"] == cmap
     # an attr-only string that HAPPENS to contain no registry token keeps its
     # underscores whole
@@ -451,10 +544,102 @@ def test_view2d_layers_record_duck_typed_names():
             return (i * 10.0, j * 10.0)
 
     p = viewer.view2d_payload([NamedPoints(), Geom()], color=True)
+    # points layers additionally carry their slice + per-layer colour fields
+    # (the per-object color ruling); names/kinds are unchanged
     assert p["map"]["layers"] == [
-        {"kind": "points", "name": "Top Dome"},
-        {"kind": "lines", "name": None},
+        {"kind": "points", "name": "Top Dome", "start": 0, "n": 2,
+         "range": [-20.0, -10.0]},
+        {"kind": "lines", "name": None, "standalone": True},
     ]
+
+
+# --- the dict item form (per-object color/fill/name — owner ruling) -----------
+class _PtsA:
+    name = "Top Dome"
+
+    def xyz(self):
+        return [[0.0, 0.0, -10.0], [10.0, 0.0, -30.0]]
+
+
+class _PtsB:
+    name = "Base Dome"
+
+    def xyz(self):
+        return [[0.0, 5.0, -100.0], [10.0, 5.0, -300.0]]
+
+
+def test_view2d_dict_item_color_precedence_and_per_layer_fields():
+    p = viewer.view2d_payload(
+        [{"object": _PtsA(), "color": "magma_-40_-5"}, _PtsB()],
+        color="inferno",
+    )
+    layers = p["map"]["layers"]
+    # per-object spec WINS for its layer: pinned colormap + explicit clamp
+    assert layers[0]["name"] == "Top Dome"
+    assert layers[0]["colormap"] == "magma"
+    assert layers[0]["range"] == [-40.0, -5.0]
+    assert layers[0]["start"] == 0 and layers[0]["n"] == 2
+    # the bare item keeps the call-level default (no per-layer pin; its own
+    # data range rides the layer so the legend shows per-entry ramps)
+    assert "colormap" not in layers[1]
+    assert layers[1]["range"] == [-300.0, -100.0]
+    assert layers[1]["start"] == 2 and layers[1]["n"] == 2
+    # the global fallback fields stay for older payload consumers
+    assert p["map"]["colormap"] == "inferno"
+    assert p["map"]["point_color"]["range"] == [-300.0, -10.0]
+
+
+def test_view2d_dict_item_color_false_and_call_level_off():
+    # per-object color=False → that layer renders monochrome
+    p = viewer.view2d_payload([{"object": _PtsA(), "color": False}, _PtsB()])
+    layers = p["map"]["layers"]
+    assert layers[0]["colored"] is False and "range" not in layers[0]
+    assert layers[1]["range"] == [-300.0, -100.0]
+    # call-level color=False + per-object opt-in: only the dict layer colours;
+    # the global fallback reads the coloured layer's data
+    p2 = viewer.view2d_payload(
+        [{"object": _PtsA(), "color": True}, _PtsB()], color=False
+    )
+    layers2 = p2["map"]["layers"]
+    assert layers2[0]["range"] == [-30.0, -10.0]
+    assert layers2[1]["colored"] is False
+    assert p2["map"]["point_color"] == {"by": "z", "range": [-30.0, -10.0]}
+
+
+def test_view2d_dict_item_name_override():
+    p = viewer.view2d_payload([{"object": _PtsA(), "name": "Renamed"}])
+    assert p["map"]["layers"][0]["name"] == "Renamed"
+
+
+def test_view2d_dict_item_fill_precedence():
+    # per-object fill on a bare-fill call (call-level fill=False default)
+    mesh = _ValueMesh()
+    p = viewer.view2d_payload([{"object": mesh, "fill": "magma_0_2"}])
+    fill = p["map"]["fills"][0]
+    assert fill["range"] == [0.0, 2.0]
+    assert fill["colormap"] == "magma"  # per-fill pin
+    # the global colormap falls back to the first per-object pin
+    assert p["map"]["colormap"] == "magma"
+    # per-object fill=False beats a call-level fill=True
+    mesh2 = _ValueMesh()
+    p2 = viewer.view2d_payload([{"object": mesh2, "fill": False}], fill=True)
+    assert p2["map"]["fills"] == []
+    assert "value_attr" not in mesh2.seen
+    # a call-level fill spec does NOT pin per-fill colormap (selector-governed)
+    mesh3 = _ValueMesh()
+    p3 = viewer.view2d_payload([mesh3], fill="magma_0_2")
+    assert "colormap" not in p3["map"]["fills"][0]
+    assert p3["map"]["colormap"] == "magma"
+
+
+def test_view2d_dict_item_validation():
+    with pytest.raises(TypeError, match="'object' key"):
+        viewer.view2d_payload([{"color": True}])
+    with pytest.raises(ValueError, match="unknown dict-item key"):
+        viewer.view2d_payload([{"object": _PtsA(), "colour": True}])
+    # a single top-level dict item works (not iterated as keys)
+    p = viewer.view2d_payload({"object": _PtsA(), "name": "Solo"})
+    assert p["map"]["layers"][0]["name"] == "Solo"
 
 
 # --- value-coloured fills + contour lines (view2d fill= / contours=) ----------
@@ -519,7 +704,8 @@ def test_view2d_color_true_no_longer_fills_a_value_layer_item():
 
 
 def test_view2d_fill_false_ignores_value_layer():
-    p = viewer.view2d_payload([_ValueMesh()])  # fill defaults to False
+    # No attr_names() handshake: omitted fill keeps the legacy no-fill path.
+    p = viewer.view2d_payload([_ValueMesh()])
     assert p["map"]["fills"] == []
     assert "fills" not in p["summary"]
 
@@ -774,21 +960,422 @@ class _SurfaceDuck:
         return [(-2610.0, [[[0.0, 0.0], [10.0, 10.0]]])]
 
 
+class _AttributedSurfaceDuck(_SurfaceDuck):
+    """The generic omitted-fill handshake: ordered attrs + value layers."""
+
+    def __init__(self, name="Top Dome", attrs=("thickness", "poro")):
+        super().__init__()
+        self.name = name
+        self._attrs = attrs
+        self.value_calls = []
+        self.attr_calls = 0
+
+    def attr_names(self):
+        self.attr_calls += 1
+        return self._attrs
+
+    def value_layer(self, attr=None, stride=None):
+        self.value_calls.append((attr, stride))
+        offset = {None: 0.0, "thickness": 100.0, "poro": 200.0}.get(attr, 300.0)
+        return {
+            "name": attr or "values",
+            "nodes": [[0.0, 0.0], [10.0, 0.0], [0.0, 10.0], [10.0, 10.0]],
+            "triangles": [[0, 1, 2], [1, 3, 2]],
+            "values": [offset + 1.0, offset + 2.0, offset + 3.0, offset + 4.0],
+            "range": [offset + 1.0, offset + 4.0],
+        }
+
+
+class _StructuredAttributedSurfaceDuck(_AttributedSurfaceDuck):
+    kind = "structured_mesh"
+    ncol = 2
+    nrow = 2
+
+    def node_xy(self, i, j):
+        return (i * 10.0, j * 10.0)
+
+
+class _TriAttributedSurfaceDuck(_AttributedSurfaceDuck):
+    kind = "tri_surface"
+
+    def xyz(self):
+        return [
+            [0.0, 0.0, -2600.0],
+            [10.0, 0.0, -2610.0],
+            [0.0, 10.0, -2620.0],
+            [10.0, 10.0, -2630.0],
+        ]
+
+    def triangles(self):
+        return [(0, 1, 2), (1, 3, 2)]
+
+    def wireframe_edges(self, stride=None):
+        return [(0, 1), (1, 3), (3, 2), (2, 0)]
+
+
+class _RotatedFlippedRegularSurface:
+    kind = "structured_mesh"
+    name = "Rotated top"
+    ncol = 3
+    nrow = 2
+    origin = [431_123.0, 6_521_456.0]
+    angle = 30.0
+    step_i = [25.0 * 0.8660254037844386, 25.0 * 0.5]
+    # y-flip before rotation: local (0, -40) -> world (+20, -34.641...)
+    step_j = [40.0 * 0.5, -40.0 * 0.8660254037844386]
+
+    def node_xy(self, i, j):
+        return (
+            self.origin[0] + i * self.step_i[0] + j * self.step_j[0],
+            self.origin[1] + i * self.step_i[1] + j * self.step_j[1],
+        )
+
+    def value_layer(self, attr=None):
+        # Producer order is column-major; the compact contract normalizes values
+        # and mask to explicit row-major without changing world coordinates.
+        nodes = [self.node_xy(i, j) for i in range(self.ncol) for j in range(self.nrow)]
+        return {
+            "name": "z",
+            "nodes": nodes,
+            "triangles": [[0, 2, 1], [1, 2, 3], [2, 4, 3], [3, 4, 5]],
+            "values": [10.0, 40.0, None, 50.0, 30.0, 60.0],
+            "range": [10.0, 60.0],
+        }
+
+
+def test_view2d_affine_regular_grid_is_compact_row_major_and_static(tmp_path):
+    surface = _RotatedFlippedRegularSurface()
+    payload = viewer.view2d_payload(surface, fill=True, lod=False, encoding="json")
+    fill = payload["map"]["fills"][0]
+    assert "nodes" not in fill and "triangles" not in fill and "values" not in fill
+    grid = fill["regular_grid"]
+    assert grid["dimensions"] == [3, 2]
+    assert grid["origin"] == surface.origin
+    assert grid["step_i"] == pytest.approx(surface.step_i)
+    assert grid["step_j"] == pytest.approx(surface.step_j)
+    assert grid["values"] == [10.0, None, 30.0, 40.0, 50.0, 60.0]
+    assert grid["mask"] == [True, False, True, True, True, True]
+
+    out = tmp_path / "regular-grid.html"
+    viewer.save_view(payload, out)
+    html = out.read_text()
+    match = re.search(r"window\.PETEK_VIEWER_PAYLOAD=(.*?);window\.PETEK_VIEWER_MODE", html)
+    frozen_fill = json.loads(match.group(1))["map"]["fills"][0]
+    assert frozen_fill["regular_grid"] == grid
+    assert "nodes" not in frozen_fill and "triangles" not in frozen_fill
+
+
+def test_view2d_affine_regular_grid_values_and_mask_use_typed_blocks():
+    payload = viewer.view2d_payload(
+        _RotatedFlippedRegularSurface(),
+        fill=True,
+        lod=False,
+        encoding="blocks",
+        block_threshold_bytes=0,
+    )
+    fill = payload["map"]["fills"][0]
+    assert "nodes" not in fill and "triangles" not in fill
+    grid, table = fill["regular_grid"], payload["map"]["blocks"]
+    values = _decode_block(table[grid["values"]["__block__"]])
+    mask = _decode_block(table[grid["mask"]["__block__"]])
+    assert values[0] == 10.0 and values[1] != values[1] and values[2:] == (30.0, 40.0, 50.0, 60.0)
+    assert mask == (1, 0, 1, 1, 1, 1)
+    assert table[grid["values"]["__block__"]]["dtype"] == "f32"
+    assert table[grid["mask"]["__block__"]]["dtype"] == "u8"
+
+
+def test_view2d_affine_regular_grid_via_surface_geometry_sets_frame():
+    geometry = _RotatedFlippedRegularSurface()
+
+    class Surface:
+        kind = "surface"
+        name = "Wrapped top"
+
+        def __init__(self, geometry):
+            self.geometry = geometry
+
+        def value_layer(self, attr=None):
+            return self.geometry.value_layer(attr)
+
+    payload = viewer.view2d_payload(Surface(geometry), fill=True, lod=False, encoding="json")
+    assert payload["map"]["fills"][0]["regular_grid"]["dimensions"] == [3, 2]
+    assert payload["map"]["frame"]["origin_x"] > 400_000
+
+
+def test_view3d_affine_regular_surface_is_compact_and_typed(tmp_path):
+    surface = _RotatedFlippedRegularSurface()
+    payload = viewer.view3d_payload(surface, fill=True)
+    mesh = payload["scene3d"]["meshes"][0]
+    assert "nodes" not in mesh and "triangles" not in mesh
+    regular = mesh["regular_surface"]
+    assert regular["dimensions"] == [3, 2]
+    assert regular["origin"] == surface.origin
+    assert regular["step_i"] == pytest.approx(surface.step_i)
+    assert regular["step_j"] == pytest.approx(surface.step_j)
+    elevations = _decode_block(regular["elevations"])
+    values = _decode_block(regular["values"])
+    mask = _decode_block(regular["mask"])
+    assert elevations[0] == values[0] == 10.0
+    assert elevations[1] != elevations[1] and values[1] != values[1]
+    assert elevations[2:] == values[2:] == (30.0, 40.0, 50.0, 60.0)
+    assert mask == (1, 0, 1, 1, 1, 1)
+    assert payload["summary"]["triangles"] == 0
+
+    out = tmp_path / "regular-surface-3d.html"
+    viewer.save_view(payload, out)
+    html = out.read_text()
+    match = re.search(r"window\.PETEK_VIEWER_PAYLOAD=(.*?);window\.PETEK_VIEWER_MODE", html)
+    frozen = json.loads(match.group(1))["scene3d"]["meshes"][0]
+    assert "regular_surface" in frozen and "nodes" not in frozen and "triangles" not in frozen
+
+
+def test_view3d_affine_regular_surface_bare_is_neutral():
+    mesh = viewer.view3d_payload(_RotatedFlippedRegularSurface())["scene3d"]["meshes"][0]
+    assert mesh["values"] is None
+    assert mesh["regular_surface"]["values"] is None
+
+
+@pytest.mark.parametrize(
+    "surface_type",
+    [
+        _AttributedSurfaceDuck,
+        _StructuredAttributedSurfaceDuck,
+        _TriAttributedSurfaceDuck,
+    ],
+)
+def test_view2d_all_surface_roles_auto_enumerate_primary_then_attrs(surface_type):
+    surf = surface_type()
+    p = viewer.view2d_payload(surf, lod=False, encoding="json")
+
+    assert [f["name"] for f in p["map"]["fills"]] == [
+        "values",
+        "thickness",
+        "poro",
+    ]
+    assert surf.attr_calls == 1
+    assert surf.value_calls == [(None, None), ("thickness", None), ("poro", None)]
+
+
+@pytest.mark.parametrize(
+    "shell",
+    [
+        type(
+            "GridGeometry",
+            (_SurfaceGeom,),
+            {"kind": "grid_geometry", "name": "grid"},
+        )(),
+        type(
+            "StructuredShell",
+            (_SurfaceGeom,),
+            {"kind": "structured_shell", "name": "structured"},
+        )(),
+        _MeshShell(),
+    ],
+)
+def test_view2d_all_geometry_roles_are_wireframe_only_when_fill_is_omitted(shell):
+    p = viewer.view2d_payload(shell, lod=False, encoding="json")
+
+    assert p["map"]["fills"] == []
+    assert p["map"]["points"] == []
+    assert p["map"]["grid_lines"]
+    assert p["map"]["layers"] == [{"kind": "lines", "name": shell.name, "standalone": True}]
+
+
+def test_view2d_geometry_role_suppresses_auto_fill_but_honours_explicit_fill():
+    class AttributedMeshShell(_MeshShell):
+        def __init__(self):
+            self.attr_calls = 0
+            self.value_calls = []
+
+        def attr_names(self):
+            self.attr_calls += 1
+            return ("thickness",)
+
+        def value_layer(self, attr=None, stride=None):
+            self.value_calls.append((attr, stride))
+            return _AttributedSurfaceDuck().value_layer(attr=attr, stride=stride)
+
+    omitted = AttributedMeshShell()
+    p = viewer.view2d_payload(omitted, lod=False, encoding="json")
+    assert p["map"]["fills"] == []
+    assert omitted.attr_calls == 0 and omitted.value_calls == []
+
+    explicit = AttributedMeshShell()
+    p = viewer.view2d_payload(explicit, fill="thickness", lod=False, encoding="json")
+    assert [f["name"] for f in p["map"]["fills"]] == ["thickness"]
+    assert explicit.attr_calls == 0
+    assert explicit.value_calls == [("thickness", None)]
+
+
 def test_view2d_bare_surface_renders_structure_lines():
-    # the natural flow view2d([pts, surf]) must not die: a bare Surface shows
-    # its STRUCTURE (the .geometry lattice), never a bare-color fill
+    # A legacy single-layer producer without attr_names keeps the historical
+    # structure-only path (the .geometry lattice), never a bare-color fill.
     surf = _SurfaceDuck()
     p = viewer.view2d_payload([surf])  # color defaults ON; no fill=
     assert p["map"]["fills"] == []                # values stay fill= opt-in
     assert "value_attr" not in surf.seen          # value_layer never consulted
     assert p["map"]["grid_lines"]                 # .geometry lattice drawn
     assert p["summary"]["grid"] == "3 x 3"
-    assert {"kind": "lines", "name": "Top Dome"} in p["map"]["layers"]
+    assert {"kind": "lines", "name": "Top Dome", "standalone": False} in p["map"]["layers"]
+
+
+def test_view2d_bare_attribute_surface_auto_enumerates_primary_then_attrs():
+    surf = _AttributedSurfaceDuck()
+    p = viewer.view2d_payload(surf, encoding="json")
+
+    assert surf.attr_calls == 1
+    assert [f["name"] for f in p["map"]["fills"]] == ["values", "thickness", "poro"]
+    assert [f["display_name"] for f in p["map"]["fills"]] == ["Top Dome"] * 3
+    assert [f["range"] for f in p["map"]["fills"]] == [
+        [1.0, 4.0],
+        [101.0, 104.0],
+        [201.0, 204.0],
+    ]
+    # Every full ring forwards its exact attr, and each LOD call forwards the
+    # same attr with the configured stride. Primary remains attr=None and first.
+    assert surf.value_calls == [
+        (None, None),
+        (None, 4),
+        ("thickness", None),
+        ("thickness", 4),
+        ("poro", None),
+        ("poro", 4),
+    ]
+
+
+def test_view2d_attribute_surface_explicit_fill_semantics_stay_exact():
+    off = _AttributedSurfaceDuck()
+    assert viewer.view2d_payload(off, fill=False)["map"]["fills"] == []
+    assert off.attr_calls == 0 and off.value_calls == []
+
+    primary = _AttributedSurfaceDuck()
+    p = viewer.view2d_payload(primary, fill=True, lod=False, encoding="json")
+    assert [f["name"] for f in p["map"]["fills"]] == ["values"]
+    assert primary.attr_calls == 0 and primary.value_calls == [(None, None)]
+
+    named = _AttributedSurfaceDuck()
+    p = viewer.view2d_payload(named, fill="thickness", lod=False, encoding="json")
+    assert [f["name"] for f in p["map"]["fills"]] == ["thickness"]
+    assert named.attr_calls == 0 and named.value_calls == [("thickness", None)]
+
+
+def test_view2d_attribute_surface_dict_fill_override_and_inheritance():
+    inherited = _AttributedSurfaceDuck()
+    disabled = _AttributedSurfaceDuck(name="Base Dome")
+    p = viewer.view2d_payload(
+        [
+            {"object": inherited, "name": "Renamed Top"},
+            {"object": disabled, "fill": False},
+        ],
+        lod=False,
+        encoding="json",
+    )
+    assert [f["name"] for f in p["map"]["fills"]] == ["values", "thickness", "poro"]
+    assert [f["display_name"] for f in p["map"]["fills"]] == ["Renamed Top"] * 3
+    assert inherited.attr_calls == 1
+    assert disabled.attr_calls == 0 and disabled.value_calls == []
+
+    opted_in = _AttributedSurfaceDuck()
+    p2 = viewer.view2d_payload(
+        [{"object": opted_in, "fill": "poro"}],
+        fill=False,
+        lod=False,
+        encoding="json",
+    )
+    assert [f["name"] for f in p2["map"]["fills"]] == ["poro"]
+
+
+@pytest.mark.parametrize(
+    ("attrs", "error", "message"),
+    [
+        ("thickness", TypeError, "iterable of strings"),
+        (("thickness", 7), TypeError, "item 1 must be a string"),
+        (("",), ValueError, "must not be empty"),
+        (("thickness", "thickness"), ValueError, "duplicate name"),
+    ],
+)
+def test_view2d_attribute_surface_validates_attr_names(attrs, error, message):
+    surf = _AttributedSurfaceDuck(attrs=attrs)
+    with pytest.raises(error, match=message):
+        viewer.view2d_payload(surf)
+    # Validation completes before the primary or any advertised lane is emitted.
+    assert surf.value_calls == []
+
+
+def test_view2d_attribute_surface_rejects_advertised_missing_or_duplicate_layer():
+    class Missing(_AttributedSurfaceDuck):
+        def value_layer(self, attr=None, stride=None):
+            return None if attr == "thickness" else super().value_layer(attr, stride)
+
+    with pytest.raises(TypeError, match="advertised attribute 'thickness'"):
+        viewer.view2d_payload(Missing(), lod=False)
+
+    class Duplicate(_AttributedSurfaceDuck):
+        def value_layer(self, attr=None, stride=None):
+            layer = super().value_layer(attr, stride)
+            layer["name"] = "values"
+            return layer
+
+    with pytest.raises(ValueError, match="duplicate layer name 'values'"):
+        viewer.view2d_payload(Duplicate(), lod=False)
+
+
+def test_view2d_attribute_surface_requires_both_callable_ducks_for_auto_mode():
+    surf = _SurfaceDuck()
+    surf.attr_names = ["thickness"]
+    p = viewer.view2d_payload(surf)
+    assert p["map"]["fills"] == []
+    assert "value_attr" not in surf.seen
+
+
+def test_view2d_attribute_surface_blocks_dedup_shared_geometry():
+    p = viewer.view2d_payload(
+        _AttributedSurfaceDuck(),
+        lod=False,
+        encoding="blocks",
+        block_threshold_bytes=0,
+    )
+    fills = p["map"]["fills"]
+    assert len({f["nodes"]["__block__"] for f in fills}) == 1
+    assert len({f["triangles"]["__block__"] for f in fills}) == 1
+    assert len({f["values"]["__block__"] for f in fills}) == 3
+
+
+def test_view2d_attribute_surface_json_keeps_legacy_shape_with_shared_memory():
+    p = viewer.view2d_payload(_AttributedSurfaceDuck(), lod=False, encoding="json")
+    fills = p["map"]["fills"]
+    assert all(isinstance(fill["nodes"], list) for fill in fills)
+    assert all(isinstance(fill["triangles"], list) for fill in fills)
+    assert fills[0]["nodes"] is fills[1]["nodes"] is fills[2]["nodes"]
+    assert fills[0]["triangles"] is fills[1]["triangles"] is fills[2]["triangles"]
+    # JSON has no references: the serialized compatibility shape stays arrays.
+    roundtrip = json.loads(json.dumps(p))
+    assert roundtrip["map"]["fills"][1]["nodes"] == fills[0]["nodes"]
+
+
+def test_view2d_attribute_surface_packs_shared_geometry_once(monkeypatch):
+    from petektools.viewer import _blocks
+
+    calls = []
+    original = _blocks._le_bytes
+
+    def counted(values, dtype):
+        calls.append((dtype, len(values)))
+        return original(values, dtype)
+
+    monkeypatch.setattr(_blocks, "_le_bytes", counted)
+    viewer.view2d_payload(
+        _AttributedSurfaceDuck(), lod=False, encoding="blocks", block_threshold_bytes=0
+    )
+    # nodes + triangles are packed once, followed by one values block per lane.
+    assert len(calls) == 5
+    assert [dtype for dtype, _ in calls].count("u32") == 1
+    assert [dtype for dtype, _ in calls].count("f32") == 4
 
 
 def test_view2d_bare_value_layer_only_item_draws_mesh_edges():
     # geometry-less value-bearing item: the primary layer's triangle edges
-    # become the drawn structure (still no fill without fill=)
+    # become the drawn structure (no attr_names handshake, so still no fill)
     class LayerOnly:
         name = "Top Dome"
 
@@ -799,7 +1386,7 @@ def test_view2d_bare_value_layer_only_item_draws_mesh_edges():
     assert p["map"]["fills"] == []
     assert sum(len(line) - 1 for line in p["map"]["grid_lines"]) == 5  # unique edges
     assert p["summary"]["triangles"] == 2
-    assert {"kind": "lines", "name": "Top Dome"} in p["map"]["layers"]
+    assert {"kind": "lines", "name": "Top Dome", "standalone": False} in p["map"]["layers"]
 
 
 def test_view2d_surface_with_fill_unchanged():
@@ -871,7 +1458,7 @@ def test_view3d_payload_points_and_geometry_classification():
     # SAME duck-typed legend names view2d records
     assert sc["layers"] == [
         {"kind": "points", "name": "Top Dome"},
-        {"kind": "lines", "name": "Dome grid"},
+        {"kind": "lines", "name": "Dome grid", "standalone": True},
     ]
     assert len(sc["lattices"]) == 1 and sc["lattices"][0]["lines"]
     assert p["summary"]["grid"] == "3 x 3" and p["summary"]["points"] == 3
@@ -935,19 +1522,33 @@ def test_view3d_fill_spec_overrides_range_and_attr_stays_flat():
     assert all(n[2] is None for n in p2["scene3d"]["meshes"][0]["nodes"])
 
 
-def test_view3d_trimesh_neutral_vs_value_colored():
-    # no fill: a trimesh renders as ONE neutral mesh (values None — the JS gives
-    # it the neutral material + the wireframe option)
+def test_view3d_bare_trimesh_renders_flat_wireframe():
+    # OWNER RULING (2026-07-11, geometry-renders-flat): a bare trimesh (e.g.
+    # the petekio infer_geometry TriSurface fallback) is NOT a solid surface —
+    # it renders as a FLAT WIREFRAME GRID at the SHALLOWEST point of its own
+    # nodes (z is elevation, negative down → max finite vertex z), with the
+    # edge rings plotted at that SAME level. (Adjusted from the pre-ruling
+    # neutral-elevation-mesh behaviour.)
     p = viewer.view3d_payload([_ValueMesh()])
-    assert len(p["scene3d"]["meshes"]) == 1
-    m = p["scene3d"]["meshes"][0]
-    assert m["values"] is None and m["range"] is None and m["name"] == "mesh"
-    assert m["nodes"][0] == [0.0, 0.0, 1.0]  # xyz vertices carry their own z
-    # fill=: the value_layer IS the surface — one value-coloured mesh, never a
-    # neutral duplicate on top
+    sc = p["scene3d"]
+    assert sc["meshes"] == []  # never a solid layer without fill=
+    assert len(sc["lattices"]) == 1
+    lat = sc["lattices"][0]
+    assert lat["z"] == 4.0  # max z over the _Mesh verts (1, 2, 3, 4)
+    assert sum(len(line) - 1 for line in lat["lines"]) == 5  # unique tri edges
+    assert p["summary"]["triangles"] == 2
+    # the edge rings ride at the SAME flat level (object-form outline entries)
+    assert sc["outlines"] == [{
+        "points": [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0], [0.0, 0.0]],
+        "z": 4.0,
+    }]
+    assert {"kind": "lines", "name": None, "standalone": False} in sc["layers"]
+    # fill=: the value_layer IS the surface — one value-coloured mesh, no
+    # wireframe duplicate (explicit opt-in unchanged)
     p2 = viewer.view3d_payload([_ValueMesh()], fill=True)
     assert len(p2["scene3d"]["meshes"]) == 1
     assert p2["scene3d"]["meshes"][0]["values"] is not None
+    assert p2["scene3d"]["lattices"] == []
 
 
 def test_view3d_wells_duck_type():
@@ -967,6 +1568,60 @@ def test_view3d_wells_duck_type():
         viewer.view3d_payload([BadWell()])
 
 
+def test_well_styles_are_shared_serializable_values():
+    style = viewer.WellStyle(
+        path=viewer.WellPathStyle(color="#123456", width=3, dash=(5, 2)),
+        marker=viewer.WellMarkerStyle(size=9, shape="diamond"),
+        label=viewer.WellLabelStyle(font_size=12, max_displacement=48),
+    )
+    assert viewer.WellStyle.from_dict(style.to_dict()) == style
+    assert style.replace(path=style.path.replace(width=4)).path.width == 4
+    assert style.path.width == 3
+    assert petektools.WellStyle is viewer.WellStyle
+    with pytest.raises(ValueError, match="opacity"):
+        viewer.WellPathStyle(opacity=2)
+    with pytest.raises(ValueError, match="shape"):
+        viewer.WellMarkerStyle(shape="star")
+
+
+def test_view2d_first_class_wells_explicit_dict_and_label_modes():
+    wells = [
+        {"id": "A", "trajectory": [[0, 0, -10], [5, 3, -20]]},
+        {"id": "B", "x": 10, "y": 10, "trajectory": []},
+    ]
+    p = viewer.view2d_payload([], wells=wells, well_labels=True, encoding="json")
+    assert p["summary"]["wells"] == 2
+    assert p["wells"][0]["trajectory"] == [[0.0, 0.0, -10.0], [5.0, 3.0, -20.0]]
+    assert p["wells"][0]["label"] is True
+    assert p["wells"][0]["style"]["spec"] == "WellStyle"
+    assert p["map"]["wells"] == []
+
+
+def test_view3d_wells_collection_duck_and_auto_bound():
+    class Well:
+        def __init__(self, i):
+            self.id = f"W{i}"
+            self.trajectory = [[i, 0, -10], [i, 2, -20]]
+
+    class ProjectWells:
+        def values(self):
+            return [Well(i) for i in range(13)]
+
+    p = viewer.view3d_payload([], wells=ProjectWells(), well_labels="auto")
+    assert len(p["scene3d"]["wells"]) == 13
+    assert all(w["label"] is False for w in p["scene3d"]["wells"])
+    p2 = viewer.view3d_payload([], wells=[Well(1)], well_labels=True)
+    assert p2["scene3d"]["wells"][0]["label"] is True
+
+
+def test_wells_omitted_keeps_payload_shape_exact():
+    old = viewer.view2d_payload([_Points3D()], encoding="json")
+    explicit_default = viewer.view2d_payload(
+        [_Points3D()], wells=None, well_labels=False, well_style=None, encoding="json"
+    )
+    assert explicit_default == old
+
+
 def test_view3d_contours_reuse_view2d_seam():
     mesh = _ValueMesh()
     p = viewer.view3d_payload([mesh], contours=25.0, color="porosity")
@@ -976,6 +1631,41 @@ def test_view3d_contours_reuse_view2d_seam():
     assert [c["level"] for c in cs] == [1.5, 2.5]
     assert all({"level", "major", "lines"} == set(c) for c in cs)
     assert p["summary"]["contour_levels"] == 2
+
+
+def test_view3d_dict_item_per_cloud_and_mesh_fields():
+    p = viewer.view3d_payload(
+        [
+            {"object": _Points3D(), "color": "magma_-3000_-2500", "name": "Renamed"},
+            {"object": _ValueMesh(), "fill": "grays_0_2"},
+        ],
+        color=False,
+    )
+    sc = p["scene3d"]
+    cloud = sc["points"][0]
+    # per-object spec pins the CLOUD's own colormap + clamp range
+    assert cloud["name"] == "Renamed"
+    assert cloud["colormap"] == "magma"
+    assert cloud["range"] == [-3000.0, -2500.0]
+    assert {"kind": "points", "name": "Renamed"} in sc["layers"]
+    # per-object fill pins the MESH's own colormap + clamp range
+    mesh = sc["meshes"][0]
+    assert mesh["colormap"] == "grays"
+    assert mesh["range"] == [0.0, 2.0]
+    # call-level color=False + per-object opt-in: the global fallback reads
+    # the coloured cloud's data; the first per-object cmap seeds the global
+    assert sc["point_color"] == {"by": "z", "range": [-2900.0, -2600.0]}
+    assert sc["colormap"] == "magma"
+
+
+def test_view3d_dict_item_color_false_monochrome_cloud():
+    p = viewer.view3d_payload([{"object": _Points3D(), "color": False}])
+    cloud = p["scene3d"]["points"][0]
+    assert cloud["colored"] is False and "range" not in cloud
+    assert p["scene3d"]["point_color"] is None
+    # bare cloud under the call-level default carries its own data range
+    p2 = viewer.view3d_payload([_Points3D()])
+    assert p2["scene3d"]["points"][0]["range"] == [-2900.0, -2600.0]
 
 
 def test_view3d_point_decimation_cap():
@@ -1039,7 +1729,83 @@ def test_view3d_geometry_only_item_falls_back_to_lattice():
     p = viewer.view3d_payload([GeomHolder()])
     sc = p["scene3d"]
     assert sc["meshes"] == [] and len(sc["lattices"]) == 1 and sc["lattices"][0]["lines"]
-    assert {"kind": "lines", "name": "holder"} in sc["layers"]
+    assert {"kind": "lines", "name": "holder", "standalone": True} in sc["layers"]
+    assert sc["lattices"][0]["z"] is None  # all-flat scene → the JS ref_z plane
+
+
+def test_view3d_zless_geometry_lattice_at_scene_shallowest():
+    # OWNER RULING: a z-less GridGeometry lattice renders flat at the SCENE's
+    # shallowest point (max finite z over the scene's own data)
+    p = viewer.view3d_payload([_Points3D(), _Geom3D()])
+    assert p["scene3d"]["lattices"][0]["z"] == -2600.0  # shallowest point z
+    # alone (no z anywhere) the level stays null → the JS ref_z fallback
+    p2 = viewer.view3d_payload([_Geom3D()])
+    assert p2["scene3d"]["lattices"][0]["z"] is None
+
+
+def test_view3d_tri_surface_role_renders_neutral_elevation_mesh():
+    # Value-bearing surface roles stay surfaces in 3-D; they are not confused
+    # with their geometry-only shell counterparts.
+    class TriSurfaceish(_SurfaceDuck):
+        kind = "tri_surface"
+
+    item = TriSurfaceish()
+    p = viewer.view3d_payload([item])
+    sc = p["scene3d"]
+    assert len(sc["meshes"]) == 1
+    assert sc["lattices"] == []
+    assert sc["meshes"][0]["values"] is None
+    assert [n[2] for n in sc["meshes"][0]["nodes"]] == [
+        -2600.0,
+        -2610.0,
+        -2620.0,
+        -2630.0,
+    ]
+
+
+@pytest.mark.parametrize(
+    "surface_type",
+    [_SurfaceDuck, _StructuredAttributedSurfaceDuck, _TriAttributedSurfaceDuck],
+)
+def test_view3d_all_surface_roles_render_as_neutral_meshes(surface_type):
+    sc = viewer.view3d_payload([surface_type()])["scene3d"]
+    assert len(sc["meshes"]) == 1
+    assert sc["meshes"][0]["values"] is None
+    assert sc["lattices"] == []
+
+
+@pytest.mark.parametrize(
+    "shell",
+    [
+        type("GridGeometry3D", (_SurfaceGeom,), {"kind": "grid_geometry"})(),
+        type("StructuredShell3D", (_SurfaceGeom,), {"kind": "structured_shell"})(),
+        _MeshShell(),
+    ],
+)
+def test_view3d_all_geometry_roles_render_as_lattices(shell):
+    sc = viewer.view3d_payload([shell])["scene3d"]
+    assert sc["meshes"] == []
+    assert len(sc["lattices"]) == 1
+    assert sc["lattices"][0]["lines"]
+
+
+def test_view3d_bare_value_layer_only_item_draws_flat_wireframe():
+    # geometry-less value-bearing item (no kind): the primary layer's triangle
+    # edges become a FLAT wireframe at its own shallowest node elevation
+    class LayerOnly:
+        name = "Top Dome"
+
+        def value_layer(self, attr=None):
+            return _SurfaceDuck().value_layer(attr)
+
+    p = viewer.view3d_payload([LayerOnly()])
+    sc = p["scene3d"]
+    assert sc["meshes"] == []
+    assert len(sc["lattices"]) == 1
+    lat = sc["lattices"][0]
+    assert lat["z"] == -2600.0
+    assert sum(len(line) - 1 for line in lat["lines"]) == 5  # unique tri edges
+    assert {"kind": "lines", "name": "Top Dome", "standalone": False} in sc["layers"]
 
 
 def test_view3d_rejects_unknown_items():
@@ -1349,6 +2115,67 @@ def test_wells_bundle_schema(wells_bundle):
             assert CURVE_MIN_KEYS <= set(c), set(c)
             assert c["kind"] in ("continuous", "flag")
             assert set(c["values"]) == LANE_KEYS
+
+
+def test_correlation_template_value_semantics_and_chainable_tracks(wells_bundle):
+    track = (
+        viewer.CorrelationTrack(
+            "petro", title="Petrophysics", width=1.6, minimum=0, maximum=1
+        )
+        .curve("PHIE", style={"color": "#336699", "width": 2}, cutoff=0.12)
+        .curve("SW", id="sw-overlay", overlay=True, style={"dash": [4, 2]})
+    )
+    template = (
+        viewer.CorrelationTemplate(
+            "reservoir", default_hang="flatten", flatten_pick="TopShale"
+        )
+        .add_track(viewer.CorrelationTrack("facies", width=0.45).flag("FACIES"))
+        .add_track(track)
+    )
+    assert viewer.CorrelationTemplate.from_dict(template.to_dict()) == template
+    assert json.loads(json.dumps(template.to_dict())) == template.to_dict()
+    changed = template.replace(gap=20)
+    assert changed.gap == 20 and template.gap == 14
+    assert petektools.CorrelationTemplate is viewer.CorrelationTemplate
+
+    applied = template(wells_bundle)
+    assert applied["template"] == template.to_dict()
+    assert "template" not in wells_bundle  # pure apply
+    # One-well absence is explicitly allowed: that well gets a blank lane.
+    partial = copy.deepcopy(wells_bundle)
+    partial["wells"][0]["curves"] = [
+        c for c in partial["wells"][0]["curves"] if c["mnemonic"] != "SW"
+    ]
+    assert template.apply(partial)["template"]["name"] == "reservoir"
+
+
+def test_correlation_template_strong_validation_and_absent_all(wells_bundle):
+    with pytest.raises(ValueError, match="unique"):
+        viewer.CorrelationTemplate(
+            "x", tracks=(viewer.CorrelationTrack("a"), viewer.CorrelationTrack("a"))
+        )
+    with pytest.raises(ValueError, match="positive"):
+        viewer.CorrelationTrack("x", scale="log", minimum=0, maximum=1)
+    with pytest.raises(ValueError, match="opacity"):
+        viewer.CorrelationTrack("x").curve("PHIE", style={"opacity": 2})
+    missing = viewer.CorrelationTemplate("x").add_track(
+        viewer.CorrelationTrack("missing").curve("DOES_NOT_EXIST")
+    )
+    with pytest.raises(ValueError, match="absent from every well"):
+        missing.apply(wells_bundle)
+
+
+def test_well_bundle_template_is_additive_and_no_template_exact(wells_bundle):
+    from petektools.viewer._wells import build_well_log_bundle
+
+    plain = build_well_log_bundle()
+    assert set(plain) == WELL_LOG_BUNDLE_KEYS
+    template = viewer.CorrelationTemplate("reservoir").add_track(
+        viewer.CorrelationTrack("phi", minimum=0, maximum=.35).curve("PHIE")
+    )
+    templated = build_well_log_bundle(template=template)
+    assert set(templated) == WELL_LOG_BUNDLE_KEYS | {"template"}
+    assert templated["template"]["name"] == "reservoir"
 
 
 def test_wells_lanes_decode_consistently(wells_bundle):

@@ -188,6 +188,65 @@ def test_resample_grid_to_grid():
     assert math.isnan(edge[0][0])
 
 
+def test_rotated_lattice_frame_and_resample_are_exact():
+    src_lat = pt.Lattice(
+        431000.0, 6521000.0, 10.0, 12.0, 5, 5,
+        rotation_deg=390.0, yflip=True,
+    )
+    assert src_lat.rotation_deg == 30.0 and src_lat.yflip is True
+    assert "rotation_deg=30" in repr(src_lat)
+    x, y = src_lat.intrinsic_to_world(1.25, 2.5)
+    fi, fj = src_lat.world_to_intrinsic(x, y)
+    assert abs(fi - 1.25) < 1e-10 and abs(fj - 2.5) < 1e-10
+    assert src_lat.xy_to_ij(x, y) == (fi, fj)
+
+    def plane(wx, wy):
+        return 3.0 + 0.5 * wx - 0.25 * wy
+    src = [
+        [plane(*src_lat.node_xy(i, j)) for j in range(src_lat.nrow)]
+        for i in range(src_lat.ncol)
+    ]
+    target = pt.Lattice(
+        431000.0, 6521000.0, 5.0, 6.0, 9, 9,
+        rotation_deg=30.0, yflip=True,
+    )
+    out = pt.resample(src, src_lat, target, "bilinear")
+    for i in range(target.ncol):
+        for j in range(target.nrow):
+            assert abs(out[i][j] - plane(*target.node_xy(i, j))) < 1e-8
+
+    g = pt.Georef(431000.0, 6521000.0)
+    framed = g.lattice(10.0, 12.0, 5, 5, rotation_deg=30.0, yflip=True)
+    assert framed.step_vectors() == src_lat.step_vectors()
+    placed = g.place_intrinsic([12.5, 30.0], rotation_deg=30.0, yflip=True)
+    assert abs(placed[0] - x) < 1e-10 and abs(placed[1] - y) < 1e-10
+    try:
+        pt.Lattice(0.0, 0.0, 1.0, 1.0, 2, 2, rotation_deg=float("nan"))
+    except ValueError as exc:
+        assert "rotation_deg must be finite" in str(exc)
+    else:
+        raise AssertionError("expected non-finite rotation to fail")
+
+
+def test_small_spacing_lattice_inverse_and_rotated_resample_are_finite():
+    axis_aligned = pt.Lattice(0.0, 0.0, 1e-8, 1e-8, 2, 2)
+    xy = axis_aligned.node_xy(1, 1)
+    assert xy == (1e-8, 1e-8)
+    assert axis_aligned.xy_to_ij(*xy) == (1.0, 1.0)
+
+    rotated = pt.Lattice(
+        0.0, 0.0, 1e-8, 2e-8, 3, 3, rotation_deg=30.0, yflip=True
+    )
+    src = [[float(i * 10 + j) for j in range(3)] for i in range(3)]
+    for method in ("bilinear", "nearest"):
+        out = pt.resample(src, rotated, rotated, method)
+        assert all(math.isfinite(value) for column in out for value in column)
+        for actual, expected in zip(out, src, strict=True):
+            assert all(
+                abs(a - e) < 1e-12 for a, e in zip(actual, expected, strict=True)
+            )
+
+
 def test_interp1d_methods_and_natural_cubic():
     x = [0.0, 1.0, 2.0, 4.0]
     y = [0.0, 2.0, 1.0, 3.0]

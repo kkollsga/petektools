@@ -77,6 +77,44 @@ impl Georef {
         Lattice::regular(self.east0, self.north0, xinc, yinc, ncol, nrow)
     }
 
+    /// Build a lattice with an intrinsic rotation/flipped J axis at this world
+    /// origin. Rotation is normalized by [`Lattice::oriented`].
+    pub fn oriented_lattice(
+        &self,
+        xinc: f64,
+        yinc: f64,
+        ncol: usize,
+        nrow: usize,
+        rotation_deg: f64,
+        yflip: bool,
+    ) -> Result<Lattice> {
+        Lattice::oriented(
+            self.east0,
+            self.north0,
+            xinc,
+            yinc,
+            ncol,
+            nrow,
+            rotation_deg,
+            yflip,
+        )
+    }
+
+    /// Place an intrinsic/local distance vector through the same rotated/flipped
+    /// orientation used by [`oriented_lattice`](Self::oriented_lattice), then
+    /// translate it to this world origin. Callers convert fractional indices to
+    /// distances first (`[fi * xinc, fj * yinc]`).
+    pub fn place_intrinsic(
+        &self,
+        intrinsic: [f64; 2],
+        rotation_deg: f64,
+        yflip: bool,
+    ) -> Result<[f64; 2]> {
+        let frame = self.oriented_lattice(1.0, 1.0, 1, 1, rotation_deg, yflip)?;
+        let (x, y) = frame.intrinsic_to_world(intrinsic[0], intrinsic[1]);
+        Ok([x, y])
+    }
+
     /// Translate a **local** `[x, y]` (measured from `(0, 0)`) into this world
     /// frame: `[east0 + x, north0 + y]`.
     pub fn place_point(&self, local: [f64; 2]) -> [f64; 2] {
@@ -104,6 +142,7 @@ impl Georef {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use approx::assert_relative_eq;
 
     #[test]
     fn fictional_origin_places_lattice_in_world() {
@@ -142,6 +181,16 @@ mod tests {
                 ymax: 6_521_600.0,
             }
         );
+    }
+
+    #[test]
+    fn oriented_lattice_and_intrinsic_point_share_one_frame() {
+        let g = Georef::new(431_000.0, 6_521_000.0).unwrap();
+        let lattice = g.oriented_lattice(25.0, 40.0, 4, 3, 30.0, true).unwrap();
+        let expected = lattice.intrinsic_to_world(2.0, 1.0);
+        let placed = g.place_intrinsic([50.0, 40.0], 30.0, true).unwrap();
+        assert_relative_eq!(placed[0], expected.0, epsilon = 1e-10);
+        assert_relative_eq!(placed[1], expected.1, epsilon = 1e-10);
     }
 
     #[test]

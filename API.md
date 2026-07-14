@@ -41,7 +41,13 @@ pub struct Lattice {
 impl Lattice {
     pub fn regular(xori: f64, yori: f64, xinc: f64, yinc: f64,
                    ncol: usize, nrow: usize) -> Lattice;  // unrotated, unflipped
+    pub fn oriented(xori: f64, yori: f64, xinc: f64, yinc: f64,
+                    ncol: usize, nrow: usize, rotation_deg: f64, yflip: bool)
+        -> Result<Lattice>;  // finite rotation normalized to [0,360)
     pub fn yflip_factor(&self) -> f64;
+    pub fn step_vectors(&self) -> ([f64; 2], [f64; 2]);
+    pub fn intrinsic_to_world(&self, fi: f64, fj: f64) -> (f64, f64);
+    pub fn world_to_intrinsic(&self, x: f64, y: f64) -> Option<(f64, f64)>;
     pub fn node_xy(&self, i: usize, j: usize) -> (f64, f64);
     pub fn xy_to_ij(&self, x: f64, y: f64) -> Option<(f64, f64)>; // fractional; None if degenerate
     pub fn bbox(&self) -> BBox;
@@ -95,10 +101,11 @@ default not-a-knot boundary condition. Python exposes this as
 
 Resample a native regular grid (values on a georeferencing `Lattice`) onto a
 foreign target `Lattice` — the grid → grid counterpart to the scattered → grid
-kernels. **Axis-aligned only** (`rotation_deg == 0`; `yflip` honoured through the
-coordinate maps): Petrel exports are axis-aligned, rotation is future work. No new
-georef type — the source `Lattice` already carries origin + spacing + counts in
-world coordinates.
+kernels. Source and target may independently carry intrinsic rotation/y-flip:
+target nodes map to world and then through the exact inverse source frame before
+the unchanged axis-aligned index-space interpolation kernel runs. No duplicate
+rotated kernel and no new georef type — the source `Lattice` already carries
+origin, spacing, dimensions and orientation in world coordinates.
 
 **Null / extent policy:** a target node outside the source extent
 (`[0, ncol−1] × [0, nrow−1]` in source index space) is `NaN` — never
@@ -725,6 +732,8 @@ pub const FICTIONAL_ORIGIN: [f64; 2] = [431_000.0, 6_521_000.0];
 pub struct Georef { pub east0: f64, pub north0: f64 }
 impl Georef { pub fn new(east0, north0) -> Result<Self>; pub fn fictional() -> Self; pub fn origin() -> [f64; 2];
               pub fn lattice(xinc, yinc, ncol, nrow) -> Lattice; pub fn place_point([f64;2]) -> [f64;2];
+              pub fn oriented_lattice(xinc, yinc, ncol, nrow, rotation_deg, yflip) -> Result<Lattice>;
+              pub fn place_intrinsic([f64;2], rotation_deg, yflip) -> Result<[f64;2]>;
               pub fn place_points(&[[f64;2]]) -> Vec<[f64;2]>; pub fn place_extent(&BBox) -> BBox; }
 
 // Outlines.
@@ -737,7 +746,7 @@ pub fn study_area_outline(extent: &BBox, corner_radius: f64, arc_steps: usize) -
 A thin PyO3 wheel (built by maturin) over the front-door above. Mixed layout
 (mirrors petekio): `pyproject.toml` at the repo root, the cdylib in `py/`
 (`petektools._petektools`, `publish = false`), the importable package in
-`python/petektools/`. abi3-py39 → one wheel for CPython 3.9+; pyo3 0.29. The
+`python/petektools/`. abi3-py310 → one wheel for CPython 3.10+; pyo3 0.29. The
 wheel is **not** part of the published Rust crate (workspace member + `exclude`).
 
 **Conventions.** Every vector argument accepts a `list` **or** a numpy array
@@ -794,12 +803,16 @@ pt.evaluate_formula(assignments, properties, params=None) -> dict[str, list[floa
 # geostat front-door — coords are [x,y,z] rows (list-of-3-lists or (n,3) ndarray).
 exp = pt.experimental_variogram(coords, lag, n_lags)     # .lags/.semivariances/.counts
 vg  = pt.Variogram.fit("spherical", exp)                 # or Variogram(model, nugget, sill, range)
-lat = pt.Lattice(xori, yori, xinc, yinc, ncol, nrow)
+lat = pt.Lattice(xori, yori, xinc, yinc, ncol, nrow,
+                 rotation_deg=0.0, yflip=False)
+lat.intrinsic_to_world(fi, fj); lat.world_to_intrinsic(x, y)
+lat.step_vectors()  # exact world vectors for one positive I/J node
 est, var = pt.local_kriging_grid(coords, lat, vg, max_neighbours, radius)  # ncol×nrow fields
 field    = pt.sgs(coords, lat, vg, max_neighbours, radius, seed)           # seeded, reproducible
 
 # resample — grid → grid. src_grid is nested lists field[col][row] (ncol×nrow),
-# on a source Lattice; onto a target Lattice. Axis-aligned; NaN outside extent.
+# on a source Lattice; onto an independently rotated/flipped target Lattice.
+# Target world nodes pass through the exact inverse source frame; NaN outside.
 out = pt.resample(src_grid, src_lattice, target_lattice, method="bilinear")  # or "nearest"
 
 # synth — believable synthetic data (seeded, bit-reproducible; fractions in [0,1]).
@@ -826,7 +839,8 @@ traj = pt.synth_trajectory_profile(wellhead_xy, kb_elevation, td, md_step, seed,
            kickoff_md=800.0, build_rate_deg_per_30m=3.0, hold_incl_deg=45.0, azimuth_deg=90.0)  # + drop_start_md/drop_rate_deg_per_30m/final_incl_deg for build_hold_drop
 dls  = pt.max_dogleg_severity(traj["md"], traj["incl"], traj["azim"])        # deg/30m believability yardstick
 g    = pt.Georef()                                                           # fictional world origin (or Georef(east0, north0))
-lat  = g.lattice(xinc, yinc, ncol, nrow)                                     # world-placed Lattice; g.place_point([x,y]) etc.
+lat  = g.lattice(xinc, yinc, ncol, nrow, rotation_deg=30, yflip=False)       # world-placed oriented Lattice
+xy   = g.place_intrinsic([fi*xinc, fj*yinc], rotation_deg=30, yflip=False)    # same exact frame; place_point stays translation-only
 ring = pt.closure_outline(surface, lat, spill_depth)                         # -> [[x,y]] (largest closed ring)
 ring = pt.study_area_outline(xmin, ymin, xmax, ymax, corner_radius, arc_steps)
 
@@ -863,6 +877,155 @@ onto the schema and hands it here (home ruling `decision_viewer_home_petektools`
 
 ```python
 from petektools import viewer
+
+# Generic lazy project workspace. Mapping keys form ordered groups/path IDs;
+# explicit list leaves require stable IDs. Construction catalogs only: resource
+# ducks are called once, on first enable. The returned session is inspectable.
+# Workspace payloads get Project | viewport | Inspector application chrome;
+# tabs are derived from actual payload/catalog capabilities. Browser-local
+# persistence is bounded to theme/layout/selected-tab UI preferences only.
+# Group records may set expanded=True|False; omission enables deterministic
+# selected-path / <=2-actionable-leaf auto-disclosure in the viewer.
+# Omitted leaf visibility selects all enabled views; pass visible={} for a
+# catalog-only opening, or emit explicit per-view visibility from a provider.
+session = viewer.view({
+    "Interpretation": {
+        "Synthetic Top Alpha": {"object": synthetic_top_alpha, "visible": True},
+        "Synthetic Base Alpha": {"object": synthetic_base_alpha, "visible": False},
+    }
+}, title="Synthetic Alpha workspace", open_browser=False)
+session.tree(); session.diagnostics; session.url
+session.refresh()
+session.save("visible.html")
+session.save("selected.html", include="selected")
+
+# A producer may instead expose:
+#   view_catalog() -> ordered mapping/list of explicit group/item records.
+# A project-backed v2 provider returns the envelope
+#   {"schema_version":2, "project":{"title":...,"crs":...,"unit":...},
+#    "tree":[...]}; `tree` retains the same ordered records.
+# A workspace-v2 Map record declares metadata-rich attributes and two explicit
+# selectors. All attributes ride one shared resource/block table and are
+# available as both geometry and paint:
+#   {"map": {"attributes": [
+#       {"id":"depth", "label":"Depth", "kind":"continuous",
+#        "units":"m", "codes":None},
+#       {"id":"facies", "label":"Facies", "kind":"categorical",
+#        "units":None, "codes":{"1":{"label":"Sand","color":"#EDA100"}}}],
+#            "active_attribute":"depth", "active_color_by":"depth",
+#            "transport":"shared", "modes":["2d","3d"]}}
+# Changing attribute resets color_by; changing color_by alone decouples paint.
+# Legacy {lanes,active_lane}, lane= requests, and v1 envelopes remain supported;
+# one legacy lane maps to both selectors with continuous/unknown-unit metadata.
+# A disabled provider leaf is retained with views={}, optional reason and
+# JSON-shaped diagnostic metadata, and no resource link.
+#   view_resource(*, item_id, view, detail=None) -> shared v2 typed mini-bundle
+# Legacy providers may keep lane=None. Transitional non-shared v2 providers use
+# attribute=None,color_by=None and must echo both; shared v2 Maps receive neither.
+# Progressive 3-D providers may declare ordered preview/full `tiers` in the
+# shared Map or legacy scene3d view spec; the resource duck receives detail=.
+# A shared Map envelope is keyed only by (item_id,"map",detail), has one
+# envelope-level content-addressed block table, and carries map.surface_grid with
+# one value block per attribute. 2-D/3-D mode and selector changes never refetch.
+# The saved/live viewer renders both modes in the Map viewport. Its mode switch
+# retains selectors, visibility, clamp, extent, both cameras and well-pick cycle;
+# shared 3-D derives chunked position/index/paint arrays by reference from the one
+# decoded source. Paint changes reuse topology; mask identity invalidates it.
+# If composition changes the common scene center, centered positions rebuild under
+# a center-aware key. Full evicts only that item/geometry's preview; other items
+# may remain preview until their own full response. Null mask is implicit-valid
+# and allocates no synthesized mask. Late obsolete paint may cache but not attach.
+# The diagnostic shared-mode ledger counts decoded source buffers reachable from
+# every loaded resource tier or digest cache (including hidden/fallback items),
+# unique retained CPU buffers (cache, pending chunks, and attached/retiring
+# objects), and attached GPU attributes. Underlying buffers deduplicate aliases;
+# encoded strings do not count. Its top total is independent of current
+# attribution rows and drops bytes only when their owner actually releases them.
+# If WebGL is unavailable the selected 3-D request truthfully falls back to usable
+# 2-D without provider access or an error latch.
+# Visible/selected static exports include one such envelope per item (the full
+# tier when advertised),
+# never the attribute×color_by Cartesian product.
+# Workspace-v2 project metadata is {title,crs,unit}; project producers emit the
+# persisted display title, free-text CRS verbatim, and primary project unit, and
+# never guess missing values. Per-attribute units win; the project unit may only
+# fill the primary/depth descriptor.
+# A Map mini-bundle may add producer-computed `well_overlays`, keyed by the
+# surface fill's stable item_id and a base top-level well item_id. The active
+# fill chooses the display trajectory. Additive `intersections` carries all
+# MD-ordered picks; the client anchors the greatest-MD visible pick while
+# singular `intersection` remains the old compatibility fallback. petekTools
+# performs no intersection/MD calculation and introduces no extra request.
+# Frame adds optional rotation_deg (CCW east→I), yflip, free-text crs, and units;
+# defaults 0/False/None/None preserve the axis-aligned contract. Every global or
+# per-layer colormap may add sibling colormap_reversed=False; reversal is never
+# encoded into the colormap name.
+# Map camera rotation is independent: 0° is east-right/north-up, positive turns
+# north clockwise on screen, and the screen-space north HUD follows camera only.
+# The 2-D HUD uses the exact inverse for cursor world+i/j/value, shows zoom and a
+# constant scale bar, and prints CRS/unit metadata only when declared; perspective
+# and 3-D omit the scale bar. Map pan/zoom/north-up and ambiguous-pick cycling are
+# pointer/keyboard equivalent. All-visible well picks select greatest finite MD;
+# no-hit/error state remains local and visibility changes never refetch.
+viewer.view(tree_or_source, *, title="Project workspace", visible=None,
+            tab="auto", payload=None, save=None, serve=True, port=0, block=False,
+            open_browser=True) -> viewer.WorkspaceSession
+
+# Generic 2-D adapter. Stable kind metadata separates point sets, geometry-only
+# shells, and value surfaces. Omitted fill auto-enumerates primary + named lanes
+# only for surface roles offering callable attr_names() and value_layer().
+# Explicit fill remains exact: False=off, True=primary, str=one named lane.
+# Automatic lanes retain/pack their common full+LOD mesh once. Block payloads
+# initially decode shared geometry + the active values only; another lane's
+# values decode on first selection and remain cached (A -> B -> A is stable).
+# Exact affine structured layers instead emit dimensions/origin/I+J step vectors
+# plus typed row-major values/mask, with no expanded mesh nodes or triangles.
+# Their ncol*nrow values are node-centred over intrinsic
+# [-.5,ncol-.5]×[-.5,nrow-.5], exactly matching ScalarLayer paint/fit/hit rules;
+# categorical paint uses each exact source code and never averages neighbours.
+# During wheel/drag the renderer affine-composites point/fill plus split
+# grid/contour/outline/contact bitmaps (one paint/rAF); data-sized paths rebuild
+# at most once after settle without moving the user camera. First fit uses only
+# drawable projected half-cell corners, caps horizontal zoom at a 10 km span,
+# and F explicitly refits. Rotation preserves the viewport-centre world point;
+# every geometry cache keys normalized camera rotation + the full active Frame.
+# Filled surfaces default grid/lattice lines off; geometry-only views default on.
+# Plain JSON and saved single-file views are unchanged.
+viewer.view2d(items, *, title="2D view", color=True, fill=None, contours=None,
+              wells=None, well_labels=False, well_style=None,
+              save=None, port=0, block=False, open_browser=True,
+              max_grid_lines=800, max_line_points=1000, point_limit=200_000,
+              max_mesh_edges=150_000, lod=True, encoding="blocks",
+              block_threshold_bytes=65_536) -> str | dict
+viewer.view2d_payload(items, *, title="2D view", color=True, fill=None,
+                      contours=None, wells=None, well_labels=False, well_style=None,
+                      max_grid_lines=800, max_line_points=1000,
+                      point_limit=200_000, max_mesh_edges=150_000, lod=True,
+                      encoding="blocks", block_threshold_bytes=65_536) -> dict
+
+viewer.view3d(items, *, wells=None, well_labels=False, well_style=None, ...) -> str | dict
+viewer.view3d_payload(items, *, wells=None, well_labels=False, well_style=None, ...) -> dict
+# Exact affine structured surfaces emit compact typed `regular_surface` blocks;
+# expanded Mesh3D nodes/triangles remain the non-affine compatibility path.
+
+# Shared frozen, JSON-serializable values; nested styles progressively disclose
+# advanced trajectory/marker/label controls.
+viewer.WellStyle(path=viewer.WellPathStyle(width=2, opacity=.9),
+                 marker=viewer.WellMarkerStyle(size=7, shape="circle"),
+                 label=viewer.WellLabelStyle(font_size=11, leader=True))
+
+# Named, chainable and JSON-serializable correlation layout. Calling/applying
+# returns a copied WellLogBundle with additive `template` metadata.
+template = (
+    viewer.CorrelationTemplate("reservoir", default_hang="flatten",
+                               flatten_pick="TopShale")
+    .add_track(viewer.CorrelationTrack("facies", width=.45).flag("FACIES"))
+    .add_track(viewer.CorrelationTrack("petro", minimum=0, maximum=1)
+               .curve("PHIE", cutoff=.12)
+               .curve("SW", id="sw", overlay=True, style={"dash": [3, 2]}))
+)
+templated_bundle = template(well_log_bundle)
+viewer.CorrelationTemplate.from_dict(template.to_dict()) == template
 
 # Live: background local server; returns the URL. `section_provider` is the
 # pluggable /section callback (line=, well=, property=) by which a DOMAIN package

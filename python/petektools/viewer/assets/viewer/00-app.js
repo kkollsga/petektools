@@ -18,9 +18,24 @@
   var root = document.getElementById("app");
   var App = { payload: null, mode: "file", tab: "map" };
 
+  // Cumulative map-operation counters for the browser performance contract.
+  // They are observational only: the runner snapshots deltas around a gesture.
+  var _viewerPerf = window.__PETEK_MAP_PERF || (window.__PETEK_MAP_PERF = {});
+  ["pointPathBuilds", "triFillBuilds", "canvasBackingWrites",
+   "legendMutations", "styleReads", "rafRequests", "hotPaints",
+   "settlePaints", "fillCacheHits", "fillCacheMisses",
+   "fillCacheEvictions", "blockDecodeRequests", "blockDecodeDigests",
+   "lazyFillDecodes", "gridPathBuilds", "contourPathBuilds",
+   "outlinePathBuilds", "contactMaskBuilds", "overlayBitmapBuilds",
+   "overlayHotBlits"].forEach(function (name) {
+    if (_viewerPerf[name] == null) _viewerPerf[name] = 0;
+  });
+  function perfCount(name) { _viewerPerf[name] = (_viewerPerf[name] || 0) + 1; }
+
   // ---- boot ----------------------------------------------------------------
   function boot(payload) {
     App.payload = payload;
+    initWorkspace(payload);
     // Resolve the 2-D map's binary blocks (SCHEMA.md) into typed arrays — off the
     // main thread when a Worker is available, else synchronously. A JSON-shaped
     // (blockless) map is a no-op; the renderer reads either shape.
@@ -79,6 +94,9 @@
   }
   function registerIdentities() {
     var p = App.payload;
+    // Register workspace identities before deferred resources arrive so colour
+    // slots never depend on fetch order.
+    workspaceIdentityKeys().forEach(registerId);
     // Order = payload order → stable across sessions of the same bundle.
     (p.wells || []).forEach(function (w) { registerId("well:" + w.id); });
     // 3-D scene wells (view3d payloads) take the same well: identity slots.
@@ -121,8 +139,16 @@
       }
     });
   }
+  // Theme tokens are resolved once per theme, never inside navigation frames.
+  // Theme flips invalidate the tiny cache before their explicit non-hot render.
+  var _themeTokenCache = {};
+  function invalidateThemeTokens() { _themeTokenCache = {}; }
   function cssvar(name) {
-    return getComputedStyle(root).getPropertyValue(name).trim();
+    if (Object.prototype.hasOwnProperty.call(_themeTokenCache, name)) {
+      return _themeTokenCache[name];
+    }
+    perfCount("styleReads");
+    return (_themeTokenCache[name] = getComputedStyle(root).getPropertyValue(name).trim());
   }
   function idColor(key) {
     if (!(key in idSlot)) registerId(key);
@@ -137,14 +163,25 @@
   // (petektools.viewer._view2d._COLORMAPS) — keep the two in sync.
   var COLORMAPS = {
     viridis: [[68, 1, 84], [59, 82, 139], [33, 145, 140], [94, 201, 98], [253, 231, 37]],
-    magma: [[0, 0, 4], [81, 18, 124], [183, 55, 121], [252, 137, 97], [252, 253, 191]],
-    grays: [[30, 30, 30], [90, 90, 90], [140, 140, 140], [195, 195, 195], [245, 245, 245]],
     inferno: [[0, 0, 4], [87, 16, 110], [188, 55, 84], [249, 142, 9], [252, 255, 164]],
+    magma: [[0, 0, 4], [81, 18, 124], [183, 55, 121], [252, 137, 97], [252, 253, 191]],
+    plasma: [[13, 8, 135], [126, 3, 168], [204, 71, 120], [248, 149, 64], [240, 249, 33]],
+    cividis: [[0, 32, 77], [66, 78, 108], [124, 123, 120], [188, 173, 108], [253, 234, 69]],
+    turbo: [[48, 18, 59], [38, 188, 225], [164, 252, 60], [250, 126, 32], [122, 4, 3]],
+    coolwarm: [[59, 76, 192], [141, 176, 254], [221, 221, 221], [244, 154, 123], [180, 4, 38]],
+    greys: [[30, 30, 30], [90, 90, 90], [140, 140, 140], [195, 195, 195], [245, 245, 245]],
   };
-  var COLORMAP_NAMES = ["viridis", "magma", "grays", "inferno"];
-  function rampColor(name, t) {
+  COLORMAPS.grays = COLORMAPS.greys; // compatibility alias; picker stays eight canonical maps
+  var COLORMAP_NAMES = ["viridis", "inferno", "magma", "plasma", "cividis", "turbo", "coolwarm", "greys"];
+  function canonicalColormap(name) { return name === "grays" ? "greys" : name; }
+  function colormapStops(name, reversed) {
+    var stops = COLORMAPS[name] || COLORMAPS.viridis;
+    return reversed ? stops.slice().reverse() : stops;
+  }
+  function rampColor(name, t, reversed) {
     if (!isFinite(t)) return null;
     t = t < 0 ? 0 : t > 1 ? 1 : t;
+    if (reversed) t = 1 - t;
     var stops = COLORMAPS[name] || COLORMAPS.viridis;
     var seg = (stops.length - 1) * t;
     var i = Math.min(stops.length - 2, Math.floor(seg));
@@ -156,12 +193,17 @@
       Math.round(a[2] + (b[2] - a[2]) * f),
     ];
   }
-  function rampCss(name, t) { var c = rampColor(name, t); return c ? "rgb(" + c[0] + "," + c[1] + "," + c[2] + ")" : "transparent"; }
-  function rampGradient(name) {
-    var stops = COLORMAPS[name] || COLORMAPS.viridis;
+  function rampCss(name, t, reversed) { var c = rampColor(name, t, reversed); return c ? "rgb(" + c[0] + "," + c[1] + "," + c[2] + ")" : "transparent"; }
+  function rampGradient(name, reversed) {
+    var stops = colormapStops(name, reversed);
     return "linear-gradient(90deg," + stops.map(function (c, i) {
       return "rgb(" + c[0] + "," + c[1] + "," + c[2] + ") " + Math.round((i / (stops.length - 1)) * 100) + "%";
     }).join(",") + ")";
+  }
+  function paintColormap(item) { return canonicalColormap((item && item.colormap) || S.colormap); }
+  function paintReversed(item) {
+    if (item && (item.colormap != null || item.colormap_reversed != null)) return !!item.colormap_reversed;
+    return !!S.colormapReversed;
   }
 
   // ---- display names -------------------------------------------------------
@@ -180,6 +222,17 @@
     if (o && o.display_name) return o.display_name;
     return pretty(rawName != null ? rawName : (o && o.name));
   }
+  // A TriFill carries the source object's `display_name` and the value-layer
+  // identity in `name`. Keep both visible: auto-enumerated attributes from one
+  // surface (and equal attribute names across several surfaces) must never become
+  // an ambiguous row of duplicate selector/legend labels.
+  function fillLabel(fill) {
+    if (!fill) return "fill";
+    var attr = pretty(fill.name);
+    var source = fill.display_name ? String(fill.display_name) : "";
+    if (source && attr && source !== attr) return source + " · " + attr;
+    return source || attr || "fill";
+  }
 
   // ---- units / formatting --------------------------------------------------
   function fmt(v, unit) {
@@ -193,10 +246,19 @@
   var S = {};
   function initState() {
     var p = App.payload;
-    document.getElementById("title").textContent =
-      (p.kind ? p.kind + " · " : "") + (p.property || "model") + " viewer";
+    var titleEl = document.getElementById("title");
+    var title = W && W.manifest.title ? W.manifest.title
+      : (p.kind ? p.kind + " · " : "") + (p.property || "model") + " viewer";
+    var projectBacked = !!(W && W.manifest.project);
+    var persistedProjectTitle = projectBacked ? W.manifest.project.title : null;
+    var showsPersistedProject = !!(persistedProjectTitle && title === persistedProjectTitle);
+    titleEl.textContent = showsPersistedProject ? title.replace(/\.pproj$/i, "") : title;
+    titleEl.classList.toggle("workspace-project-title", showsPersistedProject);
+    titleEl.dataset.projectSuffix = showsPersistedProject ? ".pproj" : "";
+    if (W) titleEl.title = title;
+    else titleEl.removeAttribute("title");
     document.getElementById("mode-badge").textContent =
-      App.mode === "server" ? "live" : "file · static";
+      App.mode === "server" ? "live" : (W ? "offline · static" : "file · static");
 
     // Map field layers = horizons + zone averages + k-slices (each a ScalarLayer).
     var m = p.map || {};
@@ -213,11 +275,26 @@
     // "<cmap>" spec travels as map.colormap / scene3d.colormap); the panel
     // selector can still change it.
     var pinned = m.colormap || (p.scene3d && p.scene3d.colormap);
-    S.colormap = pinned && COLORMAPS[pinned] ? pinned : "viridis";
+    S.colormap = pinned && COLORMAPS[pinned] ? canonicalColormap(pinned) : "viridis";
+    S.colormapReversed = m.colormap_reversed != null ? !!m.colormap_reversed
+      : !!(p.scene3d && p.scene3d.colormap_reversed);
+    S.showMapField = true;
     S.showOutline = true;
     S.clipRaster = true; // clip the areal raster to the outline polygon (QC toggle)
-    S.showGridLines = true;
+    // Filled surfaces read cleanly without the dense geometry lattice. Geometry-
+    // only payloads keep their lines on so they are not rendered as an empty map.
+    // Workspace resources apply this once when their first real map is composed;
+    // subsequent resource/lane changes preserve the user's manual toggle.
+    S.showGridLines = !(m.fills && m.fills.length) || (m.layers || []).some(function (layer) {
+      return layer.kind === "lines" && layer.standalone === true;
+    });
+    S.mapGridDefaultApplied = !!p.map;
     S.showPoints = true;
+    var pointSegments = (m.layers || []).filter(function (entry) {
+      return entry.kind === "points" && entry.start != null && entry.n != null;
+    });
+    S.pointLayerVis = (pointSegments.length ? pointSegments : ((m.points || []).length ? [null] : []))
+      .map(function () { return true; });
     // value-coloured trimesh fills + contour iso-lines (2-D QA payloads):
     // one active fill at a time (selectable), each toggleable like the other
     // map layers. Both default visible — asking for them means wanting them.
@@ -241,6 +318,12 @@
     // it; it only appears when the active section carries zone bands (graceful
     // fallback — a payload without zone_ids stays on the property colormap).
     S.sectionColorBy = "property";
+    S.showSectionFill = true;
+    S.entityKeysExpanded = { map: false, section: false };
+    S.sectionRanges = (p.sections || []).map(function (section) {
+      var source = section.value_range || (p.volume && p.volume.value_range) || { min: 0, max: 1 };
+      return { min: Number(source.min), max: Number(source.max) };
+    });
 
     // The 3-D scene tab (view3d payloads): z-exaggeration seed (the payload's
     // z_exaggeration, the volume tab's 5x default otherwise) + per-kind layer
@@ -249,10 +332,13 @@
     // new chrome).
     var s3 = p.scene3d || {};
     S.s3dExag = s3.z_exaggeration || 5;
-    S.s3dShow = { points: true, meshes: true, lattice: true, contours: true, wells: true, outlines: true };
+    S.s3dShow = { points: true, meshes: true, lattice: !(s3.meshes && s3.meshes.length) || (s3.layers || []).some(function (layer) {
+      return layer.kind === "lines" && layer.standalone === true;
+    }), contours: true, wells: true, outlines: true };
+    S.s3dLatticeDefaultApplied = !!p.scene3d;
     S.s3dWireframe = false;
     var tab3d = document.querySelector('.tab[data-tab="scene3d"]');
-    if (tab3d) tab3d.hidden = !p.scene3d;
+    if (tab3d) tab3d.hidden = !p.scene3d && !workspaceHasView("scene3d");
 
     var v = p.volume || {};
     S.dims = deriveDims();
@@ -292,7 +378,13 @@
       };
     });
   }
-  function tagLayer(l, kind) { return { name: l.name, display: disp(l, l.name), units: l.units, values: l.values, range: l.range, kind: kind }; }
+  function tagLayer(l, kind) {
+    var tagged = { name: l.name, display: disp(l, l.name), units: l.units,
+      values: l.values, range: l.range, kind: kind };
+    if (Object.prototype.hasOwnProperty.call(l, "colormap")) tagged.colormap = canonicalColormap(l.colormap);
+    if (Object.prototype.hasOwnProperty.call(l, "colormap_reversed")) tagged.colormap_reversed = !!l.colormap_reversed;
+    return tagged;
+  }
   function deriveDims() {
     var f = App.payload.map ? App.payload.map.frame : null;
     var cc = App.payload.volume ? App.payload.volume.cell_count : 0;

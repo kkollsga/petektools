@@ -25,6 +25,8 @@ import os
 import shutil
 import subprocess
 import sys
+import time
+import base64
 from pathlib import Path
 
 import pytest
@@ -34,7 +36,64 @@ from petektools.viewer import _v3, save_view
 _BENCH_JS = Path(__file__).parent / "viewer_perf" / "decode_bench.js"
 _RENDER_JS = Path(__file__).parent / "viewer_perf" / "render_bench.mjs"
 _WELLS_JS = Path(__file__).parent / "viewer_perf" / "wells_bench.mjs"
+_WELL_RENDER_JS = Path(__file__).parent / "viewer_perf" / "well_render_bench.mjs"
+_WORKSPACE_JS = Path(__file__).parent / "viewer_perf" / "workspace_bench.mjs"
+_WORKSPACE_SCALE_JS = Path(__file__).parent / "viewer_perf" / "workspace_scale_bench.mjs"
+_WORKSPACE_LANE_JS = Path(__file__).parent / "viewer_perf" / "workspace_lane_bench.mjs"
+_WORKSPACE_STATE_JS = Path(__file__).parent / "viewer_perf" / "workspace_state_bench.mjs"
+_WORKSPACE_TREE_DESIGN_JS = Path(__file__).parent / "viewer_perf" / "workspace_tree_design_bench.mjs"
+_INSPECTOR_LEGEND_JS = Path(__file__).parent / "viewer_perf" / "inspector_legend_bench.mjs"
+_PAINT_RACE_JS = Path(__file__).parent / "viewer_perf" / "paint_race_bench.js"
+_WORKSPACE_SHARED_MAP_JS = (
+    Path(__file__).parent / "viewer_perf" / "workspace_shared_map_bench.js"
+)
+_INSPECTOR_STATE_JS = Path(__file__).parent / "viewer_perf" / "inspector_state_bench.js"
+_WORKSPACE_WELL_OVERLAY_JS = (
+    Path(__file__).parent / "viewer_perf" / "workspace_well_overlay_bench.mjs"
+)
+_REGULAR_SURFACE_JS = Path(__file__).parent / "viewer_perf" / "regular_surface_build_bench.js"
+_MAP_ROTATION_JS = Path(__file__).parent / "viewer_perf" / "map_rotation_bench.js"
+_MAP_BEHAVIOR_JS = Path(__file__).parent / "viewer_perf" / "map_behavior_bench.js"
+_WORKSPACE_DUAL_MODE_JS = (
+    Path(__file__).parent / "viewer_perf" / "workspace_dual_mode_bench.js"
+)
 _NODE = shutil.which("node")
+
+
+@pytest.mark.skipif(_NODE is None, reason="node not installed")
+def test_rotated_map_frame_camera_and_direct_shared_raster_parity():
+    viewer = Path(__file__).parents[1] / "petektools" / "viewer" / "assets" / "viewer"
+    out = subprocess.run(
+        [
+            _NODE,
+            str(_MAP_ROTATION_JS),
+            str(viewer / "05-paint-state.js"),
+            str(viewer / "20-map.js"),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert out.returncode == 0, out.stdout + out.stderr
+    result = json.loads(out.stdout.strip().splitlines()[-1])
+    assert result["rasterBytes"] == 4 * 3 * 4
+    assert result["north0"] == [0, -1]
+    assert result["cacheSeparated"] is True
+
+
+@pytest.mark.skipif(_NODE is None, reason="node not installed")
+def test_map_all_visible_well_pick_composition_and_cycle():
+    viewer = Path(__file__).parents[1] / "petektools" / "viewer" / "assets" / "viewer"
+    out = subprocess.run(
+        [_NODE, str(_MAP_BEHAVIOR_JS), str(viewer / "20-map.js")],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert out.returncode == 0, out.stdout + out.stderr
+    result = json.loads(out.stdout.strip().splitlines()[-1])
+    assert result["selected"] == 300
+    assert result["cycled"] == 100
 
 
 def _playwright_available() -> bool:
@@ -54,6 +113,342 @@ def _playwright_available() -> bool:
 
 
 _HAVE_PW = _playwright_available()
+
+
+@pytest.mark.skipif(_NODE is None, reason="node not installed")
+def test_async_paint_flip_discards_stale_pixels_and_requeues():
+    policy = Path(__file__).parents[1] / "petektools" / "viewer" / "assets" / "viewer" / "05-paint-state.js"
+    out = subprocess.run(
+        [_NODE, str(_PAINT_RACE_JS), str(policy)],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert out.returncode == 0, out.stdout + out.stderr
+    result = json.loads(out.stdout.strip().splitlines()[-1])
+    for name, state in result.items():
+        assert state["materialKey"] == state["pixelKey"] == "inferno|true"
+        assert state["requeues"] == (0 if name == "volumeRecolor" else 1)
+
+
+@pytest.mark.skipif(_NODE is None, reason="node not installed")
+def test_hidden_point_slices_and_exact_section_horizon_geometry():
+    helpers = Path(__file__).parents[1] / "petektools" / "viewer" / "assets" / "viewer" / "05-paint-state.js"
+    out = subprocess.run(
+        [_NODE, str(_INSPECTOR_STATE_JS), str(helpers)],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert out.returncode == 0, out.stdout + out.stderr
+    result = json.loads(out.stdout.strip().splitlines()[-1])
+    assert result["extent"] == {"x0": 0.5, "y0": 0, "x1": 1, "y1": 0}
+    assert result["winner"] == 0
+    assert result["innerOnly"] is False and result["outer"] is True
+
+
+@pytest.mark.skipif(_NODE is None, reason="node not installed")
+def test_shared_only_workspace_map_composes_and_renders_with_source_frames():
+    viewer = (
+        Path(__file__).parents[1]
+        / "petektools"
+        / "viewer"
+        / "assets"
+        / "viewer"
+    )
+    out = subprocess.run(
+        [
+            _NODE,
+            str(_WORKSPACE_SHARED_MAP_JS),
+            str(viewer / "05-paint-state.js"),
+            str(viewer / "15-workspace.js"),
+            str(viewer / "20-map.js"),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert out.returncode == 0, out.stdout + out.stderr
+    result = json.loads(out.stdout.strip().splitlines()[-1])
+    assert result["activeOrigin"] == 100
+    assert result["cursorValue"] == 3
+    assert result["category"] == 1
+    assert result["stableGeometry"] is True
+    assert result["paintCacheSeparated"] is True
+    assert result["categoricalCacheSeparated"] is True
+    assert result["maskCacheSeparated"] is True
+    assert result["clampCacheSeparated"] is True
+    assert result["fillCacheHits"] >= 1
+    assert result["paintWrites"] == 2
+    assert result["composeCalls"] == 2
+    assert result["loadCalls"] == 0
+
+
+@pytest.mark.skipif(_NODE is None, reason="node not installed")
+def test_shared_workspace_dual_mode_reuses_one_resource_and_geometry():
+    assets = Path(__file__).parents[1] / "petektools" / "viewer" / "assets"
+    out = subprocess.run(
+        [
+            _NODE,
+            str(_WORKSPACE_DUAL_MODE_JS),
+            str(assets / "viewer" / "15-workspace.js"),
+            str(assets / "viewer" / "45-scene3d.js"),
+            str(assets / "decode.js"),
+            str(assets / "index.html"),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert out.returncode == 0, out.stdout + out.stderr
+    result = json.loads(out.stdout.strip().splitlines()[-1])
+    assert result["fetches"] == result["decodes"] == result["geometryBuilds"] == 1
+    assert result["sourceBytes"] == 36
+    assert result["positionBytes"] == 48
+    assert result["topologyBytes"] == 24
+    assert result["paintBytes"] == 48
+    assert result["retainedBytes"] == 156
+    assert result["paintBuilds"] == 2
+    assert result["categorical"] and result["maskSeparated"]
+    assert result["fallback"] == "fallback"
+    assert result["legacy"] and result["offline"] and result["stateNeutral"]
+
+
+def _overlay_map(name, fills, overlays):
+    from petektools.viewer import _blocks
+
+    nodes = [[0.0, 0.0], [100.0, 0.0], [0.0, 100.0]]
+    mapped_fills = [{
+        "name": attr,
+        "display_name": name,
+        "nodes": nodes,
+        "triangles": [[0, 1, 2]],
+        "values": values,
+        "range": [min(values), max(values)],
+    } for attr, values in fills]
+    bundle = {
+        "schema_version": 2,
+        "frame": {"origin_x": 0.0, "origin_y": 0.0, "spacing_x": 100.0,
+                  "spacing_y": 100.0, "ncol": 2, "nrow": 2},
+        "outline": [], "grid_lines": [], "points": [], "point_color": None,
+        "colormap": "viridis", "layers": [], "fills": mapped_fills,
+        "contours": [], "horizons": [], "zone_averages": [], "k_slices": [],
+        "contacts": [], "well_overlays": overlays,
+    }
+    assert _blocks.encode_map(bundle, threshold_bytes=0)
+    return bundle
+
+
+class _OverlayWorkspaceProvider:
+    base_wells = [
+        {"id": "Hit", "item_id": "well:hit", "display_name": "Hit well", "x": 0.0,
+         "y": 0.0, "trajectory": [[0.0, 0.0, 0.0], [90_000.0, 0.0, -900.0]],
+         "style": {"path": {"color": "#123456", "width": 3}}, "label": True},
+        {"id": "No hit", "item_id": "well:no-hit", "x": 0.0, "y": 10.0,
+         "trajectory": [[0.0, 10.0, 0.0], [80.0, 10.0, -800.0]], "label": False},
+        {"id": "Ambiguous", "item_id": "well:ambiguous", "x": 0.0, "y": 20.0,
+         "trajectory": [[0.0, 20.0, 0.0], [70.0, 20.0, -700.0]], "label": False},
+        {"id": "Error", "item_id": "well:error", "x": 0.0, "y": 30.0,
+         "trajectory": [[0.0, 30.0, 0.0], [60.0, 30.0, -600.0]], "label": False},
+        {"id": "Bad", "item_id": "well:bad", "x": 0.0, "y": 40.0,
+         "trajectory": [[0.0, 40.0, 0.0], [50.0, 40.0, -500.0]], "label": False},
+    ]
+    hit_a = [[0.0, 0.0, 0.0], [12.5, 0.0, -125.0]]
+    hit_b = [[0.0, 0.0, 0.0], [37.5, 0.0, -375.0]]
+    hit_a_intersection = {"md": 125.25, "xyz": [12.5, 0.0, -125.0]}
+
+    def view_catalog(self):
+        return [
+            {"id": "surface:a", "label": "Surface A", "views": {"map": {}},
+             "visible": {"map": True}},
+            {"id": "surface:b", "label": "Surface B", "views": {"map": {}},
+             "visible": {"map": True}},
+            {"id": "surface:legacy", "label": "Legacy Surface", "views": {"map": {}},
+             "visible": {"map": True}},
+        ]
+
+    def view_resource(self, *, item_id, view, lane=None):
+        if item_id == "surface:a":
+            overlays = [
+                {"context_item_id": item_id, "well_item_id": "well:hit",
+                 "trajectory": self.hit_a, "intersection": self.hit_a_intersection,
+                 "status": "hit"},
+                {"context_item_id": item_id, "well_item_id": "well:no-hit",
+                 "trajectory": self.base_wells[1]["trajectory"], "intersection": None,
+                 "status": "no_hit"},
+                {"context_item_id": item_id, "well_item_id": "well:ambiguous",
+                 "trajectory": [], "intersection": None, "status": "ambiguous",
+                 "message": "two crossings"},
+                {"context_item_id": item_id, "well_item_id": "well:error",
+                 "trajectory": [[0.0, 30.0, 0.0], [22.0, 30.0, -220.0]],
+                 "intersection": None, "status": "error", "message": "producer failed"},
+                {"context_item_id": item_id, "well_item_id": "well:bad",
+                 "trajectory": [[0.0, 40.0, 0.0], [9.0, 40.0, -90.0]],
+                 "intersection": None, "status": "banana"},
+                {"context_item_id": item_id, "well_item_id": "missing:well",
+                 "trajectory": [[0.0, 0.0, 0.0]], "intersection": None, "status": "no_hit"},
+                {"context_item_id": 7, "well_item_id": "well:hit",
+                 "trajectory": [], "intersection": None, "status": "error"},
+            ]
+            map_bundle = _overlay_map("Surface A", [
+                ("depth", [1.0, 2.0, 3.0]),
+                ("thickness", [10.0, 20.0, 30.0]),
+            ], overlays)
+            wells = self.base_wells
+        elif item_id == "surface:b":
+            overlays = [{
+                "context_item_id": item_id, "well_item_id": "well:hit",
+                "trajectory": self.hit_b, "intersection": {"md": 375.5,
+                "xyz": [37.5, 0.0, -375.0]}, "status": "hit",
+            }]
+            map_bundle = _overlay_map("Surface B", [("depth", [4.0, 5.0, 6.0])], overlays)
+            wells = []
+        else:
+            map_bundle = _overlay_map(
+                "Legacy Surface", [("depth", [7.0, 8.0, 9.0])], []
+            )
+            map_bundle.pop("well_overlays")
+            wells = []
+        return {"schema_version": 4, "kind": "2D", "map": map_bundle, "wells": wells}
+
+
+@pytest.mark.skipif(not _HAVE_PW, reason="playwright + chromium not available (browser leg)")
+def test_workspace_map_contextual_well_overlays_switch_atomically(tmp_path):
+    from petektools import WorkspaceSession
+
+    path = tmp_path / "contextual-well-overlays.html"
+    WorkspaceSession(_OverlayWorkspaceProvider()).save(path)
+    out = subprocess.run(
+        [_NODE, str(_WORKSPACE_WELL_OVERLAY_JS), str(path)],
+        capture_output=True, text=True, timeout=120,
+    )
+    assert out.returncode == 0, out.stderr
+    result = json.loads((out.stdout.strip().splitlines() or ["{}"])[-1])
+    assert not result.get("consoleErrors"), result.get("consoleErrors")
+    initial = result["initial"]
+    toggled = result["toggled"]
+    attr = result["aAttribute"]
+    selected_b = result["b"]
+    legacy = result["legacy"]
+    assert initial["overlay"]["contextItemId"] == "surface:a"
+    assert attr["overlay"]["contextItemId"] == "surface:a"
+    assert selected_b["overlay"]["contextItemId"] == "surface:b"
+    assert legacy["overlay"]["contextItemId"] == "surface:legacy"
+    assert initial["overlay"]["wells"][0]["trajectory"] == _OverlayWorkspaceProvider.hit_a
+    assert attr["overlay"]["wells"][0]["trajectory"] == _OverlayWorkspaceProvider.hit_a
+    assert selected_b["overlay"]["wells"][0]["trajectory"] == _OverlayWorkspaceProvider.hit_b
+    assert legacy["overlay"]["wells"][0]["source"] == "base"
+    assert legacy["overlay"]["wells"][0]["trajectory"] == _OverlayWorkspaceProvider.base_wells[0]["trajectory"]
+    assert initial["overlay"]["wells"][0]["activeIntersection"] == _OverlayWorkspaceProvider.hit_a_intersection
+    assert initial["overlay"]["wells"][0]["intersection"]["md"] == 375.5
+    assert initial["overlay"]["wells"][0]["selectedIntersection"]["context_item_id"] == "surface:b"
+    assert initial["overlay"]["wells"][0]["displayName"] == "Hit well"
+    assert initial["overlay"]["wells"][0]["head"] == [0.0, 0.0]
+    assert initial["overlay"]["wells"][0]["style"] == {"path": {"color": "#123456", "width": 3}}
+    assert toggled["overlay"]["contextItemId"] == "surface:a"
+    assert toggled["overlay"]["wells"][0]["visible"] is False
+    assert toggled["overlay"]["wells"][0]["trajectory"] == _OverlayWorkspaceProvider.hit_a
+    assert toggled["camera"] == initial["camera"]
+    assert initial["overlay"]["wells"][1]["status"] == "no_hit"
+    assert initial["overlay"]["wells"][1]["trajectory"] == _OverlayWorkspaceProvider.base_wells[1]["trajectory"]
+    assert initial["overlay"]["wells"][2]["source"] == "base"
+    assert initial["overlay"]["wells"][2]["message"] == "two crossings"
+    assert initial["overlay"]["wells"][3]["source"] == "overlay"
+    assert initial["overlay"]["wells"][3]["message"] == "producer failed"
+    assert initial["overlay"]["wells"][4]["source"] == "base"
+    codes = {diagnostic["code"] for diagnostic in initial["overlay"]["diagnostics"]}
+    assert {"ambiguous", "error", "malformed_status", "malformed_identity",
+            "unknown_well_identity"} <= codes
+    assert "two crossings" in initial["panelText"]
+    assert initial["camera"]["horizontalSpan"] < 20_000
+    for snapshot in (attr, selected_b, legacy):
+        assert snapshot["camera"] == initial["camera"]
+
+
+@pytest.mark.skipif(not _HAVE_PW, reason="playwright + chromium not available (browser leg)")
+def test_static_workspace_opens_embedded_full_detail_without_preview_request(tmp_path):
+    from petektools import WorkspaceSession
+
+    class DetailProvider:
+        def view_catalog(self):
+            return [{
+                "id": "surface:top",
+                "views": {"scene3d": {
+                    "tiers": [
+                        {"id": "preview", "label": "Preview"},
+                        {"id": "full", "label": "Full detail"},
+                    ],
+                    "active_detail": "preview",
+                }},
+                "visible": {"scene3d": True},
+            }]
+
+        def view_resource(self, *, item_id, view, lane=None, detail=None):
+            return {"schema_version": 4, "scene3d": {"meshes": [], "detail": detail}}
+
+    path = tmp_path / "static-full-detail.html"
+    WorkspaceSession(DetailProvider()).save(path)
+    out = subprocess.run(
+        [_NODE, str(_WORKSPACE_STATE_JS), str(path)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert out.returncode == 0, out.stderr
+    result = json.loads((out.stdout.strip().splitlines() or ["{}"])[-1])
+    assert not result.get("consoleErrors"), result.get("consoleErrors")
+    workspace = result["workspace"]
+    assert workspace["activeDetail"] == {"surface:top": {"scene3d": "full"}}
+    assert workspace["loaded"] == 1
+    assert workspace["loading"] == 0
+    assert workspace["errors"] == 0
+
+
+@pytest.mark.skipif(_NODE is None, reason="node not available")
+def test_compact_regular_surface_worker_build(tmp_path):
+    ncol = nrow = 400
+    values = [
+        -2600.0 + 40.0 * math.sin(i / 31.0) * math.cos(j / 37.0)
+        for j in range(nrow)
+        for i in range(ncol)
+    ]
+    mask = [1] * len(values)
+
+    def block(data, dtype):
+        raw = _v3._le_bytes(data, dtype)
+        return {
+            "dtype": dtype,
+            "shape": [len(data)],
+            "data": base64.b64encode(raw).decode("ascii"),
+        }
+
+    source = tmp_path / "regular-surface.json"
+    source.write_text(json.dumps({
+        "surface": {
+            "dimensions": [ncol, nrow],
+            "origin": [431000.0, 6521000.0],
+            "step_i": [25.0, 0.0],
+            "step_j": [0.0, -25.0],
+            "elevations": block(values, "f32"),
+            "mask": block(mask, "u8"),
+            "values": block(values, "f32"),
+        },
+        "center": [436000.0, 6516000.0, -2600.0],
+        "range": [-2640.0, -2560.0],
+        "stops": [[68, 1, 84], [59, 82, 139], [33, 145, 140], [94, 201, 98], [253, 231, 37]],
+    }))
+    out = subprocess.run(
+        [_NODE, str(_REGULAR_SURFACE_JS), str(source)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert out.returncode == 0, out.stderr
+    result = json.loads(out.stdout)
+    assert result["nodes"] == ncol * nrow
+    assert result["triangles"] == (ncol - 1) * (nrow - 1) * 2
+    assert result["colors"] == ncol * nrow
+    assert result["buildMs"] < 250.0, result
+    print(
+        f"\n[regular-surface] {result['nodes']} nodes / {result['triangles']} tris "
+        f"built in worker kernel in {result['buildMs']} ms"
+    )
 
 # grid shapes per scale (cell-major i,j,k); flat-ish reservoirs (low relief).
 SCALES = {
@@ -128,6 +523,472 @@ def test_decode_kernel_5m(tmp_path):
 # regression to a full ncol×nrow repaint blows straight past it.
 HEAP_CAP_MB = {"100k": 200.0, "1M": 350.0, "5M": 900.0}
 FRAME_CAP_MS = 50.0
+
+
+@pytest.mark.skipif(not _HAVE_PW, reason="playwright/chromium not installed")
+def test_workspace_tree_search_tristate_and_per_view_visibility(tmp_path):
+    import petektools as pto
+
+    class WorkspaceSurface:
+        kind = "surface"
+        geometry = None
+
+        def __init__(self, name, shift):
+            self.name = name
+            self.shift = shift
+
+        def attr_names(self):
+            return ["thickness"]
+
+        def value_layer(self, attr=None, stride=None):
+            offset = self.shift + (100.0 if attr == "thickness" else 0.0)
+            return {
+                "name": attr or "values",
+                "nodes": [[self.shift, 0.0], [self.shift + 50.0, 0.0],
+                          [self.shift, 50.0], [self.shift + 50.0, 50.0]],
+                "triangles": [[0, 1, 2], [1, 3, 2]],
+                "values": [offset + 1.0, offset + 2.0, offset + 3.0, offset + 4.0],
+                "range": [offset + 1.0, offset + 4.0],
+            }
+
+    session = pto.view(
+        {
+            "Interpretation": {
+                "Cloud A": {
+                    "object": WorkspaceSurface("Cloud A", 0.0),
+                    "views": {
+                        "map": {"encoding": "blocks", "block_threshold_bytes": 1},
+                        "scene3d": {},
+                    },
+                    "visible": {"map": True, "scene3d": False},
+                },
+                "Cloud B": {
+                    "object": WorkspaceSurface("Cloud B", 1000.0),
+                    "views": {
+                        "map": {"encoding": "blocks", "block_threshold_bytes": 1},
+                        "scene3d": {},
+                    },
+                    "visible": {"map": False, "scene3d": True},
+                },
+            }
+        },
+        serve=False,
+    )
+    view = tmp_path / "workspace-selected.html"
+    session.save(view, include="selected")
+    out = subprocess.run(
+        [_NODE, str(_WORKSPACE_JS), str(view)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert out.returncode == 0, out.stdout + out.stderr
+    result = json.loads(out.stdout.strip().splitlines()[-1])
+    assert result["consoleErrors"] == []
+    assert result["triStateInitial"] is True
+    assert result["returned"]["fetches"] == 0
+
+
+@pytest.mark.skipif(not _HAVE_PW, reason="playwright/chromium not installed")
+def test_workspace_tree_design_roles_states_and_multibore_dom(tmp_path):
+    def leaf(item_id, label, role, *, visible=False, disabled=False, reason=None, lanes=False):
+        resources = {}
+        if not disabled:
+            resources["map"] = {"href": f"./workspace-resource?item={item_id}&view=map", "deferred": True}
+            if lanes:
+                resources["map"].update({
+                    "lanes": [
+                        {"id": "depth", "label": "Depth"},
+                        {"id": "thickness", "label": "Thickness"},
+                    ],
+                    "active_lane": "depth",
+                    "active_color_by": "thickness",
+                })
+        out = {
+            "id": item_id, "label": label, "role": role,
+            "views": [] if disabled else ["map"],
+            "visible": {} if disabled else {"map": visible},
+            "resources": resources,
+        }
+        if disabled:
+            out.update({"disabled": True, "reason": reason})
+        return out
+
+    assets = [
+        leaf("surface:top", "Top Reservoir", "surface", visible=True, lanes=True),
+        leaf("point:one", "Survey Points", "point_set"),
+        leaf("top:one", "Well Tops", "well_top"),
+        leaf("grid:one", "Grid", "volume"),
+        leaf("polygon:one", "Lease", "polygon"),
+        leaf("log:one", "Gamma Ray", "log"),
+        leaf("zone:one", "Zones", "zone"),
+        leaf("chart:one", "Crossplot", "chart"),
+        leaf("unknown:legacy", "Legacy", None, disabled=True, reason="Unsupported project asset"),
+    ]
+    section_leaf = leaf("section:one", "Cross section", "polygon")
+    section_leaf.update({
+        "views": ["sections"], "visible": {"sections": True},
+        "resources": {"sections": {
+            "href": "./workspace-resource?item=section:one&view=sections", "deferred": True,
+        }},
+    })
+    tree = [
+        {"id": "group:assets", "label": "Assets", "expanded": True, "children": assets},
+        {"id": "group:wells", "label": "Wells", "expanded": True, "children": [
+            {"id": "well:single", "label": "Well One", "expanded": True, "children": [
+                leaf("bore:single", "Main bore", "bore"),
+            ]},
+            {"id": "well:multi", "label": "Well Two", "expanded": True, "children": [
+                leaf("bore:multi-a", "Main bore", "bore"),
+                leaf("bore:multi-b", "Sidetrack", "bore"),
+            ]},
+        ]},
+        {"id": "group:sections", "label": "Sections", "expanded": True, "children": [section_leaf]},
+    ]
+    payload = {
+        "schema_version": 3, "kind": "workspace", "title": "North Sea",
+        "workspace": {
+            "schema_version": 1, "title": "North Sea", "available_views": ["map", "sections"],
+            "project": {"title": "North Sea", "crs": None, "unit": "m"},
+            "tree": tree, "resources": {},
+            "snapshot": {"include": "visible", "message": "Not embedded in design fixture."},
+        },
+    }
+    target = tmp_path / "workspace-tree-design.html"
+    save_view(payload, target)
+    out = subprocess.run(
+        [_NODE, str(_WORKSPACE_TREE_DESIGN_JS), str(target)],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert out.returncode == 0, out.stdout + out.stderr
+    result = json.loads(out.stdout.strip().splitlines()[-1])
+    assert result["consoleErrors"] == []
+    assert result["before"]["single"]["id"] == "bore:single"
+    assert result["before"]["multi"]["explicit"] is True
+
+
+@pytest.mark.skipif(not _HAVE_PW, reason="playwright/chromium not installed")
+def test_inspector_legend_single_truth_and_range_transactions_dom(tmp_path):
+    wells = [
+        {"id": f"Well-{i}", "x": float(i), "y": float(i), "label": True}
+        for i in range(8)
+    ]
+    columns = [
+        {
+            "distance_m": float(i * 100),
+            "layer_tops": [1000.0], "layer_bases": [1100.0],
+            "values": [0.2 + i * 0.1], "zone_ids": [i % 2],
+        }
+        for i in range(2)
+    ]
+    payload = {
+        "kind": "inspector-test", "property": "porosity",
+        "map": {
+            "frame": {"origin_x": 0.0, "origin_y": 0.0, "spacing_x": 1.0,
+                      "spacing_y": 1.0, "ncol": 2, "nrow": 2},
+            "outline": [], "grid_lines": [[[0, 0], [1, 1]]],
+            "points": [[0.0, 0.0, 0.0], [0.2, 0.2, 1.0], [0.8, 0.8, 10.0], [1.0, 1.0, 20.0]],
+            "fills": [], "contours": [{"name": "Iso A", "lines": [[[0, 1], [1, 0]]]}],
+            "point_color": {"by": "z", "range": [0.0, 20.0]}, "layers": [
+                {"kind": "points", "name": "Cloud A", "start": 0, "n": 2,
+                 "range": [0.0, 1.0], "colormap": "magma"},
+                {"kind": "points", "name": "Cloud B", "start": 2, "n": 2,
+                 "range": [10.0, 20.0], "colormap": "inferno", "colormap_reversed": True},
+                {"kind": "lines", "name": "Structural Grid"},
+                {"kind": "lines", "name": "Survey Grid"},
+                {"kind": "contours", "name": "Iso A"},
+            ], "contacts": [
+                {"kind": "owc", "depth_m": 1050.0},
+            ],
+            "horizons": [{"name": "Porosity", "display_name": "Porosity",
+                          "units": "fraction", "values": [0.0, 10.0, 20.0, 30.0],
+                          "range": {"min": 0.0, "max": 30.0}}],
+            "zone_averages": [], "k_slices": [], "colormap": "viridis",
+        },
+        "sections": [{
+            "property": "facies", "top_name": "Top", "base_name": "Base",
+            "value_range": {"min": 0.0, "max": 1.0}, "columns": columns,
+            "zones": [{"name": "Sand", "color": "#d9a441"}, {"name": "Shale", "color": "#73859b"}],
+            "contacts": [],
+        }, {
+            "property": "facies", "top_name": "Top", "base_name": "Base",
+            "value_range": {"min": 0.0, "max": 1.0},
+            "columns": [{**column, "zone_ids": []} for column in columns],
+            "zones": [{"name": "Metadata only"}], "contacts": [],
+        }],
+        "wells": wells,
+    }
+    target = tmp_path / "inspector-legend.html"
+    save_view(payload, target)
+    out = subprocess.run(
+        [_NODE, str(_INSPECTOR_LEGEND_JS), str(target)],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert out.returncode == 0, out.stdout + out.stderr
+    result = json.loads(out.stdout.strip().splitlines()[-1])
+    assert result["consoleErrors"] == []
+
+
+@pytest.mark.skipif(not _HAVE_PW, reason="playwright/chromium not installed")
+def test_workspace_tree_2000_leaf_interaction_budget(tmp_path):
+    leaves = [
+        {
+            "id": f"surface:{i}",
+            "label": f"Surface {i}",
+            "views": ["map"],
+            "visible": {"map": False},
+            "resources": {},
+        }
+        for i in range(2000)
+    ]
+    payload = {
+        "schema_version": 3,
+        "kind": "workspace",
+        "workspace": {
+            "schema_version": 1,
+            "title": "2,000-leaf workspace",
+            "available_views": ["map"],
+            "tree": [
+                {
+                    "id": "group:surfaces",
+                    "label": "Surfaces",
+                    "expanded": True,
+                    "children": leaves,
+                }
+            ],
+            "resources": {},
+            "snapshot": {"include": "visible", "message": "Performance fixture."},
+        },
+    }
+    view = tmp_path / "workspace-2000.html"
+    save_view(payload, view)
+    out = subprocess.run(
+        [_NODE, str(_WORKSPACE_SCALE_JS), str(view)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert out.returncode == 0, out.stdout + out.stderr
+    result = json.loads(out.stdout.strip().splitlines()[-1])
+    for probe in (result["desktopBottom"], result["narrowBottom"]):
+        assert probe["rowHeight"] == 28
+        assert probe["boundedRows"]
+        assert probe["uniformRows"]
+        assert probe["lastRendered"] and probe["lastVisible"]
+        assert abs(probe["blankTailPx"]) <= 2
+    assert result["treeBuildP95Ms"] < 16.7
+    assert result["groupToggleP95Ms"] < 16.7
+
+
+@pytest.mark.skipif(not _HAVE_PW, reason="playwright/chromium not installed")
+@pytest.mark.parametrize("mode", ["live", "static_selected", "static_visible"])
+def test_workspace_provider_lanes_fetch_once_cache_and_switch_offline(tmp_path, mode):
+    import petektools as pto
+    from petektools import viewer
+
+    class LanePoints:
+        kind = "point_set"
+
+        def __init__(self, lane):
+            self.name = lane
+            self.lane = lane
+
+        def xyz(self):
+            z = -100.0 if self.lane == "depth" else 25.0
+            return [[0.0, 0.0, z], [50.0, 25.0, z + 1.0], [20.0, 70.0, z + 2.0]]
+
+    class LaneBrowserProvider:
+        def __init__(self):
+            self.calls = []
+
+        def view_catalog(self):
+            return [
+                {
+                    "id": "group:interpretation",
+                    "label": "Interpretation",
+                    "children": [
+                        {
+                            "id": "surface:top",
+                            "label": "Synthetic Top Alpha",
+                            "views": {
+                                "map": {
+                                    "lanes": [
+                                        {"id": "depth", "label": "Depth"},
+                                        {"id": "thickness", "label": "Thickness"},
+                                    ],
+                                    "active_lane": "depth",
+                                }
+                            },
+                            "visible": {"map": True},
+                        },
+                        {
+                            "id": "unknown:legacy",
+                            "label": "Legacy mystery",
+                            "views": {},
+                            "reason": "Unsupported project asset",
+                            "diagnostic": {"kind": "legacy_blob"},
+                        },
+                    ],
+                }
+            ]
+
+        def view_resource(self, *, item_id, view, lane=None):
+            self.calls.append((item_id, view, lane))
+            return viewer.view2d_payload(
+                [{"object": LanePoints(lane), "id": item_id, "name": lane}],
+                encoding="json",
+            )
+
+    provider = LaneBrowserProvider()
+    session = pto.view(provider, serve=False)
+    if mode == "live":
+        session.serve(open_browser=False)
+        target = session.url
+    else:
+        target = tmp_path / f"workspace-lanes-{mode}.html"
+        session.save(
+            target,
+            include="selected" if mode == "static_selected" else "visible",
+        )
+    try:
+        command = [_NODE, str(_WORKSPACE_LANE_JS), str(target)]
+        if mode == "static_visible":
+            command.append("--expect-omitted")
+        out = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    finally:
+        if mode == "live":
+            session._server.shutdown()
+            session._server.server_close()
+    assert out.returncode == 0, out.stdout + out.stderr
+    result = json.loads(out.stdout.strip().splitlines()[-1])
+    assert result["consoleErrors"] == []
+    if mode == "live":
+        assert result["initial"]["fetches"] == 1
+        assert result["thickness"]["fetches"] == 2
+        assert result["depthAgain"]["fetches"] == 2
+    elif mode == "static_selected":
+        assert result["initial"]["fetches"] == 0
+        assert result["thickness"]["fetches"] == 0
+        assert result["depthAgain"]["fetches"] == 0
+    else:
+        assert result["initial"]["fetches"] == 0
+        assert result["thickness"]["fetches"] == 0
+        assert result["thickness"]["errors"] == 1
+        assert result["depthAgain"]["fetches"] == 0
+    expected_calls = [("surface:top", "map", "depth")]
+    if mode != "static_visible":
+        expected_calls.append(("surface:top", "map", "thickness"))
+    assert provider.calls == expected_calls
+
+
+@pytest.mark.skipif(not _HAVE_PW, reason="playwright/chromium not installed")
+@pytest.mark.parametrize(
+    "view,resource_payload,expected",
+    [
+        ("scene3d", {"scene3d": {}}, "empty"),
+        ("scene3d", {}, "malformed"),
+        ("wells", {"wells_logs": {"wells": []}}, "empty"),
+        ("wells", {}, "malformed"),
+    ],
+)
+def test_workspace_lazy_views_localize_empty_and_malformed_states(
+    tmp_path, view, resource_payload, expected
+):
+    item_id = "item:state"
+    resource = {
+        "schema_version": 1,
+        "kind": "workspace_resource",
+        "item_id": item_id,
+        "view": view,
+        "lane": None,
+        "payload": resource_payload,
+    }
+    payload = {
+        "schema_version": 4,
+        "kind": "workspace",
+        "property": "state fixture",
+        "map": None,
+        "scene3d": None,
+        "volume": None,
+        "sections": [],
+        "section_labels": [],
+        "wells": [],
+        "wells_logs": None,
+        "charts": [],
+        "workspace": {
+            "schema_version": 1,
+            "title": "State fixture",
+            "available_views": [view],
+            "tree": [{
+                "id": "group:state", "label": "State", "children": [{
+                    "id": item_id, "label": "State item", "views": [view],
+                    "visible": {view: True},
+                    "resources": {view: {"href": "./unused", "deferred": True}},
+                }],
+            }],
+            "resources": {item_id: {view: resource}},
+            "snapshot": {"include": "selected", "message": "State fixture"},
+        },
+    }
+    target = tmp_path / f"workspace-{view}-{expected}.html"
+    save_view(payload, target)
+    out = subprocess.run(
+        [_NODE, str(_WORKSPACE_STATE_JS), str(target)],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert out.returncode == 0, out.stdout + out.stderr
+    result = json.loads(out.stdout.strip().splitlines()[-1])
+    status = result["final"][view]
+    assert status["state"] == expected
+    assert status.get("reason") == result["final"]["empty"]
+    assert status.get("reason")
+    assert {sample[view]["state"] for sample in result["history"]} == {expected}
+
+
+@pytest.mark.skipif(not _HAVE_PW, reason="playwright/chromium not installed")
+def test_workspace_slow_scene_reports_loading_then_ready(tmp_path):
+    import petektools as pto
+    from petektools import viewer
+
+    class SlowSceneProvider:
+        def view_catalog(self):
+            return [{
+                "id": "point:slow", "label": "Slow points",
+                "views": ["scene3d"], "visible": {"scene3d": True},
+            }]
+
+        def view_resource(self, *, item_id, view, lane=None):
+            time.sleep(0.5)
+            return viewer.view3d_payload([{
+                "object": type("Point", (), {
+                    "name": "Slow", "kind": "point_set",
+                    "xyz": lambda self: [[0.0, 0.0, -1.0]],
+                })(),
+                "id": item_id,
+            }])
+
+    session = pto.view(SlowSceneProvider(), serve=False)
+    session.serve(open_browser=False)
+    try:
+        out = subprocess.run(
+            [_NODE, str(_WORKSPACE_STATE_JS), str(session.url)],
+            capture_output=True, text=True, timeout=60,
+        )
+    finally:
+        session._server.shutdown(); session._server.server_close()
+    assert out.returncode == 0, out.stdout + out.stderr
+    result = json.loads(out.stdout.strip().splitlines()[-1])
+    assert result["first"]["scene3d"]["state"] == "loading"
+    assert result["final"]["scene3d"]["state"] == "ok"
+    states = [sample["scene3d"]["state"] for sample in result["history"]]
+    first_ready = states.index("ok")
+    assert set(states[:first_ready]) == {"loading"}
+    assert set(states[first_ready:]) == {"ok"}
 
 
 def _build_scale_view(scale: str, tmp_path: Path) -> Path:
@@ -276,10 +1137,12 @@ def test_render_200k_points_pan_hover_budget(tmp_path):
     # pan/zoom: at most one repaint per animation frame (~3 events dispatched/frame)
     assert r["dragFrames"] <= (r["dragEvents"] // 2), r
     assert r["dragFrameMsMedian"] < POINTS_DRAG_CAP_MS, r
-    # hover: grid-bucketed hit-test, never an all-points scan — and it still HITS
-    # (the readout showed a point under the sweep's final position)
+    # hover: shows NOTHING (click-to-inspect ruling) and stays cheap; a still
+    # CLICK at the canvas centre hits a point (the grid-bucket hit-test) and
+    # reveals the readout anchored there
     assert r["hoverAvgMs"] < POINTS_HOVER_CAP_MS, r
-    assert r["hoverReadout"] is True, r
+    assert r["hoverReadout"] is False, r
+    assert r["clickReadout"] is True, r
 
 
 # --- the Wells correlation tab + v4 obligations (Playwright) ------------------
@@ -295,6 +1158,33 @@ def _run_wells(view: Path, *extra: str, timeout: int = 120) -> dict:
     line = (out.stdout.strip().splitlines() or ["{}"])[-1]
     data = json.loads(line) if line.startswith("{") else {}
     return {"rc": out.returncode, "stderr": out.stderr, **data}
+
+
+@pytest.mark.skipif(not _HAVE_PW, reason="playwright + chromium not available (browser leg)")
+@pytest.mark.parametrize("nwells", [1, 8, 50])
+def test_first_class_wells_map_and_scene3d(nwells, tmp_path):
+    from petektools import viewer
+
+    wells = []
+    for i in range(nwells):
+        # Every eighth bore is co-located (sidetrack semantics); the rest form
+        # a deterministic field grid with a short deviated XY/Z path.
+        x = float((i // 8) * 120 + (0 if i % 8 == 7 else (i % 8) * 35))
+        y = float((i // 8) * 90)
+        wells.append({"id": f"W{i:02d}", "trajectory": [[x, y, -100], [x + 18, y + 9, -350]]})
+    payload = viewer.view2d_payload([], wells=wells, well_labels=True, encoding="json")
+    payload["scene3d"] = viewer.view3d_payload(
+        [], wells=wells, well_labels=True
+    )["scene3d"]
+    out = tmp_path / f"well_render_{nwells}.html"
+    save_view(payload, out)
+    run = subprocess.run([_NODE, str(_WELL_RENDER_JS), str(out)], capture_output=True, text=True, timeout=120)
+    data = json.loads((run.stdout.strip().splitlines() or ["{}"])[-1])
+    assert run.returncode == 0, data or run.stderr
+    assert not data["consoleErrors"] and data["mapHover"] is False
+    assert data["mapLayout"]["visible"] == nwells
+    assert data["mapLayout"]["labels"] <= nwells
+    assert data["labelsAfter"]["visible"] <= nwells
 
 
 @pytest.mark.skipif(not _HAVE_PW, reason="playwright + chromium not available (browser leg)")
@@ -323,6 +1213,40 @@ def test_wells_correlation_render(nwells, tmp_path):
     assert not r.get("consoleErrors"), r["consoleErrors"]
     assert r["wellsTvdRenderMs"] > 0 and r["wellsFlattenRenderMs"] > 0
     assert r["foundHangSelect"] and r["mapRenderMs"] > 0
+
+
+@pytest.mark.skipif(not _HAVE_PW, reason="playwright + chromium not available (browser leg)")
+@pytest.mark.parametrize("nwells", [1, 4, 8])
+def test_correlation_template_layout_and_connectors(nwells, tmp_path):
+    from petektools import viewer
+    from petektools.viewer import demo
+    from petektools.viewer._wells import build_well_log_bundle
+
+    template = (
+        viewer.CorrelationTemplate(
+            "reservoir", default_hang="flatten", flatten_pick="TopShale"
+        )
+        .add_track(viewer.CorrelationTrack("facies", width=.45).flag("FACIES"))
+        .add_track(
+            viewer.CorrelationTrack("petro", minimum=0, maximum=1)
+            .curve("PHIE", cutoff=.12)
+            .curve("SW", id="sw", overlay=True, style={"dash": [3, 2]})
+        )
+    )
+    payload = demo.build_correlation_demo_payload()
+    bundle = build_well_log_bundle(template=template)
+    base = bundle["wells"]
+    bundle["wells"] = [dict(base[k % len(base)], id=f"T{k}", display_name=f"T{k}") for k in range(nwells)]
+    payload["wells_logs"] = bundle
+    view = tmp_path / f"template_{nwells}.html"
+    save_view(payload, view)
+    r = _run_wells(view)
+    assert r["rc"] == 0, r.get("failure") or r.get("stderr")
+    layout = r["correlationLayout"]
+    assert layout["template"] == "reservoir" and layout["tracks"] == ["facies", "petro"]
+    assert layout["hang"] == "flatten"
+    if nwells > 1:
+        assert layout["connectors"] > 0
 
 
 # --- regression: JSON null layer depths must not poison the section frame ------
@@ -852,7 +1776,11 @@ def test_map_inferno_points_clamped_legend_names_both_themes(tmp_path):
     assert payload["map"]["colormap"] == "inferno"
     assert payload["map"]["point_color"] == {"by": "z", "range": [-2700.0, -2500.0]}
     assert payload["map"]["fills"] == []
-    assert {"kind": "points", "name": "Top Dome"} in payload["map"]["layers"]
+    # the points layer carries its per-layer slice + colour fields (per-object
+    # color ruling) beside the duck-typed name
+    pts_layers = [ly for ly in payload["map"]["layers"] if ly["kind"] == "points"]
+    assert len(pts_layers) == 1 and pts_layers[0]["name"] == "Top Dome"
+    assert pts_layers[0]["range"] == [-2700.0, -2500.0]
 
     shots = Path(os.environ.get("PETEK_SHOTS_DIR", str(tmp_path)))
     shots.mkdir(parents=True, exist_ok=True)
@@ -889,6 +1817,119 @@ def test_map_inferno_points_clamped_legend_names_both_themes(tmp_path):
     print(f"\n[legend] blobs max/min/clamped (light) = {r['light']['blobMax']}/"
           f"{r['light']['blobMin']}/{r['light']['blobClamped']} | "
           f"headers = {r['light']['headers']} | keys = {r['light']['keys']}")
+
+
+# --- 2-D click-to-inspect: hover shows nothing, click reveals/dismisses --------
+# Drives the owner-ruled interaction semantics on the Map tab end to end: HOVER
+# shows nothing; a still CLICK on a point blob reveals the readout ANCHORED at
+# the clicked location and it persists through plain mouse movement; clicking
+# empty space (or the same target again) dismisses it; a moved press is a pan,
+# never an inspect.
+_INSPECT_JS = Path(__file__).parent / "viewer_perf" / "inspect_bench.mjs"
+
+
+@pytest.mark.skipif(not _HAVE_PW, reason="playwright + chromium not available (browser leg)")
+def test_map_click_inspect_hover_shows_nothing(tmp_path):
+    view, payload = _build_inferno_points_view(tmp_path)
+    out = subprocess.run(
+        [_NODE, str(_INSPECT_JS), str(view),
+         f"--blob={_BLOB_MAX[0]},{_BLOB_MAX[1]}", "--empty=700,700"],
+        capture_output=True, text=True, timeout=120,
+    )
+    line = (out.stdout.strip().splitlines() or ["{}"])[-1]
+    r = json.loads(line) if line.startswith("{") else {}
+    assert out.returncode == 0, out.stderr
+    assert not r.get("consoleErrors"), r["consoleErrors"]
+    # hover shows NOTHING
+    assert r["afterHover"]["hidden"] is True, r["afterHover"]
+    # a still click reveals the readout, anchored at the clicked location, with
+    # the dataset name + coordinates
+    ac = r["afterClick"]
+    assert ac["hidden"] is False, ac
+    assert "Top Dome" in ac["text"] and "x" in ac["text"] and "z" in ac["text"], ac
+    assert abs(ac["left"] - r["anchor"]["left"]) < 2 and abs(ac["top"] - r["anchor"]["top"]) < 2, (ac, r["anchor"])
+    # it persists through plain mouse movement (no hover dismiss)
+    assert r["afterMoveAway"]["hidden"] is False, r["afterMoveAway"]
+    # empty-space click dismisses; same-target re-click toggles on then off
+    assert r["afterEmptyClick"]["hidden"] is True, r["afterEmptyClick"]
+    assert r["afterReClick"]["hidden"] is False, r["afterReClick"]
+    assert r["afterSameSpot"]["hidden"] is True, r["afterSameSpot"]
+    # a moved press pans — it never inspects
+    assert r["afterDrag"]["hidden"] is True, r["afterDrag"]
+    print(f"\n[inspect] click text = {ac['text']!r} @ ({ac['left']:.0f},{ac['top']:.0f})")
+
+
+# --- omitted-fill surface attributes: selector + active legend ----------------
+_FILL_SELECTOR_JS = Path(__file__).parent / "viewer_perf" / "fill_selector_bench.mjs"
+
+
+def _build_attribute_fill_view(tmp_path: Path) -> tuple[Path, dict]:
+    from petektools import viewer
+
+    class Surface:
+        kind = "surface"
+        geometry = None
+
+        def __init__(self, name, base):
+            self.name = name
+            self.base = base
+
+        def attr_names(self):
+            return ["thickness"]
+
+        def value_layer(self, attr=None, stride=None):
+            offset = self.base + (100.0 if attr == "thickness" else 0.0)
+            return {
+                "name": attr or "values",
+                "nodes": [[0.0, 0.0], [10.0, 0.0], [0.0, 10.0], [10.0, 10.0]],
+                "triangles": [[0, 1, 2], [1, 3, 2]],
+                "values": [offset + 1.0, offset + 2.0, offset + 3.0, offset + 4.0],
+                "range": [offset + 1.0, offset + 4.0],
+            }
+
+    payload = viewer.view2d_payload(
+        [Surface("Top A", 0.0), Surface("Top B", 1000.0)],
+        lod=False,
+        encoding="json",
+    )
+    out = tmp_path / "attribute_fills.html"
+    save_view(payload, out)
+    return out, payload
+
+
+@pytest.mark.skipif(not _HAVE_PW, reason="playwright + chromium not available (browser leg)")
+def test_map_attribute_fill_selector_switches_source_and_attr(tmp_path):
+    view, payload = _build_attribute_fill_view(tmp_path)
+    assert [f["name"] for f in payload["map"]["fills"]] == [
+        "values", "thickness", "values", "thickness",
+    ]
+
+    out = subprocess.run(
+        [_NODE, str(_FILL_SELECTOR_JS), str(view)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    line = (out.stdout.strip().splitlines() or ["{}"])[-1]
+    result = json.loads(line) if line.startswith("{") else {}
+    assert out.returncode == 0, out.stderr
+    assert not result.get("consoleErrors"), result.get("consoleErrors")
+
+    expected = [
+        "Top A · values",
+        "Top A · thickness",
+        "Top B · values",
+        "Top B · thickness",
+    ]
+    assert result["initial"]["options"] == expected
+    assert result["initial"]["selected"] == 0
+    assert expected[0] in result["initial"]["headers"]
+    assert result["firstAttr"]["selected"] == 1
+    assert expected[1] in result["firstAttr"]["headers"]
+    assert result["secondSourceAttr"]["selected"] == 3
+    assert expected[3] in result["secondSourceAttr"]["headers"]
+    assert result["initial"]["scales"] != result["firstAttr"]["scales"]
+    assert result["firstAttr"]["scales"] != result["secondSourceAttr"]["scales"]
 
 
 # --- the Scene3D (view3d) tab: smoke + the 200k-point build budget -------------
@@ -1021,7 +2062,74 @@ def test_scene3d_smoke_renders_all_layer_kinds(tmp_path):
     assert "z ×12" in (r["badgeAfterExag"] or ""), r["badgeAfterExag"]
     # dark theme keeps the legend populated (tokens re-read, identities keep slots)
     assert r["darkLegend"]["headers"], r["darkLegend"]
-    assert r["hoverReadout"] is True
+    # click-to-inspect: hover (and an orbit drag) shows NOTHING; a clean click
+    # picks an object, shows the readout, and re-targets the orbit pivot to the
+    # picked point WITHOUT moving the camera; an empty-space click dismisses the
+    # readout but keeps the pivot.
+    assert r["hoverReadout"] is False
+    ck = r["click"]
+    assert ck["readout"] is True, ck
+    pick = ck["pick"]
+    assert pick and not pick.get("miss"), ck
+    assert all(abs(t - p) < 1e-6 for t, p in zip(pick["target"], pick["point"])), pick
+    assert all(abs(a - b) < 1e-9 for a, b in zip(pick["camera"], pick["cameraBefore"])), pick
+    assert ck["dismissReadout"] is False, ck
+    assert ck["dismissPick"] and ck["dismissPick"].get("miss") is True, ck
+    assert ck["dismissPick"]["target"] == pick["target"], ck  # pivot kept
+
+
+@pytest.mark.skipif(not _HAVE_PW, reason="playwright + chromium not available (browser leg)")
+def test_scene3d_webgl_disabled_is_a_specific_runtime_state(tmp_path):
+    view, _payload = _build_scene3d_view(tmp_path, "scene3d_no_webgl.html", 20)
+    r = _run_scene3d(view, "--disable-webgl")
+    assert r["rc"] == 0, r.get("failure") or r.get("stderr")
+    assert r["status"]["state"] == "webgl"
+    assert "WebGL" in r["emptyText"]
+
+
+@pytest.mark.skipif(not _HAVE_PW, reason="playwright + chromium not available (browser leg)")
+def test_scene3d_bare_trimesh_flat_wireframe_at_shallowest_z(tmp_path):
+    # OWNER RULING (geometry-renders-flat): a bare trimesh never renders a
+    # solid surface — it renders as a FLAT WIREFRAME GRID at the shallowest
+    # point of its own nodes. Assert against the REAL built Three.js geometry
+    # (status.latticeZ reads the rendered level back from the buffer).
+    from petektools import viewer
+
+    class BareTri:
+        name = "Inferred TriSurface"
+
+        def xyz(self):
+            n = 9
+            return [
+                [i * 500.0, j * 500.0, -2650.0 + 100.0 * (i + j) / (2 * (n - 1))]
+                for j in range(n) for i in range(n)
+            ]
+
+        def triangles(self):
+            n = 9
+            tris = []
+            for j in range(n - 1):
+                for i in range(n - 1):
+                    a = j * n + i
+                    tris.append([a, a + 1, a + n])
+                    tris.append([a + 1, a + n + 1, a + n])
+            return tris
+
+    payload = viewer.view3d_payload([_S3dPoints(2000), BareTri()])
+    sc = payload["scene3d"]
+    assert sc["meshes"] == []  # no solid layer without fill=
+    assert sc["lattices"][0]["z"] == -2550.0  # max finite vertex z
+    view = tmp_path / "scene3d_flat.html"
+    save_view(payload, view)
+    r = _run_scene3d(view)
+    assert r["rc"] == 0, r.get("failure") or r.get("stderr")
+    assert not r.get("consoleErrors"), r["consoleErrors"]
+    st = r["status"]
+    assert st["state"] == "ok" and st["meshes"] == 0 and st["lattices"] == 1
+    # the wireframe RENDERED at the expected flat level (read back from the
+    # built geometry, data-space elevation)
+    assert abs(st["latticeZ"][0] - (-2550.0)) < 1e-3, st
+    print(f"\n[scene3d] flat wireframe: lattices={st['lattices']} at z={st['latticeZ']}")
 
 
 @pytest.mark.skipif(not _HAVE_PW, reason="playwright + chromium not available (browser leg)")
@@ -1122,6 +2230,179 @@ def _synthetic_2d_map(*, npts: int = MAP_POINTS_N, grid: int = MAP_FILL_GRID) ->
     }
 
 
+def _surface_navigation_ring(grid: int, stride: int, offset: float) -> dict:
+    """One extent-preserving structured fill ring for the gesture fixture."""
+    ij = list(range(0, grid, stride))
+    if ij[-1] != grid - 1:
+        ij.append(grid - 1)
+    n = len(ij)
+    nodes = [[i * 25.0, j * 25.0] for j in ij for i in ij]
+    values = [
+        offset + 0.1 + 0.2 * math.sin(i / 10.0) * math.cos(j / 10.0)
+        for j in ij
+        for i in ij
+    ]
+    triangles = []
+    for j in range(n - 1):
+        for i in range(n - 1):
+            a = j * n + i
+            triangles.append([a, a + 1, a + n])
+            triangles.append([a + 1, a + n + 1, a + n])
+    return {
+        "nodes": nodes,
+        "triangles": triangles,
+        "values": values,
+        "range": [offset, offset + 0.4],
+    }
+
+
+def _build_surface_navigation_view(
+    tmp_path: Path, *, grid: int = MAP_FILL_GRID, contact_mask: bool = True
+) -> Path:
+    """Eight-fill dense-overlay gesture fixture; optional 1M-cell contact."""
+    from petektools.viewer import _blocks
+
+    m = _synthetic_2d_map(grid=grid)
+    base = m["fills"][0]
+    lod_base = _surface_navigation_ring(grid, 4, 0.0)
+    fills = []
+    for lane in range(8):
+        offset = lane * 100.0
+        fills.append({
+            **base,
+            "name": "values" if lane == 0 else f"attribute_{lane}",
+            "display_name": "Top A",
+            "values": [v + offset for v in base["values"]],
+            "range": [offset, offset + 0.4],
+            "colormap": "inferno" if lane % 2 == 0 else "magma",
+            "lod": {
+                **lod_base,
+                "values": [v + offset for v in lod_base["values"]],
+                "range": [offset, offset + 0.4],
+            },
+        })
+    m["fills"] = fills
+    extent = (grid - 1) * 25.0
+    m["grid_lines"] = [
+        [[i * 25.0, j * 25.0] for i in range(grid)]
+        for j in range(grid)
+    ] + [
+        [[i * 25.0, j * 25.0] for j in range(grid)]
+        for i in range(grid)
+    ]
+    m["contours"] = [
+        {"level": float(k), "major": k % 4 == 0,
+         "lines": [[[0.0, k * extent / 8], [extent, (8 - k) * extent / 8]]]}
+        for k in range(1, 8)
+    ]
+    if contact_mask:
+        side = 1000
+        m["frame"] = {"origin_x": 0, "origin_y": 0, "spacing_x": extent / (side - 1),
+                      "spacing_y": extent / (side - 1), "ncol": side, "nrow": side}
+        crossing = [False] * (side * side)
+        for j in range(498, 501):
+            crossing[j * side:(j + 1) * side] = [True] * side
+        m["contacts"] = [{"kind": "OWC", "depth_m": -2500.0, "crossing": crossing}]
+    _blocks.encode_map(m, threshold_bytes=0)
+    env, _bin = _v3.build_v3_volume(50, 50, 4)
+    payload = {
+        "schema_version": 4,
+        "kind": "surface-navigation-perf",
+        "property": "z",
+        "properties": ["z", *[f"attribute_{i}" for i in range(1, 8)]],
+        "summary": {"points": MAP_POINTS_N, "triangles": len(base["triangles"])},
+        "volume": env,
+        "map": m,
+        "sections": [],
+        "section_labels": [],
+        "wells": [],
+        "charts": [],
+    }
+    out = tmp_path / f"surface_navigation_{grid}.html"
+    save_view(payload, out)
+    return out
+
+
+@pytest.mark.skipif(not _HAVE_PW, reason="playwright + chromium not available (browser leg)")
+def test_surface_navigation_hot_frames_are_compositing_only(tmp_path):
+    view = _build_surface_navigation_view(tmp_path)
+    r = _run_render(
+        view,
+        "--surface-gesture",
+        "--wheel-events=16",
+        "--pan-events=100",
+        "--gesture-p95-cap-ms=8",
+        "--gesture-max-cap-ms=16.7",
+        timeout=300,
+    )
+    g = r.get("surfaceGesture") or {}
+    stats = g.get("frameStats") or {}
+    print(
+        f"\n[surface-nav] {stats.get('n')} frames: p50 {stats.get('p50')} ms | "
+        f"p95 {stats.get('p95')} ms | max {stats.get('max')} ms | "
+        f"hot {g.get('hotDelta')} | settle {g.get('settleDelta')}"
+    )
+    assert r["rc"] == 0, r.get("failure") or r.get("stderr")
+    assert not r.get("consoleErrors"), r.get("consoleErrors")
+    assert g["wheelEvents"] > 12 and g["panPixels"] > g["viewportWidth"]
+    assert g["startScale"] >= 0.05 > g["endScale"]
+    assert stats["p95"] < 8.0 and stats["max"] < 16.7
+    assert g["hotDelta"]["pointPathBuilds"] == 0
+    assert g["hotDelta"]["triFillBuilds"] == 0
+    assert g["hotDelta"]["canvasBackingWrites"] == 0
+    assert g["hotDelta"]["legendMutations"] == 0
+    assert g["hotDelta"]["styleReads"] == 0
+    assert g["hotDelta"]["gridPathBuilds"] == 0
+    assert g["hotDelta"]["contourPathBuilds"] == 0
+    assert g["hotDelta"]["outlinePathBuilds"] == 0
+    assert g["hotDelta"]["contactMaskBuilds"] == 0
+    assert g["hotDelta"]["overlayBitmapBuilds"] == 0
+    assert g["hotDelta"]["overlayHotBlits"] > 0
+    assert g["settleDelta"]["settlePaints"] == 1
+    assert g["settleDelta"]["overlayBitmapBuilds"] == 2  # contour-under + contact-over
+    assert g["settleDelta"]["gridPathBuilds"] == 0  # filled-surface lattice defaults off
+    assert g["settleDelta"]["contactMaskBuilds"] == 1
+    assert g["returnDelta"]["triFillBuilds"] == 0
+    assert g["returnDelta"]["fillCacheHits"] >= 1
+    assert g["returnDispatchMs"] < 8.0
+    assert g["endCamera"] == g["settledCamera"]
+    assert g["stableA"] is True
+    assert g["aAfter"]["cache"]["size"] <= g["aAfter"]["cache"]["limit"] == 4
+    assert g["initialBlocks"]["decoded"] < g["initialBlocks"]["total"]
+    assert g["bBlocks"]["decoded"] > g["initialBlocks"]["decoded"]
+    assert g["aBlocks"]["decoded"] == g["bBlocks"]["decoded"]
+    assert g["rapidActive"] == 3
+    assert g["cancelledActive"] == 0
+
+
+@pytest.mark.skipif(not _HAVE_PW, reason="playwright + chromium not available (browser leg)")
+def test_surface_navigation_500_grid_hot_frames_are_compositing_only(tmp_path):
+    view = _build_surface_navigation_view(tmp_path, grid=500, contact_mask=False)
+    r = _run_render(
+        view, "--surface-gesture", "--wheel-events=16", "--pan-events=100",
+        "--gesture-p95-cap-ms=8", "--gesture-max-cap-ms=16.7", timeout=300,
+    )
+    g = r.get("surfaceGesture") or {}
+    stats = g.get("frameStats") or {}
+    print(f"\n[surface-nav-500] {stats.get('n')} frames: p95 {stats.get('p95')} ms | "
+          f"max {stats.get('max')} ms | hot {g.get('hotDelta')}")
+    assert r["rc"] == 0, r.get("failure") or r.get("stderr")
+    assert not r.get("consoleErrors"), r.get("consoleErrors")
+    assert stats["p95"] < 8.0 and stats["max"] < 16.7
+    assert g["wheelEvents"] > 12 and g["panPixels"] > g["viewportWidth"]
+    assert g["endCamera"] == g["settledCamera"]
+    for counter in (
+        "pointPathBuilds", "triFillBuilds", "canvasBackingWrites",
+        "legendMutations", "styleReads", "gridPathBuilds",
+        "contourPathBuilds", "outlinePathBuilds", "contactMaskBuilds",
+        "overlayBitmapBuilds",
+    ):
+        assert g["hotDelta"][counter] == 0, (counter, g["hotDelta"])
+    assert g["hotDelta"]["overlayHotBlits"] > 0
+    assert g["stableA"] is True and g["rapidActive"] == 3
+    assert g["cancelledActive"] == 0
+
+
 def test_map_blocks_wire_size_beats_json():
     from petektools.viewer import _blocks
 
@@ -1193,6 +2474,22 @@ def test_map_blocks_dedup_shared_mesh_ships_once():
     assert len(table) == 4, sorted(table)
     print(f"\n[map-dedup] 2 fills / shared mesh -> {len(table)} blocks "
           f"(nodes+tris shared, 2 distinct value blocks)")
+
+
+def test_map_blocks_encode_contact_mask_as_u8_with_json_fallback():
+    from petektools.viewer import _blocks
+
+    plain = _synthetic_2d_map(npts=1, grid=4)
+    mask = [i % 3 == 0 for i in range(16)]
+    plain["contacts"] = [{"kind": "OWC", "crossing": mask.copy()}]
+    untouched = copy.deepcopy(plain)
+    assert _blocks.encode_map(plain, threshold_bytes=0)
+    marker = plain["contacts"][0]["crossing"]
+    desc = plain["blocks"][marker["__block__"]]
+    assert desc["dtype"] == "u8" and desc["shape"] == [16]
+    import base64
+    assert list(base64.b64decode(desc["data"])) == [int(value) for value in mask]
+    assert untouched["contacts"][0]["crossing"] == mask
 
 
 class _StridedMesh:
