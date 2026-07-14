@@ -55,8 +55,8 @@
       if (!s3dBuilt || s3dBuilt._for !== sc) {
         buildScene3d(sc);
         if (App.tab === "scene3d") buildPanel(); // counts + fit-z now known
-      } else if (s3dBuilt._colormap !== S.colormap) {
-        s3dBuilt._colormap = S.colormap; recolorScene3d(sc);
+      } else if (s3dBuilt._colormapKey !== S.colormap + "|" + !!S.colormapReversed) {
+        s3dBuilt._colormapKey = S.colormap + "|" + !!S.colormapReversed; recolorScene3d(sc);
       }
       applyScene3dVisibility();
       restyleScene3dLines();
@@ -106,8 +106,8 @@
     s3d.camera.aspect = w / h; s3d.camera.updateProjectionMatrix();
   }
 
-  function s3dRampVertex(col, i, t, cmap) {
-    var c = isFinite(t) ? rampColor(cmap || S.colormap, t) : null;
+  function s3dRampVertex(col, i, t, cmap, reversed) {
+    var c = isFinite(t) ? rampColor(cmap || S.colormap, t, reversed) : null;
     if (!c) c = S3D_NEUTRAL;
     col[i * 3] = c[0] / 255; col[i * 3 + 1] = c[1] / 255; col[i * 3 + 2] = c[2] / 255;
   }
@@ -119,6 +119,8 @@
     return {
       range: colored ? ((src && src.range) || (pc && pc.range) || null) : null,
       cmap: (src && src.colormap) || S.colormap,
+      reversed: src && (src.colormap != null || src.colormap_reversed != null)
+        ? !!src.colormap_reversed : !!S.colormapReversed,
     };
   }
 
@@ -211,7 +213,7 @@
     var ptStride = totalPts > budget ? Math.ceil(totalPts / budget) : 1;
 
     var built = {
-      _for: sc, _colormap: S.colormap, _detail: sc.detail || null,
+      _for: sc, _colormapKey: S.colormap + "|" + !!S.colormapReversed, _detail: sc.detail || null,
       pointObjs: [], meshObjs: [], wellObjs: [], wellLabels: [],
       latticeObjs: [], contourObjs: [], outlineObjs: [],
       latticeZ: [], // per-lattice rendered flat level (data-space; tests)
@@ -237,7 +239,7 @@
         pos[k * 3 + 1] = ry(z);
         pos[k * 3 + 2] = c.f[q * 3 + 1] - cy;
         var t = cc.range ? (z - cc.range[0]) / ((cc.range[1] - cc.range[0]) || 1) : NaN;
-        s3dRampVertex(col, k, isFinite(z) ? t : NaN, cc.cmap);
+        s3dRampVertex(col, k, isFinite(z) ? t : NaN, cc.cmap, cc.reversed);
         k++;
       }
       var geo = new THREE.BufferGeometry();
@@ -387,7 +389,9 @@
   }
 
   function queueRegularSurface(m, built, center, refining, staging) {
-    var id = ++_s3dRegularRequestId, stops = COLORMAPS[m.colormap || S.colormap] || COLORMAPS.viridis;
+    var id = ++_s3dRegularRequestId, stops = colormapStops(
+      m.colormap || S.colormap,
+      m.colormap != null || m.colormap_reversed != null ? !!m.colormap_reversed : !!S.colormapReversed);
     var request = { m: m, built: built, refining: !!refining, staging: staging, detail: built._detail };
     _s3dRegularPending[id] = request; built._regularPending++;
     var msg = { cmd: "buildRegularSurface", requestId: id, surface: m.regular_surface,
@@ -473,7 +477,8 @@
       });
       built.meshObjs = built.meshObjs.filter(function (o) { return !o.m.regular_surface; }).concat(staging.objects);
       built.triangleCount = built.triangleCount - oldTriangles + staging.triangles;
-      built._for = staging.sc; built._detail = staging.detail || "full"; built._colormap = S.colormap;
+      built._for = staging.sc; built._detail = staging.detail || "full";
+      built._colormapKey = S.colormap + "|" + !!S.colormapReversed;
       _s3dPendingFor = null;
       setScene3dStatus("ok", { detail: built._detail, refining: false,
         triangles: built.triangleCount, meshes: built.meshObjs.length,
@@ -519,9 +524,11 @@
   function bakeMeshColors(m, col) {
     var r0 = m.range[0], span = (m.range[1] - m.range[0]) || 1;
     var cmap = m.colormap || S.colormap; // per-mesh pin (dict item form)
+    var reversed = m.colormap != null || m.colormap_reversed != null
+      ? !!m.colormap_reversed : !!S.colormapReversed;
     for (var q = 0; q < m.nodes.length; q++) {
       var v = m.values[q];
-      s3dRampVertex(col, q, v == null ? NaN : (v - r0) / span, cmap);
+      s3dRampVertex(col, q, v == null ? NaN : (v - r0) / span, cmap, reversed);
     }
   }
 
@@ -546,7 +553,7 @@
       for (var q = 0; q < o.n; q += o.stride) {
         var z = o.f[q * 3 + 2];
         var t = cc.range ? (z - cc.range[0]) / ((cc.range[1] - cc.range[0]) || 1) : NaN;
-        s3dRampVertex(col, k, isFinite(z) ? t : NaN, cc.cmap);
+        s3dRampVertex(col, k, isFinite(z) ? t : NaN, cc.cmap, cc.reversed);
         k++;
       }
       o.geo.attributes.color.needsUpdate = true;
@@ -852,8 +859,10 @@
       (sc.meshes || []).forEach(function (m) {
         if (!workspaceItemVisible(m.item_id, "scene3d")) return;
         if (m.values && m.range) {
-          rampBlock(lg, typeIcon("fill", null, m.colormap), disp(m, m.name),
-            m.range[0], m.range[1], m.colormap);
+          var reversed = m.colormap != null || m.colormap_reversed != null
+            ? !!m.colormap_reversed : !!S.colormapReversed;
+          rampBlock(lg, typeIcon("fill", null, m.colormap, reversed), disp(m, m.name),
+            m.range[0], m.range[1], m.colormap, reversed);
         } else {
           keys.appendChild(keyRow(disp(m, m.name) || "mesh", token("--muted"), false));
         }
@@ -871,11 +880,11 @@
         var cc = s3dCloudColor(src, pc);
         if (cc.range && ((src && src.range) || !pointsRampDrawn)) {
           if (!(src && src.range)) pointsRampDrawn = true;
-          rampBlock(lg, typeIcon("points", rampCss(cc.cmap, 0.75)),
-            plabel + " · " + ((pc && pc.by) || "z"), cc.range[0], cc.range[1], cc.cmap);
+          rampBlock(lg, typeIcon("points", rampCss(cc.cmap, 0.75, cc.reversed)),
+            plabel + " · " + ((pc && pc.by) || "z"), cc.range[0], cc.range[1], cc.cmap, cc.reversed);
         } else {
           keys.appendChild(iconKeyRow("points", plabel,
-            cc.range ? rampCss(cc.cmap, 0.75) : token("--accent")));
+            cc.range ? rampCss(cc.cmap, 0.75, cc.reversed) : token("--accent")));
         }
       } else if (ly.kind === "lines") {
         if (!workspaceItemVisible(ly.item_id, "scene3d")) return;

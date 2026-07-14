@@ -7,6 +7,13 @@ All notable changes to petekTools are recorded here. Format follows
 ## [Unreleased]
 
 ### Added
+- **Inspector-owned Map and Intersection legends.** Continuous ramps, units, and
+  exact editable ranges now live beside their layer visibility; categorical
+  fills use class keys instead of false gradients. The rendered picker exposes
+  all eight canonical colormaps plus an independent reverse modifier, with
+  per-layer paint pins and renderer cache identities kept in sync. Entity keys
+  cap at six rows, duplicate plot legends and the invalid generic Grid
+  statistics block are removed, while Volume and Charts retain legacy legends.
 - **Refined project-tree design.** The viewer now uses a complete SVG role-icon
   registry, true hierarchy rails and elbows, fixed 28 px row geometry, explicit
   multi-bore disclosure, and a canonical-ID-preserving single-bore collapse.

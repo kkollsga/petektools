@@ -7,7 +7,6 @@
     else if (App.tab === "charts") buildChartsPanel(body);
     else if (App.tab === "wells") buildWellsPanel(body);
     else buildVolumePanel(body);
-    if (App.payload.map || App.payload.volume) body.appendChild(gridInfoGroup());
     if (App.payload.summary) body.appendChild(summaryGroup());
   }
   function buildMapPanel(body) {
@@ -15,12 +14,11 @@
     if (S.mapLayers.length) {
       var g = group("Field");
       g.appendChild(selectRow("Layer", S.mapLayers.map(function (l) { return l.display; }), S.mapLayerIdx, function (i) { S.mapLayerIdx = i; renderMap(); }));
-      g.appendChild(colormapRow());
       body.appendChild(g);
     }
 
-    // value-coloured trimesh fills: a selector (multiple fills → one active)
-    // + the shared colormap row when no ScalarLayer group already carries it.
+    // value-coloured trimesh fills: a selector (multiple fills → one active).
+    // Its rendered colormap control lives with its key below.
     var fills = App.payload.map.fills || [];
     if (fills.length) {
       var fg = group("Fill");
@@ -29,16 +27,7 @@
       } else {
         fg.appendChild(el("div", "hint", fillLabel(fills[0])));
       }
-      if (!S.mapLayers.length) fg.appendChild(colormapRow());
       body.appendChild(fg);
-    }
-
-    // value-coloured points with no raster layer and no fill still need the
-    // colormap selector (the ramp colours the point cloud + its legend).
-    if (!S.mapLayers.length && !fills.length && App.payload.map.point_color) {
-      var pg = group("Points");
-      pg.appendChild(colormapRow());
-      body.appendChild(pg);
     }
 
     var overlayState = window.__PETEK_MAP_WELL_OVERLAY_STATE;
@@ -50,28 +39,12 @@
       body.appendChild(og);
     }
 
-    var t = group("Layers");
-    t.appendChild(toggleRow("Outline", S.showOutline, token("--text-secondary"), true, function (v) { S.showOutline = v; renderMap(); }));
-    if (fills.length) {
-      t.appendChild(toggleRow("Fill", S.showFills, null, false, function (v) { S.showFills = v; renderMap(); }));
-    }
-    if (App.payload.map.contours && App.payload.map.contours.length) {
-      t.appendChild(toggleRow("Contours", S.showContours, token("--text-secondary"), true, function (v) { S.showContours = v; renderMap(); }));
-    }
-    if (App.payload.map.grid_lines && App.payload.map.grid_lines.length) {
-      t.appendChild(toggleRow("Grid lines", S.showGridLines, token("--muted"), true, function (v) { S.showGridLines = v; renderMap(); }));
-    }
-    if (App.payload.map.points && App.payload.map.points.length) {
-      t.appendChild(toggleRow("Points", S.showPoints, token("--accent"), false, function (v) { S.showPoints = v; renderMap(); }));
-    }
+    var t = group("Layers & legend");
+    buildMapInspectorLegend(t);
     if (S.mapLayers.length && App.payload.map.outline && App.payload.map.outline.length) {
       t.appendChild(toggleRow("Unclipped raster", !S.clipRaster, null, false, function (v) { S.clipRaster = !v; renderMap(); }));
     }
-    (App.payload.map.contacts || []).forEach(function (c, i) {
-      t.appendChild(toggleRow("Contact " + disp(c, c.kind), S.contactVis[i], idColor("ct:" + c.kind), false, function (v) { S.contactVis[i] = v; renderMap(); }));
-    });
-    (App.payload.wells || []).forEach(function (w, i) {
-      t.appendChild(toggleRow(disp(w, w.id), S.wellVis[i], idColor("well:" + w.id), false, function (v) { S.wellVis[i] = v; renderMap(); }));
+    (App.payload.wells || []).forEach(function (w) {
       if (w.ties && w.ties.length) {
         var h = el("div", "hint", "ties: " + w.ties.map(function (tt) { return pretty(tt.horizon) + " " + fmt(tt.residual_m, "m"); }).join(" · "));
         h.style.margin = "-2px 0 5px 22px";
@@ -107,13 +80,10 @@
           S.sectionColorBy = i === 1 ? "zone" : "property"; renderSection(); buildPanel();
         }));
       }
-      g.appendChild(colormapRow());
       g.appendChild(sliderRow("Vertical exag.", 1, 20, 1, S.vexag, function (v) { S.vexag = v; renderSection(); }));
       body.appendChild(g);
-      var t = group("Layers");
-      t.appendChild(toggleRow("Horizons", S.showHorizons, token("--text-secondary"), true, function (v) { S.showHorizons = v; renderSection(); }));
-      t.appendChild(toggleRow("Contacts", S.showContacts, token("--muted"), true, function (v) { S.showContacts = v; renderSection(); }));
-      t.appendChild(toggleRow("Bore path", S.showPathZ, token("--c1"), true, function (v) { S.showPathZ = v; renderSection(); }));
+      var t = group("Layers & legend");
+      buildSectionInspectorLegend(t);
       body.appendChild(t);
     } else {
       body.appendChild(el("div", "hint", "No sections yet. On the Map tab, draw a fence or click a well."));
@@ -197,7 +167,8 @@
     var reset = el("button", "btn secondary", "Reset view"); reset.onclick = function () { if (vol3) frameVolumeV3(); if (three) three.render(); };
     body.appendChild(reset);
   }
-  // Cell geometry is always visible: dims + mean cell size (dx × dy × mean dz).
+  // Shared geometry helpers retained for volume framing; the misleading generic
+  // Grid statistics panel is intentionally gone from the Inspector.
   function meanCellDz() {
     if (S._meanDz !== undefined) return S._meanDz;
     var v = App.payload.volume;
@@ -207,20 +178,6 @@
       S._meanDz = (zhi - zlo) / Math.max(1, S.dims.nk);
     } else S._meanDz = NaN;
     return S._meanDz;
-  }
-  function infoRow(g, label, value) {
-    var row = el("div", "row between"); row.appendChild(el("label", null, label));
-    row.appendChild(el("span", null, value)); g.appendChild(row);
-  }
-  function gridInfoGroup() {
-    var g = group("Grid"); var d = S.dims;
-    var f = App.payload.map ? App.payload.map.frame : null;
-    infoRow(g, "cells (i×j×k)", d.ni + " × " + d.nj + " × " + d.nk);
-    if (f) {
-      var dz = meanCellDz();
-      infoRow(g, "cell size (m)", fmt(f.spacing_x) + " × " + fmt(f.spacing_y) + " × " + (isFinite(dz) ? fmt(dz) : "—"));
-    }
-    return g;
   }
   function summaryGroup() {
     var g = group("Summary"); var s = App.payload.summary;

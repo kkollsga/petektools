@@ -17,7 +17,8 @@ layer's legend display name.
 
 ``color=`` and ``fill=`` share one string grammar, parsed by registry match:
 ``"[<attr>_]<cmap>[_<min>_<max>]"`` where ``<cmap>`` is a known colormap
-(``viridis`` / ``magma`` / ``grays`` / ``inferno``). A string with no colormap
+(``viridis`` / ``inferno`` / ``magma`` / ``plasma`` / ``cividis`` / ``turbo`` /
+``coolwarm`` / ``greys``; legacy ``grays`` remains accepted). A string with no colormap
 token is an attribute name (back-compat). See :func:`view2d_payload`.
 """
 
@@ -636,7 +637,10 @@ def view2d(
 # The known colormap registry — the token-match anchor of the color=/fill=
 # spec grammar. Must stay in sync with the JS renderer's COLORMAPS
 # (assets/viewer/00-app.js).
-_COLORMAPS = ("viridis", "magma", "grays", "inferno")
+_COLORMAPS = (
+    "viridis", "inferno", "magma", "plasma", "cividis", "turbo",
+    "coolwarm", "greys", "grays",
+)
 
 
 def _parse_spec(spec: bool | str, param: str) -> dict[str, Any]:

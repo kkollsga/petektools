@@ -125,7 +125,7 @@
     var colors = new Float32Array(nVerts * 3);
     var r = v.value_range, span = (r.max - r.min) || 1;
     for (var q2 = 0; q2 < nVerts; q2++) {
-      var cc = rampColor(S.colormap, (v.vertex_values[q2] - r.min) / span) || [128, 128, 128];
+      var cc = rampColor(S.colormap, (v.vertex_values[q2] - r.min) / span, S.colormapReversed) || [128, 128, 128];
       colors[q2 * 3] = cc[0] / 255; colors[q2 * 3 + 1] = cc[1] / 255; colors[q2 * 3 + 2] = cc[2] / 255;
     }
     // index buffer: only visible cells (threshold / zone / clip)
@@ -250,7 +250,8 @@
     // flip). If the budget dropped since decode (harness lowers it live) and the
     // mesh now needs a coarser stride, fall through to a re-decode.
     if (vol3 && vol3._for === v && !vol3._decoding && (vol3._stride || 1) >= stride) {
-      if (vol3._colormap !== S.colormap) { vol3._colormap = S.colormap; recolorVolumeV3(); }
+      var cmapKey = S.colormap + "|" + !!S.colormapReversed;
+      if (vol3._colormapKey !== cmapKey) { vol3._colormapKey = cmapKey; recolorVolumeV3(); }
       drawVolumeLegend();
       updateVolBadge();
       if (vol3._degraded) showDegradeBanner(vol3._degraded); else hideBanner();
@@ -306,7 +307,7 @@
     // Test seam: force a stalled decode (never post / never sync) so ONLY the
     // watchdog can rescue the UI — proves the no-hang guarantee deterministically.
     if (typeof window !== "undefined" && window.PETEK_FORCE_DECODE_STALL) return;
-    var stops = COLORMAPS[S.colormap] || COLORMAPS.viridis;
+    var stops = colormapStops(S.colormap, S.colormapReversed);
     var r = v.value_range || { min: 0, max: 1 };
     var msg = { cmd: "decode", env: v, vmin: r.min, vmax: r.max, stops: stops, stride: stride };
     var kick = function (bin) {
@@ -360,7 +361,8 @@
     var stride = res.stride && res.stride > 1 ? res.stride : 1;
     var full = res.fullTriangleCount != null ? res.fullTriangleCount : res.triangleCount;
     vol3 = {
-      _for: res._for || App.payload.volume, _decoding: false, _colormap: S.colormap,
+      _for: res._for || App.payload.volume, _decoding: false,
+      _colormapKey: S.colormap + "|" + !!S.colormapReversed,
       _stride: stride,
       _degraded: stride > 1 ? { stride: stride, full: full, kept: res.triangleCount, budget: triBudget() } : null,
       pos: toF32(res.pos), col: toF32(res.col), triCell: toU32(res.triCell),
@@ -413,7 +415,7 @@
 
   function recolorVolumeV3() {
     if (!vol3 || vol3._decoding) return;
-    var stops = COLORMAPS[S.colormap] || COLORMAPS.viridis;
+    var stops = colormapStops(S.colormap, S.colormapReversed);
     var v = App.payload.volume, r = v.value_range || { min: 0, max: 1 };
     if (_worker) _worker.postMessage({ cmd: "recolor", vmin: r.min, vmax: r.max, stops: stops });
     else { vol3.col = window.PETEK_DECODE.bakeColors(vol3.triCell, vol3.cellValues, r.min, r.max, stops); applyRecolor(vol3.col.buffer); }

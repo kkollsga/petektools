@@ -163,14 +163,25 @@
   // (petektools.viewer._view2d._COLORMAPS) — keep the two in sync.
   var COLORMAPS = {
     viridis: [[68, 1, 84], [59, 82, 139], [33, 145, 140], [94, 201, 98], [253, 231, 37]],
-    magma: [[0, 0, 4], [81, 18, 124], [183, 55, 121], [252, 137, 97], [252, 253, 191]],
-    grays: [[30, 30, 30], [90, 90, 90], [140, 140, 140], [195, 195, 195], [245, 245, 245]],
     inferno: [[0, 0, 4], [87, 16, 110], [188, 55, 84], [249, 142, 9], [252, 255, 164]],
+    magma: [[0, 0, 4], [81, 18, 124], [183, 55, 121], [252, 137, 97], [252, 253, 191]],
+    plasma: [[13, 8, 135], [126, 3, 168], [204, 71, 120], [248, 149, 64], [240, 249, 33]],
+    cividis: [[0, 32, 77], [66, 78, 108], [124, 123, 120], [188, 173, 108], [253, 234, 69]],
+    turbo: [[48, 18, 59], [38, 188, 225], [164, 252, 60], [250, 126, 32], [122, 4, 3]],
+    coolwarm: [[59, 76, 192], [141, 176, 254], [221, 221, 221], [244, 154, 123], [180, 4, 38]],
+    greys: [[30, 30, 30], [90, 90, 90], [140, 140, 140], [195, 195, 195], [245, 245, 245]],
   };
-  var COLORMAP_NAMES = ["viridis", "magma", "grays", "inferno"];
-  function rampColor(name, t) {
+  COLORMAPS.grays = COLORMAPS.greys; // compatibility alias; picker stays eight canonical maps
+  var COLORMAP_NAMES = ["viridis", "inferno", "magma", "plasma", "cividis", "turbo", "coolwarm", "greys"];
+  function canonicalColormap(name) { return name === "grays" ? "greys" : name; }
+  function colormapStops(name, reversed) {
+    var stops = COLORMAPS[name] || COLORMAPS.viridis;
+    return reversed ? stops.slice().reverse() : stops;
+  }
+  function rampColor(name, t, reversed) {
     if (!isFinite(t)) return null;
     t = t < 0 ? 0 : t > 1 ? 1 : t;
+    if (reversed) t = 1 - t;
     var stops = COLORMAPS[name] || COLORMAPS.viridis;
     var seg = (stops.length - 1) * t;
     var i = Math.min(stops.length - 2, Math.floor(seg));
@@ -182,12 +193,17 @@
       Math.round(a[2] + (b[2] - a[2]) * f),
     ];
   }
-  function rampCss(name, t) { var c = rampColor(name, t); return c ? "rgb(" + c[0] + "," + c[1] + "," + c[2] + ")" : "transparent"; }
-  function rampGradient(name) {
-    var stops = COLORMAPS[name] || COLORMAPS.viridis;
+  function rampCss(name, t, reversed) { var c = rampColor(name, t, reversed); return c ? "rgb(" + c[0] + "," + c[1] + "," + c[2] + ")" : "transparent"; }
+  function rampGradient(name, reversed) {
+    var stops = colormapStops(name, reversed);
     return "linear-gradient(90deg," + stops.map(function (c, i) {
       return "rgb(" + c[0] + "," + c[1] + "," + c[2] + ") " + Math.round((i / (stops.length - 1)) * 100) + "%";
     }).join(",") + ")";
+  }
+  function paintColormap(item) { return canonicalColormap((item && item.colormap) || S.colormap); }
+  function paintReversed(item) {
+    if (item && (item.colormap != null || item.colormap_reversed != null)) return !!item.colormap_reversed;
+    return !!S.colormapReversed;
   }
 
   // ---- display names -------------------------------------------------------
@@ -259,7 +275,10 @@
     // "<cmap>" spec travels as map.colormap / scene3d.colormap); the panel
     // selector can still change it.
     var pinned = m.colormap || (p.scene3d && p.scene3d.colormap);
-    S.colormap = pinned && COLORMAPS[pinned] ? pinned : "viridis";
+    S.colormap = pinned && COLORMAPS[pinned] ? canonicalColormap(pinned) : "viridis";
+    S.colormapReversed = m.colormap_reversed != null ? !!m.colormap_reversed
+      : !!(p.scene3d && p.scene3d.colormap_reversed);
+    S.showMapField = true;
     S.showOutline = true;
     S.clipRaster = true; // clip the areal raster to the outline polygon (QC toggle)
     // Filled surfaces read cleanly without the dense geometry lattice. Geometry-
@@ -294,6 +313,12 @@
     // it; it only appears when the active section carries zone bands (graceful
     // fallback — a payload without zone_ids stays on the property colormap).
     S.sectionColorBy = "property";
+    S.showSectionFill = true;
+    S.entityKeysExpanded = { map: false, section: false };
+    S.sectionRanges = (p.sections || []).map(function (section) {
+      var source = section.value_range || (p.volume && p.volume.value_range) || { min: 0, max: 1 };
+      return { min: Number(source.min), max: Number(source.max) };
+    });
 
     // The 3-D scene tab (view3d payloads): z-exaggeration seed (the payload's
     // z_exaggeration, the volume tab's 5x default otherwise) + per-kind layer
@@ -348,7 +373,11 @@
       };
     });
   }
-  function tagLayer(l, kind) { return { name: l.name, display: disp(l, l.name), units: l.units, values: l.values, range: l.range, kind: kind }; }
+  function tagLayer(l, kind) {
+    return { name: l.name, display: disp(l, l.name), units: l.units, values: l.values,
+      range: l.range, kind: kind, colormap: canonicalColormap(l.colormap),
+      colormap_reversed: !!l.colormap_reversed };
+  }
   function deriveDims() {
     var f = App.payload.map ? App.payload.map.frame : null;
     var cc = App.payload.volume ? App.payload.volume.cell_count : 0;

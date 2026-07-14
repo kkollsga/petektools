@@ -42,6 +42,7 @@ _WORKSPACE_SCALE_JS = Path(__file__).parent / "viewer_perf" / "workspace_scale_b
 _WORKSPACE_LANE_JS = Path(__file__).parent / "viewer_perf" / "workspace_lane_bench.mjs"
 _WORKSPACE_STATE_JS = Path(__file__).parent / "viewer_perf" / "workspace_state_bench.mjs"
 _WORKSPACE_TREE_DESIGN_JS = Path(__file__).parent / "viewer_perf" / "workspace_tree_design_bench.mjs"
+_INSPECTOR_LEGEND_JS = Path(__file__).parent / "viewer_perf" / "inspector_legend_bench.mjs"
 _WORKSPACE_WELL_OVERLAY_JS = (
     Path(__file__).parent / "viewer_perf" / "workspace_well_overlay_bench.mjs"
 )
@@ -521,6 +522,54 @@ def test_workspace_tree_design_roles_states_and_multibore_dom(tmp_path):
     assert result["consoleErrors"] == []
     assert result["before"]["single"]["id"] == "bore:single"
     assert result["before"]["multi"]["explicit"] is True
+
+
+@pytest.mark.skipif(not _HAVE_PW, reason="playwright/chromium not installed")
+def test_inspector_legend_single_truth_and_range_transactions_dom(tmp_path):
+    wells = [
+        {"id": f"Well-{i}", "x": float(i), "y": float(i), "label": True}
+        for i in range(8)
+    ]
+    columns = [
+        {
+            "distance_m": float(i * 100),
+            "layer_tops": [1000.0], "layer_bases": [1100.0],
+            "values": [0.2 + i * 0.1], "zone_ids": [i % 2],
+        }
+        for i in range(2)
+    ]
+    payload = {
+        "kind": "inspector-test", "property": "porosity",
+        "map": {
+            "frame": {"origin_x": 0.0, "origin_y": 0.0, "spacing_x": 1.0,
+                      "spacing_y": 1.0, "ncol": 2, "nrow": 2},
+            "outline": [[[0, 0], [1, 0], [1, 1], [0, 1]]],
+            "grid_lines": [], "points": [], "fills": [], "contours": [],
+            "point_color": None, "layers": [], "contacts": [
+                {"kind": "owc", "depth_m": 1050.0},
+            ],
+            "horizons": [{"name": "Porosity", "display_name": "Porosity",
+                          "units": "fraction", "values": [0.0, 10.0, 20.0, 30.0],
+                          "range": {"min": 0.0, "max": 30.0}}],
+            "zone_averages": [], "k_slices": [], "colormap": "viridis",
+        },
+        "sections": [{
+            "property": "facies", "top_name": "Top", "base_name": "Base",
+            "value_range": {"min": 0.0, "max": 1.0}, "columns": columns,
+            "zones": [{"name": "Sand", "color": "#d9a441"}, {"name": "Shale", "color": "#73859b"}],
+            "contacts": [],
+        }],
+        "wells": wells,
+    }
+    target = tmp_path / "inspector-legend.html"
+    save_view(payload, target)
+    out = subprocess.run(
+        [_NODE, str(_INSPECTOR_LEGEND_JS), str(target)],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert out.returncode == 0, out.stdout + out.stderr
+    result = json.loads(out.stdout.strip().splitlines()[-1])
+    assert result["consoleErrors"] == []
 
 
 @pytest.mark.skipif(not _HAVE_PW, reason="playwright/chromium not installed")

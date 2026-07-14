@@ -834,6 +834,45 @@ def test_workspace_shell_has_separate_semantic_regions_and_bounded_preferences()
     panel_boot = (ASSETS / "viewer" / "80-panel-boot.js").read_text()
     assert "buildWorkspaceTree(body)" not in panel_boot
 
+
+def test_map_and_section_share_one_inspector_legend_truth():
+    html = (ASSETS / "index.html").read_text()
+    source = _bundle.viewer_js()
+    panel = (ASSETS / "viewer" / "80-panel-boot.js").read_text()
+    inspector = (ASSETS / "viewer" / "72-inspector-legend.js").read_text()
+
+    assert 'group("Layers & legend")' in panel
+    assert "buildMapInspectorLegend(t)" in panel
+    assert "buildSectionInspectorLegend(t)" in panel
+    assert "gridInfoGroup" not in panel
+    assert "drawFieldLegend" not in source
+    assert "clearInspectorOwnedPlotLegend()" in source
+    assert 'if (!_mapHotFrame) clearInspectorOwnedPlotLegend()' in source
+    assert "COLORMAP_NAMES.forEach" in inspector
+    assert 'setAttribute("role", "listbox")' in inspector
+    assert 'setAttribute("aria-selected"' in inspector
+    assert "colormap_reversed" in inspector
+    assert 'S.colormap + "|" + !!S.colormapReversed' in source
+    assert "paintReversed(fill)" in source
+    assert 'event.key === "Escape"' in inspector
+    assert 'event.key === "Enter"' in inspector
+    assert "if (a > b)" in inspector
+    assert "!isFinite(a) || !isFinite(b) || a === b" in inspector
+    assert "document.addEventListener(\"pointerdown\", outside, true)" in inspector
+    assert "INSPECTOR_ENTITY_CAP = 6" in inspector
+    assert 'dataset.legendKind = "categorical"' in inspector
+    assert ".inspector-range-edit" in html
+    assert "[hidden] { display: none !important; }" in html
+    # The old word-only selector survives for legacy tabs but is removed from
+    # Map/Intersection; their ramp is the rendered control.
+    map_panel = panel[panel.index("function buildMapPanel"):panel.index("function buildSectionPanel")]
+    section_panel = panel[panel.index("function buildSectionPanel"):panel.index("function buildVolumePanel")]
+    assert "colormapRow()" not in map_panel
+    assert "colormapRow()" not in section_panel
+    assert "colormapRow()" in panel[panel.index("function buildVolumePanel"):]
+    assert "function drawVolumeLegend()" in source
+    assert "function drawChartLegend(ch)" in source
+
     # Persistence is deliberately UI-only: no manifest, visibility, lane, or
     # producer data is serialized into browser storage.
     assert 'localStorage.setItem(UI_PREF_KEY, JSON.stringify(safe))' in source

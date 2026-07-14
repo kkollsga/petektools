@@ -421,14 +421,15 @@
   // screenful of raster is a tight typed-array copy. Cached by name (the maps are
   // theme-independent). The legend/section keep the exact ramp.
   var _lutCache = {};
-  function colormapLUT(name) {
-    if (_lutCache[name]) return _lutCache[name];
+  function colormapLUT(name, reversed) {
+    var key = name + "|" + (!!reversed);
+    if (_lutCache[key]) return _lutCache[key];
     var n = 256, lut = new Uint8Array(n * 3);
     for (var i = 0; i < n; i++) {
-      var c = rampColor(name, i / (n - 1)) || [128, 128, 128];
+      var c = rampColor(name, i / (n - 1), reversed) || [128, 128, 128];
       lut[i * 3] = c[0]; lut[i * 3 + 1] = c[1]; lut[i * 3 + 2] = c[2];
     }
-    _lutCache[name] = lut;
+    _lutCache[key] = lut;
     return lut;
   }
   function drawWindowedRaster(ctx, cv, f, layer) {
@@ -464,7 +465,7 @@
     var off = R.canvas, octx = R.ctx, img = R.img;
     var vals = layer.values, ncol = f.ncol;
     var r = layer.range || { min: 0, max: 1 }, span = (r.max - r.min) || 1;
-    var lut = colormapLUT(S.colormap), data = img.data;
+    var lut = colormapLUT(paintColormap(layer), paintReversed(layer)), data = img.data;
     for (var rj = 0; rj < rr; rj++) {
       var jj = j0 + rj * stJ;
       for (var ri = 0; ri < rc; ri++) {
@@ -548,6 +549,7 @@
   function fillRingFor(fill) {
     if (S.lodActive && fill && fill.lod) {
       if (fill.colormap && !fill.lod.colormap) fill.lod.colormap = fill.colormap;
+      if (fill.colormap_reversed != null && fill.lod.colormap_reversed == null) fill.lod.colormap_reversed = !!fill.colormap_reversed;
       return fill.lod;
     }
     return fill;
@@ -712,7 +714,7 @@
 
     var f = mapFrame();
     var layer = S.mapLayers[S.mapLayerIdx];
-    if (layer) drawWindowedRaster(ctx, cv, f, layer);
+    if (layer && S.showMapField) drawWindowedRaster(ctx, cv, f, layer);
 
     // value-coloured trimesh fill (2-D QA payloads) — UNDER grid lines /
     // outline / points. One active fill at a time (the panel select).
@@ -820,10 +822,9 @@
       S.fence.pts.forEach(function (pt) { var s = w2s(pt[0], pt[1]); ctx.beginPath(); ctx.arc(s[0], s[1], 3, 0, 6.28); ctx.fillStyle = token("--accent"); ctx.fill(); });
     }
 
-    // Per-layer legend entries (type icon + display name; a ramp + clamped
-    // range where the layer is value-coloured) are assembled in
-    // drawFieldLegend from map.layers / point_color / the active fill.
-    if (!_mapHotFrame) drawFieldLegend(layer, S.showFills ? activeFill : null);
+    // Map legend truth lives in the Inspector. Keep the plot clear, and avoid
+    // any legend DOM mutation on hot pan/zoom frames.
+    if (!_mapHotFrame) clearInspectorOwnedPlotLegend();
 
     // A small "LOD" chip while the coarse ring is showing (only when the payload
     // actually carries LOD rings) — a quiet cue that display detail is reduced.
@@ -883,7 +884,8 @@
     return segs.map(function (ly) {
       var colored = ly.colored !== false;
       var range = colored ? (ly.range || (pc && pc.range) || null) : null;
-      return { start: ly.start || 0, n: ly.n, range: range, cmap: ly.colormap || S.colormap };
+      return { start: ly.start || 0, n: ly.n, range: range,
+        cmap: paintColormap(ly), reversed: paintReversed(ly) };
     });
   }
   // Build the binned Path2D set under an affine transform sx = x*sc + oxx.
@@ -915,8 +917,8 @@
     return paths;
   }
   // One fillStyle assignment + one fill() per non-empty bin (≤257 calls total).
-  function fillPointPaths(ctx, paths, alpha, cmap) {
-    var lut = colormapLUT(cmap || S.colormap);
+  function fillPointPaths(ctx, paths, alpha, cmap, reversed) {
+    var lut = colormapLUT(cmap || S.colormap, reversed);
     ctx.globalAlpha = alpha;
     for (var b = 0; b < 256; b++) {
       if (!paths[b]) continue;
@@ -963,7 +965,7 @@
     // everything the baked pixels depend on, except geometry/scale/window
     var styleKey = token("--accent") + "|" + alpha + "|" +
       plan.map(function (sg) {
-        return sg.cmap + ":" + (sg.range ? sg.range[0] + "," + sg.range[1] : "-");
+        return sg.cmap + ":" + sg.reversed + ":" + (sg.range ? sg.range[0] + "," + sg.range[1] : "-");
       }).join(";");
     var key = styleKey + "|" + r;
     var bb = pointBBox(pts), pad = r + 2, padW = pad / mapView.scale;
@@ -1000,7 +1002,7 @@
         var cctx = C.canvas.getContext("2d");
         plan.forEach(function (sg) {
           fillPointPaths(cctx, buildPointPaths(pts, mapView.scale, cox, coy, r,
-            sg.range ? { range: sg.range } : null, true, w, h, sg.start, sg.start + sg.n), alpha, sg.cmap);
+            sg.range ? { range: sg.range } : null, true, w, h, sg.start, sg.start + sg.n), alpha, sg.cmap, sg.reversed);
         });
         C.ref = pts; C.key = key; C.styleKey = styleKey;
         C.scale = mapView.scale; C.cox = cox; C.coy = coy;
@@ -1026,7 +1028,7 @@
       // Over the bake caps on a non-hot render: bounded immediate fallback.
       plan.forEach(function (sg) {
         fillPointPaths(ctx, buildPointPaths(pts, mapView.scale, mapView.ox, mapView.oy, r,
-          sg.range ? { range: sg.range } : null, true, cv.width, cv.height, sg.start, sg.start + sg.n), alpha, sg.cmap);
+          sg.range ? { range: sg.range } : null, true, cv.width, cv.height, sg.start, sg.start + sg.n), alpha, sg.cmap, sg.reversed);
       });
     }
   }
@@ -1134,7 +1136,7 @@
       p.moveTo(sx[a], sy[a]); p.lineTo(sx[b], sy[b]); p.lineTo(sx[c], sy[c]); p.closePath();
     }
     // per-fill colormap pin (dict item form) wins over the panel selection
-    var lut = colormapLUT(fill.colormap || S.colormap);
+    var lut = colormapLUT(paintColormap(fill), paintReversed(fill));
     for (var i = 0; i < FILL_BINS; i++) {
       if (!paths[i]) continue;
       var l3 = Math.round(((i + 0.5) / FILL_BINS) * 255) * 3;
@@ -1164,7 +1166,7 @@
       }
     }
     if (!isFinite(lo) || !isFinite(hi)) return;
-    var span = (hi - lo) || 1, lut = colormapLUT(fill.colormap || S.colormap);
+    var span = (hi - lo) || 1, lut = colormapLUT(paintColormap(fill), paintReversed(fill));
     for (var j = 0; j < hc; j++) for (var i = 0; i < wc; i++) {
       var a = j * nc + i, b = a + 1, c = a + nc, d = c + 1;
       if (!maskAt(G.mask, a) || !maskAt(G.mask, b) || !maskAt(G.mask, c) || !maskAt(G.mask, d)) continue;
@@ -1242,7 +1244,7 @@
   }
   function drawMapFill(ctx, cv, fill) {
     if (!fill || (!fill.regular_grid && (!fill.nodes || !fill.nodes.length))) return;
-    var key = (fill.colormap || S.colormap) + "|" + (fill.range ? fill.range[0] + "," + fill.range[1] : "-");
+    var key = paintColormap(fill) + "|" + paintReversed(fill) + "|" + (fill.range ? fill.range[0] + "," + fill.range[1] : "-");
     var bb = fillNodesBBox(fill);
     // the viewport in world coords, clamped to the fill bbox — the region a blit
     // must cover to be valid
@@ -1291,7 +1293,7 @@
     }
     window.__PETEK_FILL_CACHE_STATUS = {
       limit: FILL_CACHE_LIMIT, size: _fillCaches.length, key: key,
-      colormap: fill.colormap || S.colormap,
+      colormap: paintColormap(fill), colormap_reversed: paintReversed(fill),
       range: fill.range ? [fill.range[0], fill.range[1]] : null,
       lod: !!S.lodActive,
     };

@@ -61,7 +61,9 @@
     function X(d) { return padL + ((d - dmin) / ((dmax - dmin) || 1)) * W; }
     function Y(z) { return padT + ((z - zmin) / ((zmax - zmin) || 1)) * H; }
 
-    var range = App.payload.volume ? App.payload.volume.value_range : { min: 0, max: 1 };
+    var range = S.sectionRanges[S.sectionIdx]
+      || (b.value_range ? { min: b.value_range.min, max: b.value_range.max }
+        : (App.payload.volume ? App.payload.volume.value_range : { min: 0, max: 1 }));
     var span = (range.max - range.min) || 1;
     var nk = cols[0].layer_tops.length;
 
@@ -91,7 +93,7 @@
     // resolved), so the O(columns × nk) fill loop stays bounded on a dense section.
     var hasVals = b.property && cols[0].values && cols[0].values.length === nk;
     var cstride = Math.max(1, Math.ceil(cols.length / Math.max(1, W * 2)));
-    for (var ci = 0; ci < cols.length; ci += cstride) {
+    if (S.showSectionFill) for (var ci = 0; ci < cols.length; ci += cstride) {
       var c = cols[ci];
       var ex = colEdgeX(ci, cstride), xL = ex[0], xR = ex[1];
       for (var k = 0; k < nk; k++) {
@@ -100,7 +102,7 @@
         if (!Number.isFinite(c.layer_tops[k]) || !Number.isFinite(c.layer_bases[k])) continue;
         ctx.fillStyle = zoneMode
           ? sectionZoneColor(zones, c.zone_ids && c.zone_ids[k])
-          : (hasVals ? rampCss(S.colormap, (c.values[k] - range.min) / span) : token("--grid"));
+          : (hasVals ? rampCss(S.colormap, (c.values[k] - range.min) / span, S.colormapReversed) : token("--grid"));
         if (hasEdges
           && Number.isFinite(c.layer_tops_l[k]) && Number.isFinite(c.layer_tops_r[k])
           && Number.isFinite(c.layer_bases_l[k]) && Number.isFinite(c.layer_bases_r[k])) {
@@ -242,10 +244,9 @@
       window.__PETEK_SECTION_COLORBY = zoneMode ? "zone" : "property";
       window.__PETEK_SECTION_HAS_ZONES = hasZoneData;
     }
-    // Legend: zone chips in zone mode (the fill is categorical, no ramp); the
-    // property ramp otherwise. Horizon / contact identity chips overlay both.
-    if (zoneMode) drawFieldLegend(null);
-    else drawFieldLegend(hasVals ? { name: b.property || "value", units: "fraction", range: range, kind: "property" } : null);
+    // Intersection legend truth lives in the Inspector (categorical zone keys
+    // never masquerade as a continuous ramp).
+    clearInspectorOwnedPlotLegend();
   }
   // Resolve a section cell's zone fill. A user-declared hex on the zone WINS
   // (the owner's colour choice — logged, but NOT palette-validated: by design the
@@ -379,4 +380,3 @@
     if (c.path_z != null) rows.push(["bore z", fmt(c.path_z, "m")]);
     showReadout(ev, rows);
   }
-

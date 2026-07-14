@@ -154,7 +154,7 @@
       if ((xlog && p.x <= 0) || (ylog && p.y <= 0)) return;
       var sx = X(p.x), sy = Y(p.y);
       if (sx < padL || sx > padL + W || sy < padT || sy > padT + H) return;
-      var col = cont ? rampCss(S.colormap, (p.c - cr.min) / cspan)
+      var col = cont ? rampCss(S.colormap, (p.c - cr.min) / cspan, S.colormapReversed)
         : cb.name ? idColor("grp:" + p.c) : token("--c1");
       ctx.beginPath(); ctx.arc(sx, sy, 4, 0, 6.2832);
       ctx.globalAlpha = 0.72; ctx.fillStyle = col; ctx.fill(); ctx.globalAlpha = 1;
@@ -341,4 +341,3 @@
       body.appendChild(el("div", "hint", "Bars swing around the base value; ranked by leverage (largest on top). Inner band = P90→P10, outer (faint) = min→max. Hover a bar for its pivot inputs + output range."));
     }
   }
-

@@ -478,7 +478,7 @@ def test_spec_grammar_registry_match():
         "enabled": True, "attr": "net_pay", "cmap": "viridis", "range": [-1.0, 1.0],
     }
     # every registry name resolves
-    for cmap in ("viridis", "magma", "grays", "inferno"):
+    for cmap in ("viridis", "inferno", "magma", "plasma", "cividis", "turbo", "coolwarm", "greys", "grays"):
         assert _parse_spec(cmap, "color")["cmap"] == cmap
     # an attr-only string that HAPPENS to contain no registry token keeps its
     # underscores whole
