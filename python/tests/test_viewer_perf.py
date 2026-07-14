@@ -41,6 +41,7 @@ _WORKSPACE_JS = Path(__file__).parent / "viewer_perf" / "workspace_bench.mjs"
 _WORKSPACE_SCALE_JS = Path(__file__).parent / "viewer_perf" / "workspace_scale_bench.mjs"
 _WORKSPACE_LANE_JS = Path(__file__).parent / "viewer_perf" / "workspace_lane_bench.mjs"
 _WORKSPACE_STATE_JS = Path(__file__).parent / "viewer_perf" / "workspace_state_bench.mjs"
+_WORKSPACE_TREE_DESIGN_JS = Path(__file__).parent / "viewer_perf" / "workspace_tree_design_bench.mjs"
 _WORKSPACE_WELL_OVERLAY_JS = (
     Path(__file__).parent / "viewer_perf" / "workspace_well_overlay_bench.mjs"
 )
@@ -442,6 +443,76 @@ def test_workspace_tree_search_tristate_and_per_view_visibility(tmp_path):
     assert result["consoleErrors"] == []
     assert result["triStateInitial"] is True
     assert result["returned"]["fetches"] == 0
+
+
+@pytest.mark.skipif(not _HAVE_PW, reason="playwright/chromium not installed")
+def test_workspace_tree_design_roles_states_and_multibore_dom(tmp_path):
+    def leaf(item_id, label, role, *, visible=False, disabled=False, reason=None, lanes=False):
+        resources = {}
+        if not disabled:
+            resources["map"] = {"href": f"./workspace-resource?item={item_id}&view=map", "deferred": True}
+            if lanes:
+                resources["map"].update({
+                    "lanes": [
+                        {"id": "depth", "label": "Depth"},
+                        {"id": "thickness", "label": "Thickness"},
+                    ],
+                    "active_lane": "depth",
+                    "active_color_by": "thickness",
+                })
+        out = {
+            "id": item_id, "label": label, "role": role,
+            "views": [] if disabled else ["map"],
+            "visible": {} if disabled else {"map": visible},
+            "resources": resources,
+        }
+        if disabled:
+            out.update({"disabled": True, "reason": reason})
+        return out
+
+    assets = [
+        leaf("surface:top", "Top Reservoir", "surface", visible=True, lanes=True),
+        leaf("point:one", "Survey Points", "point_set"),
+        leaf("top:one", "Well Tops", "well_top"),
+        leaf("grid:one", "Grid", "volume"),
+        leaf("polygon:one", "Lease", "polygon"),
+        leaf("log:one", "Gamma Ray", "log"),
+        leaf("zone:one", "Zones", "zone"),
+        leaf("chart:one", "Crossplot", "chart"),
+        leaf("unknown:legacy", "Legacy", None, disabled=True, reason="Unsupported project asset"),
+    ]
+    tree = [
+        {"id": "group:assets", "label": "Assets", "expanded": True, "children": assets},
+        {"id": "group:wells", "label": "Wells", "expanded": True, "children": [
+            {"id": "well:single", "label": "Well One", "expanded": True, "children": [
+                leaf("bore:single", "Main bore", "bore"),
+            ]},
+            {"id": "well:multi", "label": "Well Two", "expanded": True, "children": [
+                leaf("bore:multi-a", "Main bore", "bore"),
+                leaf("bore:multi-b", "Sidetrack", "bore"),
+            ]},
+        ]},
+    ]
+    payload = {
+        "schema_version": 3, "kind": "workspace", "title": "North Sea",
+        "workspace": {
+            "schema_version": 1, "title": "North Sea", "available_views": ["map"],
+            "project": {"title": "North Sea", "crs": None, "unit": "m"},
+            "tree": tree, "resources": {},
+            "snapshot": {"include": "visible", "message": "Not embedded in design fixture."},
+        },
+    }
+    target = tmp_path / "workspace-tree-design.html"
+    save_view(payload, target)
+    out = subprocess.run(
+        [_NODE, str(_WORKSPACE_TREE_DESIGN_JS), str(target)],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert out.returncode == 0, out.stdout + out.stderr
+    result = json.loads(out.stdout.strip().splitlines()[-1])
+    assert result["consoleErrors"] == []
+    assert result["before"]["single"]["id"] == "bore:single"
+    assert result["before"]["multi"]["explicit"] is True
 
 
 @pytest.mark.skipif(not _HAVE_PW, reason="playwright/chromium not installed")

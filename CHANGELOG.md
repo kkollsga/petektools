@@ -7,6 +7,13 @@ All notable changes to petekTools are recorded here. Format follows
 ## [Unreleased]
 
 ### Added
+- **Refined project-tree design.** The viewer now uses a complete SVG role-icon
+  registry, true hierarchy rails and elbows, fixed 28 px row geometry, explicit
+  multi-bore disclosure, and a canonical-ID-preserving single-bore collapse.
+  CSS-driven selected/loading/error/unavailable states, a wider attribute lane,
+  independent paint metadata, per-row isolate actions, and a per-view visibility
+  footer keep dense projects readable without changing lazy expansion or fetch
+  semantics. Workspace project titles also receive the subdued `.pproj` suffix.
 - **Viewer workspace schema v2 contract.** The frozen additive contract preserves
   `{id,label,kind,units,codes}` attribute metadata, separates geometry
   `attribute` from paint `color_by`, adds optional rotated/georeferenced Frame

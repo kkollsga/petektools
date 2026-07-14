@@ -230,9 +230,15 @@
   var S = {};
   function initState() {
     var p = App.payload;
-    document.getElementById("title").textContent =
-      W && W.manifest.title ? W.manifest.title
-        : (p.kind ? p.kind + " · " : "") + (p.property || "model") + " viewer";
+    var titleEl = document.getElementById("title");
+    var title = W && W.manifest.title ? W.manifest.title
+      : (p.kind ? p.kind + " · " : "") + (p.property || "model") + " viewer";
+    var projectBacked = !!(W && W.manifest.project);
+    titleEl.textContent = projectBacked ? title.replace(/\.pproj$/i, "") : title;
+    titleEl.classList.toggle("workspace-project-title", !!W);
+    titleEl.dataset.projectSuffix = projectBacked ? ".pproj" : "";
+    if (W) titleEl.title = title;
+    else titleEl.removeAttribute("title");
     document.getElementById("mode-badge").textContent =
       App.mode === "server" ? "live" : (W ? "offline · static" : "file · static");
 

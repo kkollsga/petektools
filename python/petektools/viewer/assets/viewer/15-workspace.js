@@ -19,6 +19,9 @@
   function workspaceLane(id, view) {
     return W && W.activeLane[id] ? (W.activeLane[id][view] == null ? null : W.activeLane[id][view]) : null;
   }
+  function workspaceColorBy(id, view) {
+    return W && W.activeColorBy[id] ? (W.activeColorBy[id][view] == null ? null : W.activeColorBy[id][view]) : null;
+  }
   function workspaceDetail(id, view) {
     return W && W.activeDetail[id] ? (W.activeDetail[id][view] == null ? null : W.activeDetail[id][view]) : null;
   }
@@ -42,7 +45,7 @@
     if (manifest.schema_version !== 1) throw new Error("unsupported workspace schema_version " + manifest.schema_version);
     W = {
       manifest: manifest, available: (manifest.available_views || []).slice(),
-      order: [], items: {}, visible: {}, activeLane: {}, activeDetail: {}, resources: {}, loading: {}, errors: {}, detailErrors: {}, searchText: {},
+      order: [], items: {}, visible: {}, activeLane: {}, activeColorBy: {}, activeDetail: {}, resources: {}, loading: {}, errors: {}, detailErrors: {}, searchText: {},
       query: "", expanded: {}, expansionManual: {}, groups: {}, fetches: 0, compositions: 0, searchTimer: null,
       treeBuildMs: [], groupToggleMs: [], panelTimer: null, composeTimers: {},
     };
@@ -61,10 +64,12 @@
           W.order.push(node.id); W.items[node.id] = node;
           W.visible[node.id] = Object.assign({}, node.visible || {});
           W.activeLane[node.id] = {};
+          W.activeColorBy[node.id] = {};
           W.activeDetail[node.id] = {};
           Object.keys(node.resources || {}).forEach(function (view) {
             var spec = node.resources[view];
             if (spec && spec.lanes && spec.lanes.length) W.activeLane[node.id][view] = spec.active_lane || spec.lanes[0].id;
+            if (spec && spec.lanes && spec.lanes.length) W.activeColorBy[node.id][view] = spec.active_color_by || W.activeLane[node.id][view];
             if (spec && spec.tiers && spec.tiers.length) W.activeDetail[node.id][view] = spec.active_detail || spec.tiers[0].id;
           });
           W.resources[node.id] = {};
@@ -113,6 +118,7 @@
       itemCount: W.order.length, activeView: workspaceViewName(App.tab),
       visible: JSON.parse(JSON.stringify(W.visible)),
       activeLane: JSON.parse(JSON.stringify(W.activeLane)),
+      activeColorBy: JSON.parse(JSON.stringify(W.activeColorBy)),
       activeDetail: JSON.parse(JSON.stringify(W.activeDetail)),
       expanded: JSON.parse(JSON.stringify(W.expanded)),
       expansionManual: JSON.parse(JSON.stringify(W.expansionManual)),
@@ -466,10 +472,28 @@
     exposeWorkspaceState(); buildWorkspaceNavigator(); buildPanel();
   }
 
+  function setWorkspaceViewSelection(view, selectedIds) {
+    if (!W) return;
+    var selected = {};
+    (selectedIds || []).forEach(function (id) { selected[id] = true; });
+    var any = false;
+    W.order.forEach(function (id) {
+      if (!workspaceItemHasView(id, view)) return;
+      W.visible[id][view] = !!selected[id]; any = any || !!selected[id];
+    });
+    exposeWorkspaceState(); buildWorkspaceNavigator(); buildPanel();
+    if (workspaceViewName(App.tab) !== view) return;
+    if (any) ensureWorkspaceTab(App.tab);
+    else if (view === "map") composeWorkspaceMap();
+    else if (view === "scene3d") { applyScene3dVisibility(); if (s3d) s3d.render(); }
+    else if (view === "wells") composeWorkspaceWells();
+  }
+
   function setWorkspaceLane(id, view, lane) {
     if (!W || !W.activeLane[id] || workspaceLane(id, view) === lane) return;
     var previous = workspaceLane(id, view);
     W.activeLane[id][view] = lane;
+    if (W.activeColorBy[id]) W.activeColorBy[id][view] = lane;
     var spec = W.items[id].resources && W.items[id].resources[view];
     if (spec && spec.tiers && spec.tiers.length) W.activeDetail[id][view] = spec.active_detail || spec.tiers[0].id;
     var detail = workspaceDetail(id, view);
@@ -487,6 +511,95 @@
 
   function workspaceSearchText(node) {
     return W.searchText[node.id] || String(node.label || "").toLowerCase();
+  }
+
+  // Explicit kind registry: icons encode kind; categorical colour remains
+  // reserved for stable entity identity. Unknown roles are a geometric dot,
+  // never a truncated text badge.
+  var WORKSPACE_ICON_SVGS = {
+    surface: '<path stroke d="M1.5 10.5c2-2.6 4-2.6 6 0s4 2.6 6 0"/><path stroke d="M1.5 6.5c2-2.6 4-2.6 6 0s4 2.6 6 0" opacity=".55"/>',
+    points: '<circle fill cx="3.6" cy="11.4" r="1.25"/><circle fill cx="7.2" cy="5.6" r="1.25"/><circle fill cx="11.6" cy="9.2" r="1.25"/><circle fill cx="12.6" cy="3.9" r="1.25"/><circle fill cx="6.4" cy="12.6" r="1.25" opacity=".5"/>',
+    bore: '<path stroke d="M8 1.8v6.4c0 2.4 1.4 3.7 3.6 4.6"/><circle fill cx="8" cy="1.8" r="1.5"/>',
+    well: '<path stroke d="M8 2v5"/><circle fill cx="8" cy="2" r="1.4"/><path stroke d="M8 7c0 2.6 1.3 4 3.4 5.2" opacity=".9"/><path stroke d="M8 7c0 2.6-1.3 4-3.4 5.2" opacity=".45"/>',
+    folderClosed: '<path class="workspace-folder-body" d="M1.8 12.2V4.4a.9.9 0 0 1 .9-.9h3.1l1.5 1.7h6a.9.9 0 0 1 .9.9v6.1a.9.9 0 0 1-.9.9H2.7a.9.9 0 0 1-.9-.9Z"/><path stroke d="M1.8 12.2V4.4a.9.9 0 0 1 .9-.9h3.1l1.5 1.7h6a.9.9 0 0 1 .9.9v6.1a.9.9 0 0 1-.9.9H2.7a.9.9 0 0 1-.9-.9Z"/><path stroke d="M1.8 6.6h12.4" opacity=".45"/>',
+    folderOpen: '<path class="workspace-folder-body" d="M1.8 12.2 3.6 7.6a.9.9 0 0 1 .85-.6h9.6a.55.55 0 0 1 .52.74l-1.6 4.3a.9.9 0 0 1-.85.6H2.7a.9.9 0 0 1-.9-.9Z"/><path stroke d="M1.8 12.2V4.4a.9.9 0 0 1 .9-.9h3.1l1.5 1.7h5.1a.9.9 0 0 1 .9.9v1.1"/><path stroke d="M1.8 12.2 3.6 7.6a.9.9 0 0 1 .85-.6h9.6a.55.55 0 0 1 .52.74l-1.6 4.3a.9.9 0 0 1-.85.6H2.7a.9.9 0 0 1-.9-.9Z"/>',
+    tops: '<rect stroke x="2" y="2.6" width="12" height="10.8" rx="1"/><path stroke d="M2 6.1h12M6.3 6.1v7.3"/>',
+    grid: '<path stroke d="M2 5.2 8 2.2l6 3-6 3-6-3Z"/><path stroke d="M2 8.2 8 11.2l6-3M2 11 8 14l6-3" opacity=".5"/>',
+    polygon: '<path stroke d="M3.2 4.1 8.6 2.2l4.4 4-1.7 5.6-5.9.9-2.9-4.3Z"/><circle fill cx="3.2" cy="4.1" r="1.15"/><circle fill cx="13" cy="6.2" r="1.15"/><circle fill cx="5.4" cy="12.7" r="1.15"/>',
+    log: '<path stroke d="M4 2.2v11.6M12 2.2v11.6" opacity=".35"/><path stroke d="M8 2.4c-2.3 1.1-2.3 2.6 0 3.7s2.3 2.6 0 3.7-2.3 2.6 0 3.8"/>',
+    zone: '<rect fill x="2" y="3" width="12" height="2.6" rx=".5" opacity=".9"/><rect fill x="2" y="6.7" width="12" height="2.6" rx=".5" opacity=".55"/><rect fill x="2" y="10.4" width="12" height="2.6" rx=".5" opacity=".3"/>',
+    chart: '<path stroke d="M2 13V3M2 13h12"/><path stroke d="M4.6 10.6 7 7.4l2.5 2 3.4-4.6"/>',
+    unknown: '<circle fill cx="8" cy="8" r="2.2"/>',
+  };
+  var WORKSPACE_ICON_ROLES = {
+    surface: "surface", point: "points", points: "points", point_set: "points",
+    bore: "bore", wellbore: "bore", well: "well", folder: "folder",
+    well_top: "tops", source_top: "tops", tops: "tops", top_table: "tops",
+    grid: "grid", volume: "grid", polygon: "polygon", log: "log", curve: "log",
+    zone: "zone", chart: "chart",
+  };
+  function workspaceIcon(role, expanded) {
+    var key = WORKSPACE_ICON_ROLES[String(role || "").toLowerCase()] || "unknown";
+    var sourceKey = key === "folder" ? (expanded ? "folderOpen" : "folderClosed") : key;
+    var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 16 16"); svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("data-workspace-icon", key);
+    svg.setAttribute("class", "workspace-icon" + (key === "folder" ? " workspace-icon-folder" : ""));
+    svg.innerHTML = WORKSPACE_ICON_SVGS[sourceKey];
+    return svg;
+  }
+  function workspaceGroupRole(node) {
+    var children = node.children || [];
+    if (children.length > 1 && children.every(function (child) { return !child.children && child.role === "bore"; })) return "well";
+    return node.role || "folder";
+  }
+  function workspaceSingleBore(node) {
+    return !!(node && node.children && node.children.length === 1
+      && !node.children[0].children && node.children[0].role === "bore");
+  }
+  function workspaceBoreGroup(node) {
+    return !!(node && node.children && node.children.length
+      && node.children.every(function (child) { return !child.children && child.role === "bore"; }));
+  }
+  function workspaceRails(entry) {
+    var rails = el("span", "workspace-rails");
+    (entry.rails || []).forEach(function (rail) {
+      var cls = "workspace-rail";
+      if (rail.active) cls += " workspace-rail-active";
+      if (rail.last) cls += " workspace-rail-last";
+      if (rail.gap) cls += " workspace-rail-gap";
+      rails.appendChild(el("span", cls));
+    });
+    return rails;
+  }
+  function workspaceTwist(expanded, label, onclick) {
+    var twist = el("button", "workspace-twist"); twist.type = "button";
+    twist.innerHTML = '<svg viewBox="0 0 10 10" aria-hidden="true"><path d="M3 1l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    twist.setAttribute("aria-label", (expanded ? "Collapse " : "Expand ") + label);
+    twist.setAttribute("aria-expanded", expanded ? "true" : "false"); twist.onclick = onclick;
+    return twist;
+  }
+  function workspaceLeafTwist() {
+    var spacer = el("span", "workspace-twist workspace-twist-leaf"); spacer.setAttribute("aria-hidden", "true"); return spacer;
+  }
+  function workspaceSpinner() {
+    var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("class", "workspace-spinner"); svg.setAttribute("viewBox", "0 0 16 16"); svg.setAttribute("aria-hidden", "true");
+    svg.innerHTML = '<path d="M8 1.7a6.3 6.3 0 1 1-6.3 6.3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>';
+    return svg;
+  }
+  function workspacePaintMark(colorLabel, attributeLabel) {
+    var mark = el("span", "workspace-paint");
+    mark.title = "Coloured by " + colorLabel + ", not " + attributeLabel;
+    mark.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.4 12.6c0-1.7 1.2-2.4 2.3-2.4 1.2 0 2 .8 2 1.9 0 1.4-1.3 2.3-2.9 2.3-1.9 0-3.3-1.4-3.3-3.4 0-3.2 3.1-5.6 6.4-5.6 3 0 5 1.9 5 4.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>';
+    return mark;
+  }
+  function workspaceIsolateButton(ids, view, label) {
+    var button = el("button", "workspace-isolate"); button.type = "button"; button.title = "Isolate " + label + " in " + view;
+    button.setAttribute("aria-label", button.title);
+    button.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M1.6 8S3.9 3.9 8 3.9 14.4 8 14.4 8 12.1 12.1 8 12.1 1.6 8 1.6 8Z"/><circle cx="8" cy="8" r="1.9"/></svg>';
+    button.onclick = function () { setWorkspaceViewSelection(view, ids); };
+    return button;
   }
 
   function buildWorkspaceTree(body) {
@@ -507,6 +620,7 @@
     });
     groupEl.appendChild(search);
     var tree = el("div", "workspace-tree");
+    tree.setAttribute("role", "tree"); tree.setAttribute("aria-label", "Project items");
     // The virtual window is sized from this rendered viewport. Attach before
     // reading clientHeight/computed tokens; a detached tree reports zero.
     groupEl.appendChild(tree); body.appendChild(groupEl);
@@ -515,6 +629,9 @@
       var chain = [node], tail = node;
       while (tail.children && tail.children.length === 1 && tail.children[0].children) {
         var child = tail.children[0];
+        // A well folder is semantic: one bore collapses into the well row and
+        // multiple bores must retain their own explicit parent/twisty.
+        if (workspaceBoreGroup(child)) break;
         // Mixed explicit/manual disclosure states need separate controls; only
         // collapse a semantically identical singleton chain into a breadcrumb.
         if (!!W.expanded[tail.id] !== !!W.expanded[child.id]) break;
@@ -522,16 +639,29 @@
       }
       return { chain: chain, tail: tail };
     }
-    function flatten(node, depth) {
+    function flatten(node, depth, ancestorRails, isLast) {
       var matches = !W.query || workspaceSearchText(node).indexOf(W.query) >= 0;
+      var rails = (ancestorRails || []).slice();
+      if (depth > 0) rails.push({ active: true, last: !!isLast });
       if (node.children) {
         var childMatches = node.children.some(function (child) { return subtreeMatches(child); });
         if (!matches && !childMatches) return;
+        if (workspaceSingleBore(node)) {
+          flat.push({ node: node.children[0], label: node.label, depth: depth,
+            rails: rails, collapsedBore: true });
+          return;
+        }
         var compacted = W.query ? { chain: [node], tail: node } : compactChain(node);
-        flat.push({ node: compacted.tail, chain: compacted.chain, depth: depth });
-        if (W.expanded[compacted.tail.id] || W.query) compacted.tail.children.forEach(function (child) { flatten(child, depth + 1); });
+        flat.push({ node: compacted.tail, chain: compacted.chain, depth: depth, rails: rails });
+        if (W.expanded[compacted.tail.id] || W.query) {
+          var nextRails = (ancestorRails || []).slice();
+          if (depth > 0) nextRails.push({ gap: !!isLast });
+          compacted.tail.children.forEach(function (child, index, children) {
+            flatten(child, depth + 1, nextRails, index === children.length - 1);
+          });
+        }
       } else if (matches) {
-        flat.push({ node: node, depth: depth });
+        flat.push({ node: node, depth: depth, rails: rails });
       }
     }
     function subtreeMatches(node) {
@@ -543,16 +673,15 @@
       if (node.children) {
         var ids = []; workspaceDescendantItems(node, view, ids);
         var checked = ids.filter(function (id) { return workspaceItemVisible(id, view); }).length;
-        var row = el("div", "workspace-row workspace-group"); row.style.setProperty("--tree-depth", depth);
-        var twist = el("button", "workspace-twist", W.expanded[node.id] ? "▾" : "▸");
+        var row = el("div", "workspace-row workspace-group");
         var groupLabel = chain.map(function (group) { return group.label; }).join(" › ");
-        twist.setAttribute("aria-label", (W.expanded[node.id] ? "Collapse " : "Expand ") + groupLabel);
-        twist.setAttribute("aria-expanded", W.expanded[node.id] ? "true" : "false");
-        twist.onclick = function () {
+        row.setAttribute("role", "treeitem"); row.setAttribute("aria-level", String(depth + 1));
+        row.setAttribute("aria-expanded", W.expanded[node.id] ? "true" : "false"); row.dataset.workspaceId = node.id;
+        var twist = workspaceTwist(!!W.expanded[node.id], groupLabel, function () {
           var next = !W.expanded[node.id];
           chain.forEach(function (group) { W.expanded[group.id] = next; W.expansionManual[group.id] = true; });
           buildWorkspaceNavigator();
-        };
+        });
         var cb = el("input"); cb.type = "checkbox"; cb.checked = ids.length > 0 && checked === ids.length;
         cb.indeterminate = checked > 0 && checked < ids.length; cb.disabled = !ids.length;
         cb.setAttribute("aria-label", "Show " + groupLabel + " in " + view);
@@ -572,25 +701,36 @@
             else if (view === "wells") composeWorkspaceWells();
           }, 0);
         };
-        row.appendChild(twist); row.appendChild(cb); row.appendChild(el("span", "workspace-label", groupLabel));
-        row.appendChild(el("span", "workspace-count", checked + "/" + ids.length)); target.appendChild(row);
+        var meta = el("span", "workspace-meta");
+        meta.appendChild(el("span", "workspace-count", checked + "/" + ids.length));
+        if (ids.length) meta.appendChild(workspaceIsolateButton(ids.slice(), view, groupLabel));
+        row.appendChild(workspaceRails(entry)); row.appendChild(twist); row.appendChild(cb);
+        row.appendChild(workspaceIcon(workspaceGroupRole(node), !!W.expanded[node.id]));
+        row.appendChild(el("span", "workspace-label", groupLabel)); row.appendChild(meta); target.appendChild(row);
       } else {
         var has = !node.disabled && (node.views || []).indexOf(view) >= 0, lane = workspaceLane(node.id, view), detail = workspaceDetail(node.id, view);
         var key = workspaceRequestKey(node.id, view, lane, detail);
         var selected = has && workspaceItemVisible(node.id, view);
+        var displayLabel = entry.label || node.label;
         var row = el("div", "workspace-row workspace-object" + (selected ? " workspace-selected" : "")
           + (W.loading[key] ? " workspace-loading" : "") + (W.errors[key] ? " workspace-error" : "")
           + (!has ? " workspace-unavailable" : ""));
-        row.style.setProperty("--tree-depth", depth);
+        row.setAttribute("role", "treeitem"); row.setAttribute("aria-level", String(depth + 1));
+        row.setAttribute("aria-selected", selected ? "true" : "false"); row.dataset.workspaceId = node.id;
+        if (entry.collapsedBore) row.dataset.collapsedBore = "true";
         var cb = el("input"); cb.type = "checkbox"; cb.checked = has && workspaceItemVisible(node.id, view); cb.disabled = !has;
-        cb.setAttribute("aria-label", (has ? "Show " : "Unavailable: ") + node.label + " in " + view);
+        cb.setAttribute("aria-label", (has ? "Show " : "Unavailable: ") + displayLabel + " in " + view);
         cb.dataset.workspaceItem = node.id;
         cb.onchange = function () { setWorkspaceVisible(node.id, view, cb.checked); };
-        var role = String(node.role || ((node.views || [])[0]) || "item");
-        row.appendChild(cb); row.appendChild(el("span", "workspace-role", role.slice(0, 3).toUpperCase()));
-        var label = el("span", !has ? "workspace-disabled" : null, node.label);
+        row.appendChild(workspaceRails(entry)); row.appendChild(workspaceLeafTwist()); row.appendChild(cb);
+        row.appendChild(workspaceIcon(node.role, false));
+        var label = el("span", "workspace-label" + (!has ? " workspace-disabled" : ""), displayLabel);
         if (node.reason) label.title = node.reason;
         row.appendChild(label);
+        if (node.role === "bore") {
+          var dot = el("span", "workspace-identity-dot"); dot.style.background = idColor("item:" + node.id); row.appendChild(dot);
+        }
+        var meta = el("span", "workspace-meta");
         var spec = node.resources && node.resources[view];
         if (has && spec && spec.lanes && spec.lanes.length > 1) {
           var select = el("select", "workspace-lane-select");
@@ -598,26 +738,34 @@
             var option = el("option", null, entry.label); option.value = entry.id; select.appendChild(option);
           });
           select.value = lane;
-          select.title = "Attribute for " + node.label; select.setAttribute("aria-label", "Attribute for " + node.label);
+          select.title = "Active attribute (sets geometry, resets colour)"; select.setAttribute("aria-label", "Active attribute for " + displayLabel);
           select.onchange = function () { setWorkspaceLane(node.id, view, select.value); };
-          row.appendChild(select);
+          meta.appendChild(select);
+          var colorBy = workspaceColorBy(node.id, view);
+          if (colorBy != null && colorBy !== lane) {
+            var labels = {}; spec.lanes.forEach(function (candidate) { labels[candidate.id] = candidate.label; });
+            meta.appendChild(workspacePaintMark(labels[colorBy] || colorBy, labels[lane] || lane));
+          }
         }
-        if (W.loading[key]) row.appendChild(el("span", "workspace-status", "loading"));
+        if (W.loading[key]) { meta.appendChild(workspaceSpinner()); meta.appendChild(el("span", "workspace-status", "loading")); }
         if (W.errors[key]) {
           if (App.mode === "file") {
-            var offline = el("span", "workspace-status", "offline"); offline.title = W.errors[key]; row.appendChild(offline);
+            var offline = el("span", "workspace-status", "offline"); offline.title = W.errors[key]; meta.appendChild(offline);
           } else {
             var retry = el("button", "workspace-retry", "retry"); retry.title = W.errors[key];
-            retry.setAttribute("aria-label", "Retry " + node.label); retry.onclick = function () { loadWorkspaceResource(node.id, view, lane, true, null, detail); }; row.appendChild(retry);
+            retry.setAttribute("aria-label", "Retry " + displayLabel); retry.onclick = function () { loadWorkspaceResource(node.id, view, lane, true, null, detail); }; meta.appendChild(retry);
           }
         } else if (!has && node.reason) {
-          var unavailable = el("span", "workspace-status", "unavailable");
-          unavailable.title = node.reason; row.appendChild(unavailable);
+          var unavailable = el("span", "workspace-status", node.reason);
+          unavailable.title = node.reason; meta.appendChild(unavailable);
         }
-        target.appendChild(row);
+        if (has) meta.appendChild(workspaceIsolateButton([node.id], view, displayLabel));
+        row.appendChild(meta); target.appendChild(row);
       }
     }
-    (W.manifest.tree || []).forEach(function (node) { flatten(node, 0); });
+    (W.manifest.tree || []).forEach(function (node, index, roots) {
+      flatten(node, 0, [], index === roots.length - 1);
+    });
     if (!flat.length) {
       tree.appendChild(el("div", "workspace-region-state", W.query
         ? "No project items match this search." : "This workspace has no catalogued items."));
@@ -660,6 +808,22 @@
       }
       renderWindow();
     }
+    var viewLabels = {
+      map: "Map", scene3d: "3-D", wells: "Wells", sections: "Intersection",
+      volume: "Volume", charts: "Charts",
+    };
+    var selectedInView = W.order.filter(function (id) {
+      return workspaceItemHasView(id, view) && workspaceItemVisible(id, view);
+    }).length;
+    var footer = el("div", "workspace-tree-footer");
+    var visibilityNote = el("span");
+    visibilityNote.appendChild(document.createTextNode("Visibility applies to "));
+    visibilityNote.appendChild(el("strong", null, viewLabels[view] || view));
+    var clear = el("button", "workspace-clear", "Clear all"); clear.type = "button";
+    clear.disabled = selectedInView === 0;
+    clear.title = "Clear all visible items in " + (viewLabels[view] || view);
+    clear.onclick = function () { setWorkspaceViewSelection(view, []); };
+    footer.appendChild(visibilityNote); footer.appendChild(clear); groupEl.appendChild(footer);
     exposeWorkspaceState();
     W.treeBuildMs.push(performance.now() - started); exposeWorkspaceState();
   }

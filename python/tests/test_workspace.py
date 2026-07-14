@@ -738,6 +738,70 @@ def test_workspace_virtual_tree_uses_css_row_token_and_measured_viewport():
     assert "viewportRows = 13" not in source
 
 
+def test_workspace_project_tree_design_contract_is_explicit_and_identity_safe():
+    html = (ASSETS / "index.html").read_text()
+    source = _bundle.viewer_js()
+
+    # Kind is represented by a stable 16 px SVG registry, never by a clipped
+    # text-role badge. Every approved object role and the unknown fallback is
+    # named explicitly so additions cannot silently inherit a misleading icon.
+    for icon in (
+        "surface", "points", "bore", "well", "folderClosed", "folderOpen",
+        "tops", "grid", "polygon", "log", "zone", "chart", "unknown",
+    ):
+        assert f"    {icon}: '" in source
+    for role in (
+        'surface: "surface"', 'point_set: "points"', 'bore: "bore"',
+        'well: "well"', 'well_top: "tops"', 'source_top: "tops"',
+        'grid: "grid"', 'volume: "grid"', 'polygon: "polygon"',
+        'log: "log"', 'curve: "log"', 'zone: "zone"', 'chart: "chart"',
+    ):
+        assert role in source
+    assert '|| "unknown"' in source
+    assert 'data-workspace-icon' in source
+    assert "role.slice" not in source
+    assert "workspace-role" not in html
+
+    # The single-bore presentation aliases only the label. Its rendered row and
+    # every state/action remain keyed by the canonical child leaf. A true
+    # multibore group is retained and receives the dedicated well icon.
+    assert "function workspaceSingleBore(node)" in source
+    assert "node.children.length === 1" in source
+    assert 'node.children[0].role === "bore"' in source
+    assert "node: node.children[0], label: node.label" in source
+    assert "collapsedBore: true" in source
+    assert "row.dataset.workspaceId = node.id" in source
+    assert "cb.dataset.workspaceItem = node.id" in source
+    assert 'idColor("item:" + node.id)' in source
+    assert "children.length > 1 && children.every" in source
+    assert 'return "well"' in source
+    assert "if (workspaceBoreGroup(child)) break" in source
+
+    # Hierarchy, states, metadata, and view-scoped actions are CSS/DOM contracts
+    # while the existing ARIA tree and virtual row geometry remain intact.
+    for selector in (
+        ".workspace-rail::before", ".workspace-rail-last::after",
+        ".workspace-selected::before", ".workspace-loading .workspace-icon",
+        ".workspace-error .workspace-label", ".workspace-unavailable",
+        ".workspace-meta", ".workspace-count", ".workspace-paint",
+        ".workspace-isolate", ".workspace-spinner", ".workspace-tree-footer",
+        ".workspace-project-title::after",
+    ):
+        assert selector in html
+    assert ".workspace-lane-select { width: 132px" in html
+    assert 'tree.setAttribute("role", "tree")' in source
+    assert 'row.setAttribute("role", "treeitem")' in source
+    assert 'row.setAttribute("aria-level"' in source
+    assert 'row.setAttribute("aria-expanded"' in source
+    assert 'row.setAttribute("aria-selected"' in source
+    assert '"Visibility applies to "' in source
+    assert 'setWorkspaceViewSelection(view, [])' in source
+    assert "activeColorBy" in source and "activeLane" in source
+    assert "window.__PETEK_WORKSPACE_STATE" in source
+    assert "var projectBacked = !!(W && W.manifest.project)" in source
+    assert 'titleEl.dataset.projectSuffix = projectBacked ? ".pproj" : ""' in source
+
+
 def test_workspace_shell_has_separate_semantic_regions_and_bounded_preferences():
     html = (ASSETS / "index.html").read_text()
     source = _bundle.viewer_js()
