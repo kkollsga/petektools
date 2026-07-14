@@ -81,6 +81,8 @@
   :where(button, input, select, [tabindex]):focus-visible {
     outline: 2px solid var(--accent); outline-offset: 2px;
   }
+  .sr-only { position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
   .workspace-only { display: none; }
   .workspace-shell #navigator.workspace-only { display: block; }
   .workspace-shell .topright > .workspace-only { display: inline-flex; align-items: center; justify-content: center; }
@@ -245,6 +247,23 @@
   .readout .val { font-weight: 600; font-size: 14px; }
   .readout .lbl { color: var(--text-secondary); }
   .readout .key { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:5px; vertical-align: middle; }
+  .map-hud {
+    position: absolute; left: 12px; bottom: 12px; z-index: 4; pointer-events: none;
+    display: grid; gap: 3px; min-width: 170px; max-width: min(520px, calc(100% - 24px));
+    color: var(--text-secondary); font-size: 10px; line-height: 1.35;
+    font-variant-numeric: tabular-nums;
+  }
+  .map-hud-line { display: flex; align-items: center; gap: 8px; min-height: 13px; }
+  .map-hud-line:empty { display: none; }
+  .map-scale-bar { display: inline-grid; gap: 2px; }
+  .map-scale-rule { height: 5px; border: solid var(--text-secondary); border-width: 0 1px 1px; }
+  .map-marker-controls { position: absolute; inset: 0; z-index: 6; pointer-events: none; }
+  .map-pick-control {
+    position: absolute; width: 24px; height: 24px; margin: -12px 0 0 -12px;
+    padding: 0; border: 0; border-radius: 50%; background: transparent;
+    color: transparent; pointer-events: auto; cursor: pointer;
+  }
+  .map-pick-control:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .legend {
     position: absolute; left: 14px; bottom: 14px; z-index: 4;
     background: color-mix(in srgb, var(--surface-1) 88%, transparent);
@@ -353,7 +372,16 @@
       <div id="navigator-resizer" class="panel-resizer" role="separator" tabindex="0" aria-label="Resize Project navigator" aria-orientation="vertical"></div>
     </aside>
     <section id="view" aria-label="Active workspace view">
-      <div class="pane" data-pane="map" role="tabpanel"><canvas id="map-canvas"></canvas></div>
+      <div class="pane" data-pane="map" role="tabpanel">
+        <canvas id="map-canvas" tabindex="0" aria-label="Map. Use arrow keys to pan, plus or minus to zoom, and zero for north up." aria-describedby="map-hud-status"></canvas>
+        <div id="map-hud" class="map-hud" aria-hidden="true">
+          <div id="map-hud-scale" class="map-hud-line"></div>
+          <div id="map-hud-meta" class="map-hud-line"></div>
+          <div id="map-hud-cursor" class="map-hud-line"></div>
+        </div>
+        <div id="map-marker-controls" class="map-marker-controls" aria-label="Well intersection markers"></div>
+        <span id="map-hud-status" class="sr-only" role="status" aria-live="polite"></span>
+      </div>
       <div class="pane" data-pane="section" role="tabpanel" hidden><canvas id="section-canvas"></canvas></div>
       <div class="pane" data-pane="volume" role="tabpanel" hidden><div id="volume-host"></div></div>
       <div class="pane" data-pane="scene3d" role="tabpanel" hidden><div id="scene3d-host"></div></div>
@@ -382,6 +410,9 @@
         <kbd>/</kbd><span>Search the Project navigator</span>
         <kbd>1–3</kbd><span>Switch among available views</span>
         <kbd>F</kbd><span>Fit the active view</span>
+        <kbd>Arrows</kbd><span>Pan the focused Map</span>
+        <kbd>+ / −</kbd><span>Zoom the focused Map</span>
+        <kbd>0</kbd><span>Set the focused Map north up</span>
         <kbd>?</kbd><span>Open or close this reference</span>
         <kbd>Esc</kbd><span>Close this reference</span>
       </div>

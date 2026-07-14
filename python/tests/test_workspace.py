@@ -941,6 +941,10 @@ def test_map_and_section_share_one_inspector_legend_truth():
     assert "sectionHasZoneData(b)" in inspector and "sectionHasZoneData(b)" in panel
     assert 'units: b.units' in inspector and 'b.units || "fraction"' not in inspector
     assert "(m.outline || []).length" in inspector
+    assert "if (fill && fill.categorical)" in inspector
+    assert "groupEl.appendChild(inspectorCategoricalRow" in inspector
+    assert "} else if (fill) groupEl.appendChild(inspectorContinuousRow" in inspector
+    assert "arrayRangeRef(fill.range, { min: NaN, max: NaN })" in inspector
 
 
 def test_async_viewer_paint_completions_are_request_keyed():
@@ -992,6 +996,13 @@ def test_workspace_shell_declares_keyboard_and_accessibility_contract():
     assert 'function wireButtonTooltips()' in source
     assert 'button.removeAttribute("title")' in source
     assert 'W.expansionManual[group.id] = true' in source
+    assert 'id="map-canvas" tabindex="0"' in html
+    assert 'id="map-hud-status"' in html and 'aria-live="polite"' in html
+    assert 'id="map-marker-controls"' in html
+    for key in ('ev.key === "ArrowLeft"', 'ev.key === "+"', 'ev.key === "0"'):
+        assert key in source
+    assert "mapScaleBarPlan(mapView.scale" in source
+    assert "cycleMapWellPick(id, 1)" in source
 
 
 def _workspace_block(values, dtype="f32"):

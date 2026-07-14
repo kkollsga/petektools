@@ -417,25 +417,37 @@
       mask = { length: values.length, a: values };
     }
     var descriptor = descriptors[colorId] || {};
-    return {
-      name: attributeId,
-      display_name: descriptor.label || colorId,
-      units: descriptor.units == null ? null : descriptor.units,
-      range: paint.range,
-      colormap: paint.colormap || null,
-      colormap_reversed: !!paint.colormap_reversed,
-      categorical: descriptor.kind === "categorical",
-      categorical_codes: descriptor.kind === "categorical" ? descriptor.codes : null,
-      item_id: id,
-      __workspaceFrame: sourceFrame,
-      __workspaceGeometry: geometry.values,
-      regular_grid: {
-        dimensions: [f.ncol, f.nrow], origin: [f.origin_x, f.origin_y],
-        step_i: [f.spacing_x * c, f.spacing_x * s],
-        step_j: [-sign * f.spacing_y * s, sign * f.spacing_y * c],
-        values: paint.values, mask: mask
-      }
-    };
+    // One stable fill object per geometry attribute. A colour-only change
+    // updates paint fields in place, preserving geometry/cache identity and
+    // avoiding a geometry rebuild while still invalidating the paint key.
+    var cache = m.__workspaceSharedFills || Object.defineProperty(m, "__workspaceSharedFills", {
+      value: {}, configurable: true, writable: true,
+    }).__workspaceSharedFills;
+    var fill = cache[attributeId];
+    if (!fill) {
+      fill = cache[attributeId] = {
+        item_id: id, __workspaceFrame: sourceFrame,
+        __workspaceGeometry: geometry.values, geometry_attribute: attributeId,
+        regular_grid: {
+          dimensions: [f.ncol, f.nrow], origin: [f.origin_x, f.origin_y],
+          step_i: [f.spacing_x * c, f.spacing_x * s],
+          step_j: [-sign * f.spacing_y * s, sign * f.spacing_y * c],
+          values: paint.values, mask: mask,
+        },
+      };
+    }
+    var changedPaint = fill.color_by !== colorId;
+    fill.name = colorId; fill.color_by = colorId;
+    var item = W && W.items && W.items[id];
+    fill.display_name = item && item.label ? item.label : (descriptor.label || colorId);
+    fill.units = descriptor.units == null ? null : descriptor.units;
+    fill.range = paint.range; fill.colormap = paint.colormap || null;
+    fill.colormap_reversed = !!paint.colormap_reversed;
+    fill.categorical = descriptor.kind === "categorical";
+    fill.categorical_codes = fill.categorical ? descriptor.codes : null;
+    fill.regular_grid.values = paint.values; fill.regular_grid.mask = mask;
+    if (changedPaint) fill.__categoricalClasses = null;
+    return fill;
   }
 
   function composeWorkspaceMapReady(entries) {

@@ -334,6 +334,12 @@ if (frame.rotation_deg !== 30 || frame.yflip !== true || context.renderCount !==
 
 assertArrayClose(context.mapNorthVector(0), [0, -1], "north-up");
 assertArrayClose(context.mapNorthVector(90), [1, 0], "rotated north");
+const metricScale = context.mapScaleBarPlan(2, "m", false, 96);
+const unknownScale = context.mapScaleBarPlan(2, null, false, 96);
+if (!metricScale || metricScale.label !== "20 m" || metricScale.px !== 40 ||
+    !unknownScale || unknownScale.label !== "20" || context.mapScaleBarPlan(2, "m", true, 96) !== null) {
+  throw new Error("truthful scale-bar metadata/perspective policy diverged");
+}
 const cache0 = context.mapGeometryCacheKey(frame, 0);
 const cache30 = context.mapGeometryCacheKey(frame, 30);
 const changedFrame = { ...frame, rotation_deg: 31 };
@@ -352,4 +358,5 @@ console.log(JSON.stringify({
   axisMatrix: axisResult.matrix, rotatedMatrices: rotatedResults.map(result => result.matrix),
   rasterBytes: rotatedResults[0].pixels, extent: directExtent,
   centreWorld: centreAfter, north0: context.mapNorthVector(0), cacheSeparated: true,
+  metricScale, unknownScale,
 }));

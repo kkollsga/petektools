@@ -39,10 +39,17 @@
     }
 
     var overlayState = window.__PETEK_MAP_WELL_OVERLAY_STATE;
-    if (overlayState && overlayState.diagnostics && overlayState.diagnostics.length) {
+    var noHitWells = overlayState ? (overlayState.wells || []).filter(function (well) {
+      return !well.picks.length && (well.contexts || []).some(function (entry) { return entry.status === "no_hit"; });
+    }) : [];
+    if (overlayState && ((overlayState.diagnostics && overlayState.diagnostics.length) || noHitWells.length)) {
       var og = group("Well overlay");
       overlayState.diagnostics.forEach(function (diagnostic) {
         og.appendChild(el("div", "hint", diagnostic.message || diagnostic.code));
+      });
+      noHitWells.forEach(function (well) {
+        og.appendChild(el("div", "hint", (well.displayName || well.id || "Well") +
+          ": no intersection on visible surfaces; marker remains at the wellhead."));
       });
       body.appendChild(og);
     }

@@ -79,6 +79,8 @@ function sharedMap(itemId, frame, values, withLegacyFrame) {
 let nextDisplayId = 1;
 const displayIds = new WeakMap();
 let rasterPixel = null;
+let activeAttribute = "depth", activeColorBy = "facies", visible = true;
+let composeCalls = 0, loadCalls = 0;
 const context = {
   console, Math, Number, Object, Array, Uint8Array, Float32Array, WeakMap, isFinite,
   App: { payload: {}, tab: "map" },
@@ -90,9 +92,16 @@ const context = {
   },
   W: {},
   workspaceSpec: () => spec(),
-  workspaceLane: () => "depth",
-  workspaceColorBy: () => "facies",
-  workspaceItemVisible: () => true,
+  workspaceLane: (id, view) => context.W.activeAttribute && context.W.activeAttribute[id]
+    ? context.W.activeAttribute[id][view] : activeAttribute,
+  workspaceColorBy: (id, view) => context.W.activeColorBy && context.W.activeColorBy[id]
+    ? context.W.activeColorBy[id][view] : activeColorBy,
+  workspaceItemVisible: () => visible,
+  workspaceDetail: () => null,
+  workspaceResource: () => null,
+  composeWorkspaceView: () => { composeCalls++; },
+  loadWorkspaceResource: () => { loadCalls++; },
+  exposeWorkspaceState: () => {}, buildWorkspaceNavigator: () => {},
   refreshWorkspaceMapState: () => {},
   repaintWorkspaceView: () => {},
   tagLayer: value => value,
@@ -136,6 +145,7 @@ vm.createContext(context);
 vm.runInContext(helpers, context);
 [
   "virtualConcat", "cloneStamped", "workspaceSharedFill", "composeWorkspaceMapReady",
+  "setWorkspaceAttribute", "setWorkspaceColorBy",
 ].forEach(name => vm.runInContext(extractFunction(workspace, name), context));
 [
   "mapFrame", "worldExtent", "selectMapFill", "overlayKey", "drawRegularGridFill",
@@ -174,10 +184,50 @@ if (JSON.stringify(rasterPixel) !== JSON.stringify(expectedPixels)) {
   throw new Error("categorical draw path did not paint a declared source code: " + rasterPixel);
 }
 
+// Colour-only changes must preserve the producing geometry object and its
+// affine grid object. Returning to a prior paint may reuse its bitmap; no
+// geometry reconstruction or provider call is required.
+const sourceA = entries[0].payload.map, geometryFill = composed.fills[0];
+const gridIdentity = geometryFill.regular_grid, geometryIdentity = geometryFill.__workspaceGeometry;
+activeColorBy = "depth";
+const recolored = context.workspaceSharedFill("surface:a", sourceA);
+if (recolored !== geometryFill || recolored.regular_grid !== gridIdentity ||
+    recolored.__workspaceGeometry !== geometryIdentity || recolored.color_by !== "depth") {
+  throw new Error("colour-only selection rebuilt shared geometry");
+}
+activeAttribute = "facies"; activeColorBy = "facies";
+const changedGeometry = context.workspaceSharedFill("surface:a", sourceA);
+if (changedGeometry === geometryFill || changedGeometry.__workspaceGeometry === geometryIdentity) {
+  throw new Error("geometry attribute selection reused the wrong geometry identity");
+}
+
+// The navigator setters reset paint exactly once per real geometry change.
+let paintWrites = 0;
+const paintState = new Proxy({ map: "depth" }, {
+  set(target, key, value) { paintWrites++; target[key] = value; return true; },
+});
+context.W = {
+  activeAttribute: { "surface:a": { map: "depth" } },
+  activeColorBy: { "surface:a": paintState },
+  activeLane: { "surface:a": { map: "depth" } },
+};
+visible = true; composeCalls = 0; loadCalls = 0;
+context.setWorkspaceAttribute("surface:a", "map", "facies");
+context.setWorkspaceAttribute("surface:a", "map", "facies");
+if (paintWrites !== 1 || paintState.map !== "facies") throw new Error("geometry change did not reset colour exactly once");
+context.setWorkspaceColorBy("surface:a", "map", "depth");
+if (paintWrites !== 2 || context.W.activeAttribute["surface:a"].map !== "facies") {
+  throw new Error("colour-only selection changed geometry or failed to decouple");
+}
+context.setWorkspaceAttribute("surface:a", "map", "facies");
+if (paintWrites !== 2) throw new Error("same geometry selection reset colour twice");
+if (composeCalls !== 2 || loadCalls !== 0) throw new Error("shared selectors fetched instead of composing locally");
+
 context.selectMapFill(0);
 if (composed.frame !== frameA) throw new Error("fill selection did not activate its producer frame");
 
 console.log(JSON.stringify({
   overlayKey: key, activeOrigin: composed.frame.origin_x,
   extent, cursorValue: cursor.value, category, rasterPixel,
+  stableGeometry: true, paintWrites, composeCalls, loadCalls,
 }));

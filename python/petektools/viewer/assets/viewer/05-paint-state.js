@@ -165,3 +165,18 @@
   function mapNorthVector(rotationDeg) {
     return mapCameraProject(rotationDeg, 0, 1);
   }
+  // Truthful 2-D scale-bar policy. Perspective/3-D views have no constant
+  // screen-to-world scale and therefore get no bar. Unknown units remain
+  // unknown: the numeric world distance is still useful, but no suffix is
+  // invented. Pick a 1/2/5 decade step near the requested screen width.
+  function mapScaleBarPlan(scale, units, perspective, targetPx) {
+    scale = Number(scale); targetPx = Number(targetPx) || 96;
+    if (perspective || !isFinite(scale) || scale <= 0) return null;
+    var raw = targetPx / scale;
+    if (!isFinite(raw) || raw <= 0) return null;
+    var power = Math.pow(10, Math.floor(Math.log(raw) / Math.LN10));
+    var ratio = raw / power, step = ratio >= 5 ? 5 : ratio >= 2 ? 2 : 1;
+    var distance = step * power, px = distance * scale;
+    var suffix = typeof units === "string" && units.trim() ? " " + units.trim() : "";
+    return { distance: distance, px: px, label: String(Number(distance.toPrecision(6))) + suffix };
+  }

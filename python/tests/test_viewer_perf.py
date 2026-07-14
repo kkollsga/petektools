@@ -53,6 +53,7 @@ _WORKSPACE_WELL_OVERLAY_JS = (
 )
 _REGULAR_SURFACE_JS = Path(__file__).parent / "viewer_perf" / "regular_surface_build_bench.js"
 _MAP_ROTATION_JS = Path(__file__).parent / "viewer_perf" / "map_rotation_bench.js"
+_MAP_BEHAVIOR_JS = Path(__file__).parent / "viewer_perf" / "map_behavior_bench.js"
 _NODE = shutil.which("node")
 
 
@@ -75,6 +76,21 @@ def test_rotated_map_frame_camera_and_direct_shared_raster_parity():
     assert result["rasterBytes"] == 4 * 3 * 4
     assert result["north0"] == [0, -1]
     assert result["cacheSeparated"] is True
+
+
+@pytest.mark.skipif(_NODE is None, reason="node not installed")
+def test_map_all_visible_well_pick_composition_and_cycle():
+    viewer = Path(__file__).parents[1] / "petektools" / "viewer" / "assets" / "viewer"
+    out = subprocess.run(
+        [_NODE, str(_MAP_BEHAVIOR_JS), str(viewer / "20-map.js")],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert out.returncode == 0, out.stdout + out.stderr
+    result = json.loads(out.stdout.strip().splitlines()[-1])
+    assert result["selected"] == 300
+    assert result["cycled"] == 100
 
 
 def _playwright_available() -> bool:
@@ -150,6 +166,10 @@ def test_shared_only_workspace_map_composes_and_renders_with_source_frames():
     assert result["activeOrigin"] == 100
     assert result["cursorValue"] == 3
     assert result["category"] == 1
+    assert result["stableGeometry"] is True
+    assert result["paintWrites"] == 2
+    assert result["composeCalls"] == 2
+    assert result["loadCalls"] == 0
 
 
 def _overlay_map(name, fills, overlays):
@@ -277,7 +297,9 @@ def test_workspace_map_contextual_well_overlays_switch_atomically(tmp_path):
     assert selected_b["overlay"]["wells"][0]["trajectory"] == _OverlayWorkspaceProvider.hit_b
     assert legacy["overlay"]["wells"][0]["source"] == "base"
     assert legacy["overlay"]["wells"][0]["trajectory"] == _OverlayWorkspaceProvider.base_wells[0]["trajectory"]
-    assert initial["overlay"]["wells"][0]["intersection"] == _OverlayWorkspaceProvider.hit_a_intersection
+    assert initial["overlay"]["wells"][0]["activeIntersection"] == _OverlayWorkspaceProvider.hit_a_intersection
+    assert initial["overlay"]["wells"][0]["intersection"]["md"] == 375.5
+    assert initial["overlay"]["wells"][0]["selectedIntersection"]["context_item_id"] == "surface:b"
     assert initial["overlay"]["wells"][0]["displayName"] == "Hit well"
     assert initial["overlay"]["wells"][0]["head"] == [0.0, 0.0]
     assert initial["overlay"]["wells"][0]["style"] == {"path": {"color": "#123456", "width": 3}}

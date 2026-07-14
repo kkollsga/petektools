@@ -214,7 +214,7 @@
     } else if (fill) groupEl.appendChild(inspectorContinuousRow({
       label: fillLabel(fill), units: fill.units, item: fill,
       visible: function () { return S.showFills; }, setVisible: function (v) { S.showFills = v; renderMap(); },
-      range: arrayRangeRef(fill.range, { min: 0, max: 1 }),
+      range: arrayRangeRef(fill.range, { min: NaN, max: NaN }),
       setRange: function (lo, hi) { setArrayRange(fill, "range", lo, hi); },
     }));
     var pc = m.point_color;

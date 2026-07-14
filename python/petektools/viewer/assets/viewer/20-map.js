@@ -5,7 +5,7 @@
   // resources and LOD settles therefore repaint without moving the camera.
   var mapView = {
     scale: 1, ox: 0, oy: 0, fitted: false,
-    rotationDeg: 0, fitRequest: "initial", state: "pending",
+    rotationDeg: 0, fitScale: null, fitRequest: "initial", state: "pending",
   };
   function requestMapFit(reason) {
     mapView.fitRequest = reason || "explicit";
@@ -46,11 +46,67 @@
     return status === "hit" ? value.length === 1 : status === "ambiguous" ? value.length >= 2
       : (status === "no_hit" || status === "error") ? value.length === 0 : false;
   }
+  var _mapWellCycles = {}, _mapWellCycleVersion = 0;
+  var _mapWellResolveCache = { map: null, wells: null, context: null, visibility: "", version: -1 };
+  function overlaySingularRecord(value) {
+    return value && typeof value === "object" && isFinite(value.md) &&
+      Array.isArray(value.xyz) && value.xyz.length === 3 && value.xyz.every(isFinite)
+      ? { md: Number(value.md), xyz: value.xyz } : null;
+  }
+  function visibleMapContextOrder(map) {
+    var order = {}, ids = [], hasCatalog = !!(map.items && map.items.length);
+    function add(id) { if (typeof id === "string" && id && ids.indexOf(id) < 0) ids.push(id); }
+    (map.items || []).forEach(function (entry) { add(entry.id); });
+    // Direct/static compatibility maps may predate MapBundle.items. Fill and
+    // source identities still describe the visible contexts without guessing.
+    (map.fills || []).forEach(function (fill) { add(fill.item_id); });
+    (map.__wellOverlaySources || []).forEach(add);
+    if (!hasCatalog) ids.sort();
+    ids.forEach(function (id, index) { order[id] = index; });
+    return { ids: ids, order: order };
+  }
+  function defaultWellPickIndex(picks) {
+    var winner = -1, greatest = -Infinity;
+    (picks || []).forEach(function (pick, index) {
+      // The candidate list is already in stable catalog/record order. Retain
+      // the first candidate on an equal-MD tie.
+      if (pick.md > greatest) { greatest = pick.md; winner = index; }
+    });
+    return winner;
+  }
+  function wellPickSignature(picks) {
+    return (picks || []).map(function (pick) {
+      return [pick.contextItemId, pick.recordIndex, pick.md].concat(pick.xyz).join(":");
+    }).join("|");
+  }
+  function cycleMapWellPick(wellItemId, delta) {
+    var cycle = _mapWellCycles[wellItemId];
+    if (!cycle || cycle.length < 2) return false;
+    cycle.index = (cycle.index + (delta || 1)) % cycle.length;
+    if (cycle.index < 0) cycle.index += cycle.length;
+    _mapWellCycleVersion++;
+    renderMap();
+    var state = window.__PETEK_MAP_WELL_OVERLAY_STATE;
+    var well = state && state.wells && state.wells.filter(function (entry) { return entry.wellItemId === wellItemId; })[0];
+    var status = document.getElementById("map-hud-status");
+    if (well && status) status.textContent = "Selected intersection " + (well.selectedPickIndex + 1) +
+      " of " + well.picks.length + " for " + (well.displayName || well.id || "well") +
+      ", measured depth " + well.selectedIntersection.md + ".";
+    return true;
+  }
   function resolveMapWellGeometry() {
     var m = App.payload.map, context = activeMapContextItemId();
     var wells = App.payload.wells || [], overlays = m.well_overlays;
+    var visibility = (S.wellVis || []).map(function (value) { return value === false ? "0" : "1"; }).join("");
+    var cached = _mapWellResolveCache;
+    if (cached.map === m && cached.wells === wells && cached.context === context &&
+        cached.visibility === visibility && cached.version === _mapWellCycleVersion) {
+      window.__PETEK_MAP_WELL_OVERLAY_STATE = cached.state;
+      return cached.result;
+    }
     var state = { contextItemId: context, wells: [], diagnostics: [] };
-    var candidates = {};
+    var contexts = visibleMapContextOrder(m), candidates = {}, active = {}, knownWells = {};
+    wells.forEach(function (well) { if (typeof well.item_id === "string") knownWells[well.item_id] = true; });
     if (overlays != null && !Array.isArray(overlays)) {
       state.diagnostics.push({ code: "malformed_overlays", message: "well_overlays must be a list" });
       overlays = [];
@@ -60,68 +116,134 @@
       if (!overlay || typeof overlay !== "object" ||
           typeof overlay.context_item_id !== "string" || !overlay.context_item_id ||
           typeof overlay.well_item_id !== "string" || !overlay.well_item_id) {
-        if (sourceContext != null && sourceContext !== context) return;
+        if (sourceContext != null && contexts.order[sourceContext] == null) return;
         state.diagnostics.push({ code: "malformed_identity", index: index,
           message: "well overlay requires non-empty context_item_id and well_item_id" });
         return;
       }
-      if (overlay.context_item_id !== context) return;
-      var key = overlay.well_item_id;
+      var contextId = overlay.context_item_id;
+      if (contexts.order[contextId] == null) return;
+      if (sourceContext != null && sourceContext !== contextId) {
+        state.diagnostics.push({ code: "context_identity_mismatch", index: index,
+          context_item_id: contextId, source_item_id: sourceContext,
+          well_item_id: overlay.well_item_id,
+          message: "well overlay context does not match its source item" });
+        return;
+      }
+      var wellId = overlay.well_item_id, key = contextId + "\u0000" + wellId;
       if (Object.prototype.hasOwnProperty.call(candidates, key)) {
         state.diagnostics.push({ code: "duplicate_identity", index: index,
-          context_item_id: context, well_item_id: key,
+          context_item_id: contextId, well_item_id: wellId,
           message: "duplicate well overlay identity" });
-        candidates[key] = null; return;
+        candidates[key] = null;
+        if (contextId === context) delete active[wellId];
+        return;
       }
-      candidates[key] = overlay;
+      var status = overlay.status, message = overlay.message || null;
+      if (["hit", "no_hit", "ambiguous", "error"].indexOf(status) < 0) {
+        state.diagnostics.push({ code: "malformed_status", context_item_id: contextId,
+          well_item_id: wellId, message: "unknown well overlay status " + String(status) });
+        status = "error"; message = "Unknown well overlay status";
+      }
+      var records = [], malformedRecords = false;
+      var singular = overlaySingularRecord(overlay.intersection);
+      if (Object.prototype.hasOwnProperty.call(overlay, "intersections")) {
+        if (validOverlayIntersections(overlay.intersections, status)) records = overlay.intersections;
+        else {
+          malformedRecords = true; status = "error"; message = "Malformed overlay intersections";
+          state.diagnostics.push({ code: "malformed_intersections", context_item_id: contextId,
+            well_item_id: wellId, message: message });
+        }
+        if (overlay.intersection != null &&
+            (!singular || overlay.status === "no_hit" || overlay.status === "error")) {
+          status = "error"; message = "Intersection is incompatible with overlay status";
+          state.diagnostics.push({ code: "malformed_intersection", context_item_id: contextId,
+            well_item_id: wellId, message: message });
+        }
+      } else {
+        if (singular && (status === "hit" || status === "ambiguous")) records = [singular];
+        else if (singular || status === "hit") {
+          status = "error"; message = singular
+            ? "Intersection is incompatible with overlay status" : "Hit overlay is missing an intersection";
+          state.diagnostics.push({ code: "malformed_intersection", context_item_id: contextId,
+            well_item_id: wellId, message: message });
+        }
+      }
+      var normalized = { overlay: overlay, status: status, message: message,
+        contextItemId: contextId, contextOrder: contexts.order[contextId], records: records,
+        activeIntersection: singular && (overlay.status === "hit" || overlay.status === "ambiguous")
+          ? singular : null,
+        malformedRecords: malformedRecords };
+      candidates[key] = normalized;
+      if (contextId === context) active[wellId] = normalized;
+      if ((status === "ambiguous" || status === "error") && !malformedRecords) {
+        state.diagnostics.push({ code: status, context_item_id: contextId,
+          well_item_id: wellId, message: message || (status === "ambiguous" ? "Ambiguous intersection" : "Overlay error") });
+      }
+      if (!knownWells[wellId]) state.diagnostics.push({ code: "unknown_well_identity",
+        context_item_id: contextId, well_item_id: wellId,
+        message: "well overlay does not match a base well item_id" });
     });
     wells.forEach(function (well) {
       var wellItemId = typeof well.item_id === "string" ? well.item_id : null;
       var base = Array.isArray(well.trajectory) ? well.trajectory : [];
-      var overlay = wellItemId ? candidates[wellItemId] : null;
+      var normalized = wellItemId ? active[wellItemId] : null;
+      var overlay = normalized && normalized.overlay;
       var trajectory = base, source = "base", status = null, message = null, intersection = null, intersections = null;
       if (overlay) {
-        status = overlay.status; message = overlay.message || null;
-        intersection = overlay.intersection == null ? null : overlay.intersection;
-        if (["hit", "no_hit", "ambiguous", "error"].indexOf(status) < 0) {
-          state.diagnostics.push({ code: "malformed_status", context_item_id: context,
-            well_item_id: wellItemId, message: "unknown well overlay status " + String(status) });
-          status = "error"; message = "Unknown well overlay status";
-        } else if (validOverlayTrajectory(overlay.trajectory) && overlay.trajectory.length) {
+        status = normalized.status; message = normalized.message;
+        intersection = normalized.activeIntersection;
+        if (validOverlayTrajectory(overlay.trajectory) && overlay.trajectory.length) {
           trajectory = overlay.trajectory; source = "overlay";
         } else {
           state.diagnostics.push({ code: "malformed_trajectory", context_item_id: context,
             well_item_id: wellItemId, message: "well overlay trajectory is empty or malformed; using base trajectory" });
         }
-        if (Object.prototype.hasOwnProperty.call(overlay, "intersections")) {
-          if (validOverlayIntersections(overlay.intersections, status)) intersections = overlay.intersections;
-          else {
-            state.diagnostics.push({ code: "malformed_intersections", context_item_id: context,
-              well_item_id: wellItemId, message: "well overlay intersections are malformed for status" });
-            status = "error"; message = "Malformed overlay intersections";
-          }
-        }
-        if (status === "ambiguous" || status === "error") {
-          state.diagnostics.push({ code: status, context_item_id: context,
-            well_item_id: wellItemId, message: message || (status === "ambiguous" ? "Ambiguous intersection" : "Overlay error") });
-        }
+        intersections = Object.prototype.hasOwnProperty.call(overlay, "intersections") ? normalized.records : null;
       }
+      var picks = [], contextStates = [];
+      Object.keys(candidates).forEach(function (candidateKey) {
+        var candidate = candidates[candidateKey];
+        if (!candidate || candidate.overlay.well_item_id !== wellItemId) return;
+        contextStates.push({ contextItemId: candidate.contextItemId, status: candidate.status,
+          message: candidate.message, recordCount: candidate.records.length });
+        candidate.records.forEach(function (record, recordIndex) {
+          picks.push({ contextItemId: candidate.contextItemId, contextOrder: candidate.contextOrder,
+            recordIndex: recordIndex, md: Number(record.md), xyz: record.xyz.slice(),
+            legacy: !Object.prototype.hasOwnProperty.call(candidate.overlay, "intersections") });
+        });
+      });
+      picks.sort(function (a, b) {
+        return a.contextOrder - b.contextOrder || a.contextItemId.localeCompare(b.contextItemId) ||
+          a.md - b.md || a.recordIndex - b.recordIndex;
+      });
+      var signature = wellPickSignature(picks), cycle = wellItemId && _mapWellCycles[wellItemId];
+      if (!cycle || cycle.signature !== signature) cycle = {
+        signature: signature, index: defaultWellPickIndex(picks), length: picks.length,
+      };
+      if (wellItemId) _mapWellCycles[wellItemId] = cycle;
+      else cycle.length = picks.length;
+      var selected = cycle.index >= 0 ? picks[cycle.index] : null;
       state.wells.push({ wellItemId: wellItemId, id: well.id,
         displayName: well.display_name || null, head: [well.x, well.y],
         style: well.style || null, visible: S.wellVis[state.wells.length] !== false,
         status: status, source: source, trajectory: trajectory,
-        intersection: intersection, intersections: intersections, message: message });
-    });
-    Object.keys(candidates).forEach(function (wellItemId) {
-      if (candidates[wellItemId] && !wells.some(function (well) { return well.item_id === wellItemId; })) {
-        state.diagnostics.push({ code: "unknown_well_identity", context_item_id: context,
-          well_item_id: wellItemId, message: "well overlay does not match a base well item_id" });
-      }
+        activeIntersection: intersection, activeIntersections: intersections,
+        intersection: selected ? { md: selected.md, xyz: selected.xyz } : null,
+        intersections: picks.map(function (pick) { return { md: pick.md, xyz: pick.xyz }; }),
+        picks: picks, selectedPickIndex: cycle.index,
+        contexts: contextStates,
+        selectedIntersection: selected ? { md: selected.md, xyz: selected.xyz,
+          context_item_id: selected.contextItemId, record_index: selected.recordIndex } : null,
+        message: message });
     });
     window.__PETEK_MAP_WELL_OVERLAY_STATE = state;
-    return wells.map(function (well, index) {
+    var result = wells.map(function (well, index) {
       return { w: well, trajectory: state.wells[index].trajectory, overlay: state.wells[index] };
     });
+    _mapWellResolveCache = { map: m, wells: wells, context: context, visibility: visibility,
+      version: _mapWellCycleVersion, state: state, result: result };
+    return result;
   }
   // Fit visible drawable content only. A frame is drawable when it backs a
   // raster/contact field; a fill-only resource contributes its actual nodes,
@@ -176,6 +298,7 @@
       var w = entry.w;
       ext(w.x, w.y);
       entry.trajectory.forEach(function (p) { ext(p[0], p[1]); });
+      (entry.overlay.picks || []).forEach(function (pick) { ext(pick.xyz[0], pick.xyz[1]); });
     });
     if (!isFinite(xlo)) return null;
     return { x0: xlo, y0: ylo, x1: xhi, y1: yhi };
@@ -190,6 +313,7 @@
     // remain centred with breathing room; larger objects still fit completely.
     s = Math.min(s, cv.width / 10000);
     mapView.scale = s;
+    mapView.fitScale = s;
     mapView.ox = (cv.width - w * s) / 2 - Math.min(e.x0, e.x1) * s;
     mapView.oy = (cv.height - h * s) / 2 - Math.min(e.y0, e.y1) * s;
     mapView.fitted = true;
@@ -216,6 +340,15 @@
     mapView.oy = cy - projected[1] * mapView.scale;
     markMapCameraAdjusted();
     renderMap();
+  }
+  function setMapZoomAt(factor, px, py) {
+    if (!isFinite(factor) || factor <= 0) return;
+    var world = s2w(px, py), next = mapView.scale * factor;
+    if (!isFinite(next) || next <= 0) return;
+    mapView.scale = next;
+    var projected = mapCameraProject(mapView.rotationDeg, world[0], world[1]);
+    mapView.ox = px - projected[0] * next; mapView.oy = py - projected[1] * next;
+    markMapCameraAdjusted();
   }
 
   // ---- 2-D map binary blocks (typed arrays) + plain-array fallback -----------
@@ -776,6 +909,88 @@
     ctx.fillText("N", tip[0] + north[0] * 9, tip[1] + north[1] * 9);
     ctx.restore();
   }
+  function drawMapWellPicks(ctx, state) {
+    (state.wells || []).forEach(function (well) {
+      if (!well.visible || !well.picks || !well.picks.length) return;
+      well.picks.forEach(function (pick, index) {
+        var screen = w2s(pick.xyz[0], pick.xyz[1]), selected = index === well.selectedPickIndex;
+        ctx.save(); ctx.beginPath(); ctx.arc(screen[0], screen[1], selected ? 5.5 : 3.5, 0, 6.2832);
+        ctx.strokeStyle = idColor("well:" + well.id); ctx.lineWidth = selected ? 2 : 1.25;
+        ctx.globalAlpha = selected ? 1 : .7;
+        if (selected) { ctx.fillStyle = idColor("well:" + well.id); ctx.fill(); }
+        ctx.stroke(); ctx.restore();
+      });
+    });
+  }
+  var _mapHudPointer = null;
+  function hudNumber(value) {
+    if (!isFinite(value)) return "—";
+    return String(Number(Number(value).toPrecision(10)));
+  }
+  function mapHudCursorState(px, py) {
+    if (!isFinite(px) || !isFinite(py)) return null;
+    var world = s2w(px, py), fill = S.showFills && (App.payload.map.fills || [])[S.mapFillIdx];
+    var hit = regularGridValueAt(fill, world), units = fill && fill.units;
+    if (!hit) {
+      var layer = S.showMapField && S.mapLayers[S.mapLayerIdx];
+      hit = frameValueAt(layer, mapFrame(), world); units = layer && layer.units;
+    }
+    return { screen: [px, py], world: world, i: hit ? hit.i : null, j: hit ? hit.j : null,
+      value: hit ? hit.value : null, value_units: units || null };
+  }
+  function updateMapHud(cv, px, py) {
+    var f = mapFrame(), scaleHost = document.getElementById("map-hud-scale");
+    var meta = document.getElementById("map-hud-meta"), cursor = document.getElementById("map-hud-cursor");
+    if (!scaleHost || !meta || !cursor) return;
+    var plan = mapScaleBarPlan(mapView.scale, f && f.units, false, 96);
+    var rule = scaleHost.querySelector(".map-scale-rule"), label = scaleHost.querySelector(".map-scale-label");
+    if (!rule) {
+      var bar = el("span", "map-scale-bar"); rule = el("span", "map-scale-rule");
+      label = el("span", "map-scale-label"); bar.appendChild(rule); bar.appendChild(label); scaleHost.appendChild(bar);
+    }
+    if (plan) { rule.style.width = plan.px + "px"; label.textContent = plan.label; scaleHost.hidden = false; }
+    else scaleHost.hidden = true;
+    var zoom = mapView.fitScale && isFinite(mapView.fitScale) ? mapView.scale / mapView.fitScale : 1;
+    var parts = ["Zoom " + hudNumber(zoom) + "×"];
+    if (f && typeof f.crs === "string" && f.crs.trim()) parts.push(f.crs.trim());
+    if (f && typeof f.units === "string" && f.units.trim()) parts.push("XY " + f.units.trim());
+    meta.textContent = parts.join(" · ");
+    var state = mapHudCursorState(px, py);
+    if (state) {
+      var cursorParts = ["x " + hudNumber(state.world[0]), "y " + hudNumber(state.world[1])];
+      if (state.i != null) cursorParts.push("i " + state.i, "j " + state.j,
+        "value " + hudNumber(state.value) + (state.value_units ? " " + state.value_units : ""));
+      cursor.textContent = cursorParts.join(" · ");
+    } else cursor.textContent = "";
+    window.__PETEK_MAP_HUD = { perspective: false, scale_bar: plan,
+      zoom: zoom, crs: f && f.crs || null, units: f && f.units || null, cursor: state };
+  }
+  function syncMapPickControls(cv, state) {
+    var host = document.getElementById("map-marker-controls"); if (!host) return;
+    var controls = host.__controls || (host.__controls = {}), keep = {};
+    var rect = cv.getBoundingClientRect(), sx = rect.width / cv.width, sy = rect.height / cv.height;
+    (state.wells || []).forEach(function (well) {
+      if (!well.visible || !well.selectedIntersection || well.picks.length < 2 || !well.wellItemId) return;
+      var id = well.wellItemId, control = controls[id]; keep[id] = true;
+      if (!control) {
+        control = controls[id] = el("button", "map-pick-control"); control.type = "button";
+        control.dataset.wellItemId = id;
+        control.addEventListener("click", function (event) {
+          event.preventDefault(); event.stopPropagation(); cycleMapWellPick(id, 1);
+        });
+        host.appendChild(control);
+      }
+      var pick = well.selectedIntersection, screen = w2s(pick.xyz[0], pick.xyz[1]);
+      control.style.left = (screen[0] * sx) + "px"; control.style.top = (screen[1] * sy) + "px";
+      control.setAttribute("aria-label", "Cycle intersection for " + (well.displayName || well.id || "well") +
+        ". Selected " + (well.selectedPickIndex + 1) + " of " + well.picks.length +
+        ", measured depth " + pick.md + ".");
+    });
+    Object.keys(controls).forEach(function (id) {
+      if (keep[id]) return;
+      controls[id].remove(); delete controls[id];
+    });
+  }
   function drawOverlayCache(ctx, cv, kind) {
     var C = kind === "under" ? _overlayUnder : _overlayOver, key = overlayKey(kind);
     var exact = C.canvas && C.key === key && C.scale === mapView.scale && C.cox === mapView.ox + cv.width * PT_MARGIN && C.coy === mapView.oy + cv.height * PT_MARGIN;
@@ -807,6 +1022,11 @@
       if (emptyCtx) emptyCtx.clearRect(0, 0, cv.width, cv.height);
       var legend = document.getElementById("legend");
       if (legend) { legend.innerHTML = ""; legend.style.display = "none"; }
+      var markerControls = document.getElementById("map-marker-controls");
+      if (markerControls) { markerControls.innerHTML = ""; markerControls.__controls = {}; }
+      ["map-hud-scale", "map-hud-meta", "map-hud-cursor"].forEach(function (id) {
+        var node = document.getElementById(id); if (node) node.textContent = "";
+      });
       hideReadout();
       return;
     }
@@ -841,8 +1061,9 @@
 
     // Wells: projected XY trajectories + polished screen-space heads. Labels
     // use a deterministic bounded candidate ledger; no hover path is installed.
+    var wellGeometry = resolveMapWellGeometry(), wellState = window.__PETEK_MAP_WELL_OVERLAY_STATE;
     var visWells = [];
-    resolveMapWellGeometry().forEach(function (entry, wi) {
+    wellGeometry.forEach(function (entry, wi) {
       if (S.wellVis[wi]) visWells.push({ w: entry.w, trajectory: entry.trajectory,
         overlay: entry.overlay, s: w2s(entry.w.x, entry.w.y) });
     });
@@ -855,6 +1076,10 @@
       tr.forEach(function (p, q) { var s2 = w2s(p[0], p[1]); if (!q) ctx.moveTo(s2[0], s2[1]); else ctx.lineTo(s2[0], s2[1]); });
       ctx.stroke(); ctx.restore();
     });
+    // Producer-computed surface intersections are independent of wellheads.
+    // The selected greatest-MD record is solid; other visible records remain
+    // secondary and cycle locally through an accessible screen-space control.
+    drawMapWellPicks(ctx, wellState);
     var clusters = [];
     visWells.forEach(function (v) {
       var c = null;
@@ -918,6 +1143,7 @@
       }
     });
     window.__PETEK_WELL_LAYOUT = { visible: visWells.length, clusters: clusters.length, labels: labelCount, labelBoxes: labelBoxes };
+    syncMapPickControls(cv, wellState);
 
     // in-progress fence
     if (S.fence.pts.length) {
@@ -960,6 +1186,7 @@
       frame_yflip: !!(f && f.yflip), frame_signature: frameSignature(f),
       horizontalSpan: cv.width / mapView.scale,
     };
+    updateMapHud(cv, _mapHudPointer && _mapHudPointer[0], _mapHudPointer && _mapHudPointer[1]);
     window.__PETEK_LOD_ACTIVE = !!S.lodActive;
   }
 
@@ -1523,36 +1750,51 @@
       var rect = cv.getBoundingClientRect();
       var mx = (ev.clientX - rect.left) * (cv.width / rect.width);
       var my = (ev.clientY - rect.top) * (cv.height / rect.height);
-      var w = s2w(mx, my);
       var k = ev.deltaY < 0 ? 1.15 : 1 / 1.15;
-      mapView.scale *= k;
-      var projected = mapCameraProject(mapView.rotationDeg, w[0], w[1]);
-      mapView.ox = mx - projected[0] * mapView.scale;
-      mapView.oy = my - projected[1] * mapView.scale;
-      markMapCameraAdjusted();
+      setMapZoomAt(k, mx, my); _mapHudPointer = [mx, my]; updateMapHud(cv, mx, my);
       scheduleRenderMap();
       scheduleSettle(); // flip the LOD ring + re-bake once the zoom settles
     };
     cv.onmousedown = function (ev) {
+      cv.focus({ preventScroll: true });
       if (S.fence.drawing) { addFencePoint(cv, ev); return; }
       dragging = true; last = [ev.clientX, ev.clientY];
       _mapDownPx = [ev.clientX, ev.clientY];
     };
     window.addEventListener("mouseup", function () { dragging = false; });
     cv.onmousemove = function (ev) {
-      // Hover shows NOTHING (click-to-inspect ruling) — mousemove only pans.
-      if (!dragging) return;
+      var pointer = canvasPx(cv, ev); _mapHudPointer = pointer;
+      // Hover still shows no popup/readout; the fixed HUD reports coordinates.
+      if (!dragging) { updateMapHud(cv, pointer[0], pointer[1]); return; }
       mapView.ox += (ev.clientX - last[0]) * (cv.width / cv.getBoundingClientRect().width);
       mapView.oy += (ev.clientY - last[1]) * (cv.height / cv.getBoundingClientRect().height);
       markMapCameraAdjusted();
       last = [ev.clientX, ev.clientY]; scheduleRenderMap(); scheduleSettle();
     };
+    cv.onmouseleave = function () { _mapHudPointer = null; updateMapHud(cv, null, null); };
     cv.ondblclick = function () { if (S.fence.drawing) finishFence(); };
     cv.onclick = function (ev) {
       if (S.fence.drawing) return;
       // click-vs-drag: only a press that stayed within the slop is an inspect
       if (_mapDownPx && Math.hypot(ev.clientX - _mapDownPx[0], ev.clientY - _mapDownPx[1]) > CLICK_SLOP_PX) return;
       mapClickInspect(cv, ev);
+    };
+    cv.onkeydown = function (ev) {
+      var handled = true, step = ev.shiftKey ? 72 : 24;
+      if (ev.key === "ArrowLeft") mapView.ox += step;
+      else if (ev.key === "ArrowRight") mapView.ox -= step;
+      else if (ev.key === "ArrowUp") mapView.oy += step;
+      else if (ev.key === "ArrowDown") mapView.oy -= step;
+      else if (ev.key === "+" || ev.key === "=") setMapZoomAt(1.15, cv.width / 2, cv.height / 2);
+      else if (ev.key === "-" || ev.key === "_") setMapZoomAt(1 / 1.15, cv.width / 2, cv.height / 2);
+      else if (ev.key === "0") { setMapCameraRotation(0, cv); }
+      else handled = false;
+      if (!handled) return;
+      ev.preventDefault();
+      if (ev.key.indexOf("Arrow") === 0) markMapCameraAdjusted();
+      if (ev.key !== "0") { renderMap(); scheduleSettle(); }
+      var status = document.getElementById("map-hud-status");
+      if (status) status.textContent = "Map " + (ev.key.indexOf("Arrow") === 0 ? "panned" : ev.key === "0" ? "set north up" : "zoom changed") + ".";
     };
   }
   function canvasPx(cv, ev) {
@@ -1625,9 +1867,10 @@
       if (hitP) {
         key = "pt:" + hitP.index;
         var nm = pointsLayerNameAt(hitP.index);
+        var xyUnits = mapFrame() && mapFrame().units;
         rows = [["", (nm ? pretty(nm) : "point") + " · " + hitP.index],
-                ["x", fmt(hitP.x, "m")], ["y", fmt(hitP.y, "m")]];
-        if (hitP.z != null && isFinite(hitP.z)) rows.push(["z", fmt(hitP.z, "m")]);
+                ["x", fmt(hitP.x, xyUnits || null)], ["y", fmt(hitP.y, xyUnits || null)]];
+        if (hitP.z != null && isFinite(hitP.z)) rows.push(["z", fmt(hitP.z)]);
       }
     }
     if (!rows) {
@@ -1637,9 +1880,10 @@
         key = "grid:" + S.mapFillIdx + ":" + fillHit.i + "," + fillHit.j;
         rows = [
           ["", disp(activeFill, activeFill.name) || "surface"],
-          [activeFill.name || "value", fmt(fillHit.value)],
+          [activeFill.name || "value", fmt(fillHit.value, activeFill.units || null)],
           ["node", "i " + fillHit.i + " · j " + fillHit.j],
-          ["x", fmt(fillHit.x, "m")], ["y", fmt(fillHit.y, "m")],
+          ["x", fmt(fillHit.x, (mapFrame() && mapFrame().units) || null)],
+          ["y", fmt(fillHit.y, (mapFrame() && mapFrame().units) || null)],
         ];
       }
     }
