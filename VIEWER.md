@@ -23,8 +23,9 @@ lives here, not in any one product.
 ```python
 from petektools import viewer
 
-# Multi-view workspace: normalization is metadata-only; Map/3-D/Wells resources
-# materialize on first enable and are cached once per item/view/lane.
+# Multi-view workspace: normalization is metadata-only. Workspace-v2 Map
+# resources carry all attribute blocks once and share them across 2-D/3-D modes;
+# workspace-v1 lane resources keep their selector-backed compatibility cache.
 session = viewer.view({
     "Interpretation": {
         "Synthetic Top Alpha": {"object": synthetic_top_alpha, "visible": True},
@@ -60,7 +61,10 @@ Pass `serve=False` for notebook construction/inspection without opening a local
 server; `.serve()` can start it later.
 `tree_or_source` is either an insertion-ordered nested mapping/list or an object
 with the domain-free provider duck `view_catalog()` plus
-`view_resource(*, item_id, view, lane=None)`. Mapping keys define ordered groups
+`view_resource(*, item_id, view, detail=None)`. Workspace-v1 providers may keep
+the legacy `lane=None` argument; transitional selector-backed v2 providers use
+`attribute=None, color_by=None`, while shared v2 Map providers receive neither
+selector. Mapping keys define ordered groups
 and canonical escaped path IDs; list leaves require an explicit `id`. Explicit
 leaves use `{"object": obj, "id"?, "label"?, "visible"?, "views"?}`.
 Duplicate IDs, cycles, ambiguous list leaves, unknown views, and unsupported
@@ -70,28 +74,55 @@ An omitted leaf `visible` selects all of that leaf's enabled views; use
 that materializes nothing until the user enables an item. Provider/project
 catalogs should always emit their intended initial visibility explicitly.
 
-A provider can declare ordered, independently lazy attributes on a view:
+A project-backed v2 catalog also emits
+`project={"title": ..., "crs": ..., "unit": ...}`. The title is the persisted
+project display name. CRS is optional free text printed verbatim, and the project
+unit is only the fallback for the primary/depth attribute; neither value is
+guessed. Producers persist these values and per-attribute metadata at their own
+domain seam so a save/reload does not silently lose the HUD or legend meaning.
+Older projects load them as absent. petekTools only validates and renders these
+generic strings.
+
+A v2 provider declares ordered, metadata-preserving attributes on one shared Map
+resource:
 
 ```python
 {
     "id": "surface:synthetic-top-alpha",
     "label": "Synthetic Top Alpha",
     "views": {"map": {
-        "lanes": [
-            {"id": "depth", "label": "Depth"},
-            {"id": "thickness", "label": "Thickness"},
+        "attributes": [
+            {"id": "depth", "label": "Depth", "kind": "continuous",
+             "units": "m", "codes": None},
+            {"id": "thickness", "label": "Thickness", "kind": "continuous",
+             "units": "m", "codes": None},
+            {"id": "facies", "label": "Facies", "kind": "categorical",
+             "units": None,
+             "codes": {"1": {"label": "Sand", "color": "#EDA100"}}},
         ],
-        "active_lane": "depth",  # defaults to the first lane
+        "active_attribute": "depth",
+        "active_color_by": "depth",
+        "transport": "shared",
+        "modes": ["2d", "3d"],
     }},
     "visible": {"map": True},
 }
 ```
 
-The tree row shows a compact selector. Opening fetches only `depth`; choosing
-Thickness calls `view_resource(item_id="surface:synthetic-top-alpha", view="map",
-lane="thickness")` once, and returning to Depth reuses its cache. Lane state is
-independent per view. `default_lane` is accepted as a provider input alias;
-workspace manifest v1 always emits `active_lane`.
+The tree owns the geometry `attribute`; the Inspector owns `color_by`. Changing
+the attribute resets colour-by to the same ID, while a later colour-only change
+explicitly decouples them. Every descriptor is available in both selectors.
+Opening calls `view_resource(item_id="surface:synthetic-top-alpha", view="map")`
+once and receives all attribute value blocks in one `map.surface_grid`; selector
+changes and 2-D/3-D mode changes are client-local and cause no request or second
+decode of geometry. Metadata survives catalog normalization, manifest JSON,
+live responses, and saved HTML unchanged except for canonical defaults described
+in `SCHEMA.md`.
+
+Workspace v1 remains accepted. Its `{lanes,active_lane}` catalog, `lane=` request,
+and envelope echo map one lane to both v2 selectors with continuous/unknown-unit
+metadata. `default_lane` remains a v1 provider input alias. A provider/request
+must not mix `lane` with `attribute` or `color_by`.
 
 A provider may advertise progressive 3-D detail with ordered
 `tiers=[preview, full]` and `active_detail="preview"`. Live mode renders
@@ -105,17 +136,28 @@ Providers can also retain unsupported assets as disabled searchable leaves:
 "reason": "Unsupported project asset", "diagnostic": {...}}`. Zero views
 infer `disabled=True`; these records have no resource links and never fetch.
 
-The live `model.json` contains only workspace manifest v1 and any caller-supplied
-typed payload. `./workspace-resource?item=…&view=…&lane=…` constructs one
-resource on first request with per-key single-flight caching: concurrent requests
-for the same resource share one producer call while distinct resources build in
-parallel. Failures are isolated diagnostics and remain retryable.
-`WorkspaceSession.save(include="visible")` embeds only
-initially visible resources; `include="selected"` embeds every catalogued
-resource and every declared lane so the full chosen tree and its attribute
-selectors remain available offline. A visible-only export embeds just each
-visible view's declared active lane. Both use the same zero-network,
-self-contained HTML export. `refresh()` is the explicit boundary for
+The live `model.json` contains workspace manifest v1 or v2 and any
+caller-supplied typed payload. A v2 shared Map request is
+`./workspace-resource?item=…&view=map[&detail=…]`; its single-flight/cache/retry
+identity excludes both selectors. The v2 response has one envelope-level block
+table and a `map.surface_grid` whose attribute data order exactly matches the
+catalog. A legacy request remains
+`./workspace-resource?item=…&view=…&lane=…`. Transitional non-shared v2 requests
+use both `attribute=…&color_by=…` and responses echo both, but they are not a
+multi-attribute static-export format. Unknown selectors fail before the producer
+is called, mismatched echoes are never cached, and failures remain item-local and
+retryable.
+
+`WorkspaceSession.save(include="visible")` embeds only initially visible
+resources; `include="selected"` embeds every catalogued resource. For shared v2
+Map data, either mode writes one resource envelope per included item (the `full`
+tier when advertised) with each attribute block once—never one envelope per
+attribute/colour pair. Snapshot
+state records `active_attribute`, `active_color_by`, mode, and detail separately
+from resource identity, so the chosen selectors remain fully offline. Workspace
+v1 exports retain their historical visible-active-lane/selected-all-lanes
+behavior. Both use the same zero-network, self-contained HTML export.
+`refresh()` is the explicit boundary for
 producer/tree mutation; it clears the resource snapshot without allowing an
 older in-flight completion to repopulate the refreshed cache.
 
@@ -195,8 +237,23 @@ paint; attribute fills belonging to one surface keep the same paths. The
 selected overlay—not the base full trajectory—participates in fit. Wellhead,
 label and style remain from the base well, and well visibility stays an
 independent toggle. Missing/legacy records fall back to the base trajectory;
-ambiguous/error/malformed records remain localized diagnostics. The viewer does
-not calculate clipping, intersections, measured depth or depth conversion.
+ambiguous/error/malformed records remain localized diagnostics. The additive
+`intersections` list carries every producer-computed pick in MD order; across
+visible surface contexts, the greatest finite MD is the anchor, shallower picks
+remain cycleable, and visibility changes cause no fetch. Singular
+`intersection` is still the fallback for old payloads and retains its old
+first-hit meaning. The viewer does not calculate clipping, intersections,
+measured depth or depth conversion.
+
+Workspace-v2 shared surfaces use one `map.surface_grid`: an affine `Frame`, a
+mask, ordered rich descriptors, and one typed value block per attribute in the
+resource envelope's single digest table. The selected attribute supplies 3-D
+geometry and `color_by` supplies paint; 2-D and 3-D camera modes read the same
+blocks. `Frame.rotation_deg` is counter-clockwise from east to I, `yflip`
+reverses J, and optional free-text `crs`/`units` support an honest HUD. Missing
+fields preserve the axis-aligned v1 frame (`0`, `false`, unknown, unknown).
+Intrinsic frame orientation and the user's camera rotation are separate exact
+transforms.
 
 The raster is
 **windowed + resolution-capped** — only the grid cells in
@@ -484,9 +541,12 @@ the renderer is horizontal capability.
 ## Design system (dataviz method)
 
 - **Two colour jobs, never conflated.** Continuous **fields** use a
-  perceptually-uniform scientific colormap (viridis default — magma / grays /
-  inferno optional, and a payload may pin the initial choice via
-  `map.colormap`); **never** rainbow. **Categorical identity** (wells, horizons,
+  scientific colormap (viridis default; viridis, inferno, magma, plasma,
+  cividis, turbo, coolwarm, and greys; legacy `grays` remains accepted). A
+  payload may pin `colormap` and its independent boolean
+  `colormap_reversed`; reversal defaults false and is part of render-cache
+  identity, never a suffix/prefix encoded into the name. **Categorical identity**
+  (wells, horizons,
   contacts, zones) uses the fixed token slots (`--c1..--c8`), assigned **by
   entity** and never recoloured when a toggle changes the visible count or the
   theme flips — an entity keeps its slot across all three tabs and across sessions

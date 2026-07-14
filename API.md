@@ -887,19 +887,46 @@ session.save("selected.html", include="selected")
 
 # A producer may instead expose:
 #   view_catalog() -> ordered mapping/list of explicit group/item records.
-# A view record may declare ordered lazy lanes:
-#   {"map": {"lanes": [{"id": "depth", "label": "Depth"},
-#                       {"id": "thickness", "label": "Thickness"}],
-#            "active_lane": "depth"}}
+# A workspace-v2 Map record declares metadata-rich attributes and two explicit
+# selectors. All attributes ride one shared resource/block table and are
+# available as both geometry and paint:
+#   {"map": {"attributes": [
+#       {"id":"depth", "label":"Depth", "kind":"continuous",
+#        "units":"m", "codes":None},
+#       {"id":"facies", "label":"Facies", "kind":"categorical",
+#        "units":None, "codes":{"1":{"label":"Sand","color":"#EDA100"}}}],
+#            "active_attribute":"depth", "active_color_by":"depth",
+#            "transport":"shared", "modes":["2d","3d"]}}
+# Changing attribute resets color_by; changing color_by alone decouples paint.
+# Legacy {lanes,active_lane}, lane= requests, and v1 envelopes remain supported;
+# one legacy lane maps to both selectors with continuous/unknown-unit metadata.
 # A disabled provider leaf is retained with views={}, optional reason and
 # JSON-shaped diagnostic metadata, and no resource link.
-#   view_resource(*, item_id, view, lane=None) -> typed JSON render mini-bundle
+#   view_resource(*, item_id, view, detail=None) -> shared v2 typed mini-bundle
+# Legacy providers may keep lane=None. Transitional non-shared v2 providers use
+# attribute=None,color_by=None and must echo both; shared v2 Maps receive neither.
 # Progressive 3-D providers may declare ordered preview/full `tiers` in the
-# scene3d view spec; their resource duck additionally receives detail=.
+# shared Map or legacy scene3d view spec; the resource duck receives detail=.
+# A shared Map envelope is keyed only by (item_id,"map",detail), has one
+# envelope-level content-addressed block table, and carries map.surface_grid with
+# one value block per attribute. 2-D/3-D mode and selector changes never refetch.
+# Visible/selected static exports include one such envelope per item (the full
+# tier when advertised),
+# never the attribute×color_by Cartesian product.
+# Workspace-v2 project metadata is {title,crs,unit}; project producers emit the
+# persisted display title, free-text CRS verbatim, and primary project unit, and
+# never guess missing values. Per-attribute units win; the project unit may only
+# fill the primary/depth descriptor.
 # A Map mini-bundle may add producer-computed `well_overlays`, keyed by the
 # surface fill's stable item_id and a base top-level well item_id. The active
-# fill chooses the display trajectory; petekTools performs no intersection/MD
-# calculation and introduces no additional provider request.
+# fill chooses the display trajectory. Additive `intersections` carries all
+# MD-ordered picks; the client anchors the greatest-MD visible pick while
+# singular `intersection` remains the old compatibility fallback. petekTools
+# performs no intersection/MD calculation and introduces no extra request.
+# Frame adds optional rotation_deg (CCW east→I), yflip, free-text crs, and units;
+# defaults 0/False/None/None preserve the axis-aligned contract. Every global or
+# per-layer colormap may add sibling colormap_reversed=False; reversal is never
+# encoded into the colormap name.
 viewer.view(tree_or_source, *, title="Project workspace", visible=None,
             tab="auto", payload=None, save=None, serve=True, port=0, block=False,
             open_browser=True) -> viewer.WorkspaceSession

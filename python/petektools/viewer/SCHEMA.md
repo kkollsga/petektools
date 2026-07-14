@@ -46,29 +46,68 @@ otherwise beautifies the raw internal `name`: a scoped `"A::B"` name reads as
 A tab renders only if its bundle is present; an empty payload shows an empty
 state. `sections` may be empty (live mode adds them via `/section`).
 
-## WorkspaceManifest — ordered multi-view catalog (additive v1)
+## WorkspaceManifest — ordered multi-view catalog (v1 compatibility; v2 frozen)
 
 `workspace` is optional. An old payload without it follows the exact historic
-single-payload boot/state/render path. Version 1 is:
+single-payload boot/state/render path. Workspace schema **v2 is additive over
+v1** and is the authoring target for metadata-rich surface providers:
 
-`{schema_version: 1, title, tree, available_views, initial_tab, mode,
+`{schema_version: 2, title, project?, tree, available_views, initial_tab, mode,
 resources?, snapshot?}`.
+
+`title` remains the application-bar title. `project`, when present, is
+`{title: str, crs: str|null, unit: str|null}`. Strings must be non-empty after
+trimming; absent source values normalize to `null`, never to an invented
+CRS/unit. A project-backed producer MUST emit its persisted display name as
+`project.title` and SHOULD use it for `title` unless the caller explicitly
+overrides the application title. `crs` is free text rendered verbatim; it is
+never parsed or guessed as an EPSG identifier. `unit` is the primary project
+length/depth unit, not a blanket unit for every attribute. Workspace v1 has no
+`project` record. A surface producer copies known project CRS/world unit into
+`Frame.crs`/`Frame.units` only when that frame actually uses them.
 
 `tree` is an ordered list of groups and items. A group is
 `{id, label, expanded?, children}`. Omitted `expanded` delegates initial
 disclosure to the renderer (selected path, else at most two actionable leaves);
-an explicit bool is authoritative until the user changes it. An item is `{id, label, role?, views,
-visible, resources, disabled?, reason?, diagnostic?}` where `views` is a list
-of compatible view names and `visible` is an independent `view → bool` initial
-state. A normal resource spec is `{href, deferred}`. A provider may add ordered
-interactive attributes as `{href, deferred, lanes: [{id, label}, ...],
-active_lane}`; lane IDs are stable producer keys and labels are display-only.
-`scene3d` may additionally advertise progressive detail as `tiers:[{id:
-"preview",label:"Preview"},{id:"full",label:"Full detail"}]` plus
-`active_detail:"preview"`. Live resource identity then includes
-`detail=preview|full`; resource envelopes echo `detail`. No-tier records and
-providers retain their original call/envelope shape.
-IDs are globally unique immutable identity keys.
+an explicit bool is authoritative until the user changes it. An item is `{id,
+label, role?, views, visible, resources, disabled?, reason?, diagnostic?}` where
+`views` is a list of compatible view names and `visible` is an independent
+`view → bool` initial state. IDs are globally unique immutable identity keys.
+
+A normal resource spec is `{href, deferred}`. Workspace v2 surface views use
+`{href, deferred, attributes:[AttributeDescriptor,...], active_attribute,
+active_color_by, transport:"shared", modes?:["2d","3d"]}`. Every descriptor
+appears in both selectors. Both active selectors default to the first descriptor
+and must name declared descriptors. Changing `active_attribute` resets
+`active_color_by` to the same ID; changing only `active_color_by` is the explicit
+decoupling operation. `modes:["2d","3d"]` makes 3-D a camera mode of this Map
+resource, not another resource identity.
+
+**AttributeDescriptor (canonical normalized shape):** `{id: str, label: str,
+kind: "continuous"|"categorical", units: str|null, codes:
+dict[str,CodeRecord]|null}`. `id` and `label` are non-empty strings and IDs are
+unique in declaration order. Omitted `kind`, `units`, and `codes` normalize to
+`"continuous"`, `null`, and `null`. `units`, when present, is the unit of that
+attribute. A producer may fall back to `project.unit` only for its primary/depth
+attribute; other missing attribute units stay `null`. `CodeRecord` normalizes to
+`{label: str|null, color: str|null}`. Code keys are canonical base-10 integer
+strings and colours are `#RRGGBB` hex or `null`. Continuous descriptors MUST
+have `codes:null`; categorical descriptors may use `codes:null` when no table is
+known. An uncovered categorical value displays its integer as the label and a
+stable categorical identity colour; it never falls back to a continuous ramp.
+
+Workspace v1's selector-backed form remains accepted unchanged:
+`{href, deferred, lanes:[{id,label},...], active_lane}`. On v1 input each lane
+maps to one canonical descriptor with `kind:"continuous"`, `units:null`, and
+`codes:null`; `active_lane` maps to both active selectors. The legacy request
+and envelope field `lane` likewise means `attribute == color_by == lane`. No
+metadata is inferred during this mapping, and v1 serialization remains v1.
+
+Legacy `scene3d` may advertise progressive detail as `tiers:[{id:"preview",
+label:"Preview"},{id:"full",label:"Full detail"}]` plus
+`active_detail:"preview"`. Live resource identity then includes `detail`; the
+envelope echoes it. A v2 shared Map may advertise the same tiers on its one Map
+resource. Detail remains the only allowed payload-multiplication axis.
 
 A provider may preserve an unavailable/unknown catalog leaf with `views: []`,
 `resources: {}`, `visible: {}`, and `disabled: true`; `reason` is a short user
@@ -76,19 +115,63 @@ explanation and `diagnostic` is arbitrary JSON-shaped producer metadata. Such a
 leaf remains ordered, searchable, and visible in the tree but can never issue a
 resource request. Fields are additive; old item records remain valid.
 
-Live mode fetches a resource link at most once per item/view/lane and appends
-`lane=<id>` only for a declared active lane. Static mode embeds the old single
-envelope at `resources[item_id][view]` for unlaned views; a laned view stores an
-ordered list of resource envelopes. A `visible` snapshot contains only the
-declared active lane of each initially visible view. A `selected` snapshot
-contains every declared lane so its selector remains fully offline. `snapshot`
-records the included resource keys.
+**Resource and static-export identity.** A v2 `transport:"shared"` Map is keyed
+by `(item_id, view="map", detail?)` only. `attribute` and `color_by` are
+UI/snapshot state and MUST NOT appear in its URL, provider-call identity,
+single-flight key, retry key, or cache key. One fetch returns every declared
+attribute block and supports both camera modes. Both `visible` and `selected`
+static exports embed exactly one envelope per included shared Map: the declared
+`full` tier when tiers exist, otherwise the untiered resource. They differ only
+in which item/view resources are included. An item with `N`
+attributes therefore emits `N` value blocks, not `N²` selector envelopes. A
+selected export MUST NOT enumerate `(attribute,color_by)` pairs.
 
-A resource response is `{schema_version: 1, kind: "workspace_resource",
-item_id, view, lane?, detail?, payload}`. `payload` is an ordinary typed render envelope;
-bulk blocks keep their existing content-addressed representation and global
-browser digest cache. Resource failure is local to that item/view/lane and
-retryable. Switching back to a cached lane performs no fetch or producer call.
+A shared response is `{schema_version:2, kind:"workspace_resource", item_id,
+view:"map", detail?, blocks?, payload}`. `blocks` is the one content-addressed
+table for the response; every block marker in `payload` resolves against it. A
+shared response MUST NOT repeat those blocks under `payload.map.blocks` or a
+sibling `scene3d` bundle. `payload` is otherwise an ordinary typed render
+envelope and carries the `SharedSurfaceGrid` below.
+
+Selector-backed compatibility resources retain v1 identity
+`(item_id,view,lane,detail?)`, query `lane=<id>`, and v1 response echo. During a
+transition a non-shared v2 provider may use explicit query/envelope fields
+`attribute=<id>` and `color_by=<id>`; its identity is
+`(item_id,view,attribute,color_by,detail?)` and both echoes are required. This
+form is live-compatible but MUST NOT be used for multi-attribute selected static
+export because it is Cartesian. `lane` and either v2 selector in the same
+request/envelope is invalid rather than precedence-ordered.
+
+**Validation and failures.** Duplicate descriptor IDs, an unknown active
+selector, an invalid kind/code record, or an unsupported transport invalidates
+only that provider item/view, records a diagnostic, and prevents its request;
+explicit caller-authored catalog records raise `ValueError` before a server
+opens. An unknown live selector returns HTTP 400 without calling the producer.
+An envelope whose `item_id`, `view`, requested selectors, or `detail` does not
+match its request is rejected, not cached, and remains locally retryable. Bad
+blocks, non-integral categorical values, and missing declared attribute data are
+resource-local malformed-data errors. Missing optional units/CRS/code labels
+are honest display omissions/fallbacks, not errors.
+
+**SharedSurfaceGrid (workspace v2):** `payload.map.surface_grid` is
+`{schema_version:1, item_id:str, frame:Frame, positive:"down"|"up",
+mask:BlockRef|null, attributes:[SurfaceAttributeData,...], triangle_count:int}`.
+Here `BlockRef` is exactly `{"__block__":"<sha-256 digest>"}` into the shared
+workspace-resource envelope's `blocks` table, never an inline duplicate.
+`positive` declares the sign of every attribute when used as 3-D geometry and
+defaults to `"down"`; it is not a CRS transform. `mask` is row-major `u8
+[ncol*nrow]`, where zero is a hole; `null` means finite-value validity alone.
+`SurfaceAttributeData` is the canonical `AttributeDescriptor` plus
+`values:BlockRef`, `range:[min,max]|null`, and optional per-attribute
+`colormap`/`colormap_reversed`. Values are row-major `f32 [ncol*nrow]` using
+canonical NaN for missing cells. Continuous data has a finite ordered range or
+`null` when no finite values exist. Categorical data has `range:null` and finite
+values must be integers. Descriptor order and IDs MUST exactly equal the
+resource spec; `item_id` MUST equal the envelope item and `triangle_count` is a
+non-negative producer estimate after masking (used only for the rendering
+budget). The Map renderer consumes XY/value data; the 3-D camera consumes
+the selected attribute as geometry and the selected `color_by` values as paint
+from these same blocks. There is no duplicate `regular_surface` for this grid.
 
 **Item bindings (additive).** Workspace-produced primitives may carry
 `item_id`. `MapBundle.items` compactly binds one item to ranges in the existing
@@ -110,7 +193,9 @@ carry it. Payloads without bindings retain category-level visibility.
 | `contours` | list[ContourSet] | **additive:** iso-lines; all levels stroke as one batched path, stronger than grid lines |
 | `grid_lines_lod` | list[Line] \| absent | **additive (LOD):** the coarse (strided) `grid_lines` ring — present only when a mesh producer supplied one; see **Stride-ladder LOD** |
 | `point_color` | PointColor \| null | **additive:** `{by: "z", range: [min, max]}` — the GLOBAL fallback for point colouring (per-layer fields on `layers` win; see below). Present when at least one points layer colours: the user's explicit call-level `color=` clamp range, else the union of the coloured layers' data. Points with a finite third component colour through the colormap (non-finite z falls back to the accent); values outside the range clamp to the ramp ends |
-| `colormap` | str \| null | **additive:** the initial colormap for this payload (`viridis`\|`magma`\|`grays`\|`inferno`) — the parsed `<cmap>` of a `view2d` `color=`/`fill=` spec (`color`'s wins over `fill`'s; falling back to the first per-object dict-item pin). The panel selector can still change it for layers without a per-layer pin; an unknown/absent name keeps the viridis default |
+| `colormap` | str \| null | **additive:** the initial colormap for this payload (`viridis`\|`inferno`\|`magma`\|`plasma`\|`cividis`\|`turbo`\|`coolwarm`\|`greys`; legacy `grays` accepted) — the parsed `<cmap>` of a `view2d` `color=`/`fill=` spec (`color`'s wins over `fill`'s; falling back to the first per-object dict-item pin). The panel selector can still change it for layers without a per-layer pin; an unknown/absent name keeps the viridis default |
+| `colormap_reversed` | bool \| absent | **additive:** reverses the selected `colormap` lookup without changing its name; defaults to `false`. It is part of paint/bitmap-cache identity. Every per-layer `colormap` pin may carry a sibling `colormap_reversed`; absent also defaults to `false` |
+| `surface_grid` | SharedSurfaceGrid \| absent | **workspace v2:** the single attribute/block source used by both Map camera modes; defined above. Legacy fills and `scene3d` resources remain valid |
 | `layers` | list[LayerName] | **additive:** per-emitted-layer legend names, in emission order — `{kind: "points"\|"lines"\|"contours", name: str \| null}` with `name` duck-typed from the producer object (e.g. a dataset name like `"Top Dome"`); the legend falls back to the layer kind when `null`. A line layer carries `standalone: bool`: explicit geometry/wireframe is `true`, a value surface's structural fallback is `false`; this initializes grid visibility without interpreting a domain role. Fills self-describe via their own `display_name`. **Per-layer colour (additive, the per-object color ruling):** a points layer additionally carries its slice of the shared `points` array (`start`, `n`) plus its OWN resolved `range` (`[min, max]` — the explicit spec range, else the layer's finite-z data range), an optional pinned `colormap` (a per-object dict-item spec; the panel selector does not override a pin), and `colored: false` for an explicit per-object `color=False`. The renderer and the legend read these per-layer fields FIRST and fall back to the global `point_color`/`colormap`; an older payload without them renders exactly as before through one legacy segment |
 | `horizons` | list[ScalarLayer] | selectable depth/field layers |
 | `zone_averages` | list[ScalarLayer] | selectable property layers |
@@ -120,8 +205,20 @@ carry it. Payloads without bindings retain category-level visibility.
 | `blocks` | dict[digest → Block] | **additive:** the content-addressed typed-block table when `points`/fill arrays/`grid_lines`/`contours[i].lines` ship as binary blocks (see **Binary blocks** below); absent for a plain-JSON map |
 | `items` | list[ItemBinding] \| absent | **additive workspace binding:** compact item-to-range metadata described above; no geometry duplication |
 
-**Frame:** `{origin_x, origin_y, spacing_x, spacing_y, ncol, nrow}`. Node `(i, j)`
-sits at `(origin_x + i·spacing_x, origin_y + j·spacing_y)`.
+**Frame:** `{origin_x, origin_y, spacing_x, spacing_y, ncol, nrow,
+rotation_deg?, yflip?, crs?, units?}`. The additive fields normalize as
+`rotation_deg:0.0`, `yflip:false`, `crs:null`, and `units:null`.
+`rotation_deg` is finite degrees counter-clockwise from world +X/east to the
+positive I axis; `yflip` reverses the positive J direction. With
+`θ = rotation_deg·π/180`, node `(i,j)` is
+`origin + i·spacing_x·(cosθ,sinθ) + j·s·spacing_y·(-sinθ,cosθ)`, where
+`s = -1` when `yflip` else `+1`. Workspace-v2 authoring uses finite positive
+spacing and positive integer dimensions; v1 payloads retain their historical
+acceptance rules. `crs` is a non-empty free-text coordinate-system label
+rendered verbatim and `units` is the world-XY distance unit. Neither is inferred.
+The absent-field defaults reproduce the historic axis-aligned frame exactly.
+Intrinsic frame rotation/y-flip is data geometry; user camera rotation is a
+separate view transform and never mutates this frame.
 
 **ScalarLayer:** `{name: str, units: str, values: float[ncol·nrow], range,
 display_name?: str}`. `values` are **row-major** (`values[j·ncol + i]`);
@@ -131,7 +228,7 @@ perceptually-uniform colormap.
 **TriFill (additive; the `view2d` value-fill output — fills are never a
 `color=` side effect):** `{name: str, display_name?: str | null, nodes:
 [[x, y], …], triangles: [[a, b, c], …], values: float[len(nodes)], range:
-[min, max], colormap?: str}`. `colormap` (additive) is a per-fill ramp pin
+[min, max], colormap?: str, colormap_reversed?: bool}`. `colormap` (additive) is a per-fill ramp pin
 from a per-object dict-item `fill=` spec — it wins over the panel selection
 for this fill's paint, legend ramp and its coarse LOD ring; absent for
 call-level specs (selector-governed). Per-**node** values on a world-coordinate triangulation; each
@@ -157,7 +254,7 @@ Explicit `fill=False` emits none, `fill=True` emits only primary, and
 `value_layer()`.
 
 **AffineGridFill (additive compact regular-grid alternative):** `{name,
-display_name?, range:[min,max], colormap?, regular_grid:{dimensions:[ncol,nrow],
+display_name?, range:[min,max], colormap?, colormap_reversed?, regular_grid:{dimensions:[ncol,nrow],
 origin:[x,y], step_i:[dx,dy], step_j:[dx,dy], values, mask}}`. `values` and
 `mask` are row-major (`j*ncol+i`) typed arrays or block markers: `f32
 [ncol*nrow]` with canonical NaN for missing values and `u8 [ncol*nrow]` with
@@ -299,17 +396,33 @@ leader-lined bore labels.
 **WellOverlay (additive workspace context):**
 `{context_item_id: str, well_item_id: str, trajectory: [[x, y, z | null], …],
 intersection: {md: float, xyz: [x, y, z]} | null,
+intersections?: [{md: float, xyz: [x, y, z]}, ...],
 status: "hit" | "no_hit" | "ambiguous" | "error", message?: str}`.
 `context_item_id` matches a fill's stable workspace `item_id`; all attribute
 fills from that item therefore share the same context. `well_item_id` matches a
 base top-level well `item_id`. The trajectory is authoritative producer display
-geometry: petekTools neither clips it nor computes/interprets depth or MD. A
-`hit` trajectory is expected to end at the exact intersection; `no_hit` carries
-the full trajectory. `ambiguous`/`error` use a supplied non-empty trajectory or
-fall back to the base path and expose the diagnostic. Missing overlays and
-legacy bundles always use the base path. The selected path participates in Map
-fit, while head, label and style remain those of the base well. Malformed
-identity/status records are skipped locally and never fail the Map renderer.
+geometry: petekTools neither clips it nor computes/interprets depth or MD.
+`intersections`, when present, is authoritative, contains finite MD/XYZ records,
+and is strictly non-decreasing by MD (duplicate MD is allowed for coincident
+picks). `hit` has exactly one record; `ambiguous` has at least two; `no_hit` and
+`error` have none. The singular `intersection` remains the compatibility
+fallback when `intersections` is absent. A v2 producer SHOULD also echo the
+greatest-MD record into `intersection` so an old consumer still shows the
+chosen anchor; old singular records retain their historical first-hit meaning
+and are never reinterpreted as an all-hit list.
+
+Across all currently visible context items for one well, the viewer selects the
+record with the greatest finite `md` as the solid marker. It shows other records
+as secondary picks and may cycle them without a request. Equal-MD ties resolve
+by workspace item order, then record order. Visibility changes are local because
+all records are already present. With no visible hit, `no_hit` uses the wellhead
+fallback; `error` also records its diagnostic. A `hit` trajectory is expected to
+end at its selected intersection; `no_hit` carries the full trajectory.
+`ambiguous`/`error` use a supplied non-empty trajectory or fall back to the base
+path. Missing overlays and legacy bundles always use the base path. The selected
+path participates in Map fit, while head, label and style remain those of the
+base well. Malformed identity/status/order records are skipped locally and never
+fail the Map renderer.
 
 **Click-to-inspect (owner ruling 2026-07-11).** Hover shows nothing on the
 map. A still **click** on/near a point (the grid-bucket hit-test) or a raster
@@ -467,11 +580,12 @@ names + ramp/clamped range) drives the 3D tab's legend.
 | `layers` | list[LayerName] | per-layer legend entries, emission order — `{kind: "points"\|"lines"\|"contours"\|"wells", name: str \| null}` (duck-typed producer names; fallback: the kind). Line layers carry the same additive `standalone` geometry flag as Map. Value meshes self-describe via `display_name`, like 2-D fills |
 | `point_color` | PointColor \| null | as `map.point_color`: the GLOBAL fallback (per-cloud `range`/`colormap`/`colored` fields win) — the explicit call-level `color=` clamp range, else the union of the coloured clouds' data |
 | `colormap` | str \| null | the payload-pinned initial colormap (the parsed `color=`/`fill=` `<cmap>`, falling back to the first per-object dict-item pin) |
+| `colormap_reversed` | bool \| absent | reverses `colormap`; defaults to `false` and participates in material/cache identity |
 | `z_exaggeration` | float | the z-exaggeration slider seed (display-only group scale, `z ×N` badge, true depths in the readout — the volume tab's control; default 5) |
 | `ref_z` | float | the flat-element elevation: midpoint of the scene's finite z extent (0 for an all-flat scene). Lattices and outline rings carry no z of their own and render at this plane |
 
 **PointCloud3D:** `{name: str | null, n: int, xyz: Block, range?: [min, max],
-colormap?: str, colored?: bool}` — `xyz` is ONE compact v3-style binary block
+colormap?: str, colormap_reversed?: bool, colored?: bool}` — `xyz` is ONE compact v3-style binary block
 (`{dtype: "f32", shape: [n, 3], data: "<base64>"}`, little-endian, NaN =
 `0x7FC00000`) decoded on the same kernel as the volume blocks / well-log
 lanes. A NaN z renders at `ref_z` in the neutral colour (never
@@ -486,7 +600,7 @@ past `point_limit` (default 200k) by striding, recorded as
 
 **Mesh3D:** `{name: str, display_name: str | null, nodes: [[x, y, z | null],
 …], triangles: [[a, b, c], …], values: float[len(nodes)] | null, range:
-[min, max] | null, colormap?: str}`. `values`+`range` present → per-vertex
+[min, max] | null, colormap?: str, colormap_reversed?: bool}`. `values`+`range` present → per-vertex
 colormap colouring (the user's `fill=` clamp range when specified; a `null`
 value renders the neutral colour); absent → the neutral material with a panel
 wireframe toggle. `colormap` (additive) is a per-mesh ramp pin from a
@@ -496,7 +610,7 @@ A triangle touching a `null`-z node is **skipped** (a hole, never guessed).
 source-object name (e.g. `"Top Dome"`).
 
 **CompactRegularSurface3D (additive Mesh3D alternative):** `{name,
-display_name?, range, colormap?, regular_surface:{dimensions:[ncol,nrow],
+display_name?, range, colormap?, colormap_reversed?, regular_surface:{dimensions:[ncol,nrow],
 origin:[x,y], step_i:[dx,dy], step_j:[dx,dy], elevations:Block, mask:Block,
 values:Block|null, elevation_range:[min,max], triangle_count}}`. Elevations and
 optional colour values are row-major `f32`; mask is row-major `u8`. There are no
@@ -710,8 +824,13 @@ not the viewer).
 ## Colour discipline (rendered, not declared)
 
 Two colour jobs, never conflated: **continuous fields** (rasters, section fills,
-the volume) use a perceptually-uniform scientific colormap (viridis default;
-magma / grays / inferno selectable, or pinned by the payload's `map.colormap`);
+the volume) use a scientific colormap (viridis default; viridis / inferno /
+magma / plasma / cividis / turbo / coolwarm / greys selectable, or pinned by the
+payload's `map.colormap`). `grays` remains an accepted legacy spelling for
+`greys`. A colormap field's independent `colormap_reversed` companion defaults
+to `false`; reversal walks the same LUT backwards and is never encoded in the
+name (no `*_r` or `-name` convention). A per-layer pin overrides both global
+fields as a pair; a missing per-layer reverse flag is `false`, not inherited;
 **categorical identity** (wells, horizons, contacts, zones, scatter groups,
 distribution series) uses the fixed token slots, assigned by entity and stable
 across tabs/theme. The payload supplies names, units and ranges; the renderer owns

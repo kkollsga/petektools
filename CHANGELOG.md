@@ -6,6 +6,17 @@ All notable changes to petekTools are recorded here. Format follows
 
 ## [Unreleased]
 
+### Added
+- **Viewer workspace schema v2 contract.** The frozen additive contract preserves
+  `{id,label,kind,units,codes}` attribute metadata, separates geometry
+  `attribute` from paint `color_by`, adds optional rotated/georeferenced Frame
+  metadata, all-hit well overlays, `colormap_reversed`, and project identity.
+  One shared Map resource/block table feeds both 2-D/3-D modes and every
+  attribute without Cartesian static-export growth. Workspace v1, legacy
+  `lane`, singular `intersection`, and separate `scene3d` payloads remain
+  explicit compatibility paths. This entry defines the contract only; runtime
+  support lands in the subsequent implementation phases.
+
 ## [0.2.14] - 2026-07-14
 
 ### Added

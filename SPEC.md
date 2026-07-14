@@ -61,32 +61,50 @@ discover producer-declared render lanes through small duck-typed conventions
 producer `kind` strings classify points (`point_set`), geometry-only shells
 (`grid_geometry`, `structured_shell`, `mesh_shell`), and value surfaces
 (`surface`, `structured_mesh`, `tri_surface`) before overlapping method ducks;
-only the value-surface role participates in omitted-fill lane discovery. New
-attribute lanes over identical topology share one normalized full/LOD mesh in
-memory and one content-addressed geometry block on the wire. The viewer decodes
-only the active lane's values initially and resolves inactive value blocks on
-first selection; the complete table remains embedded in offline saved views.
+only the value-surface role participates in omitted-fill lane discovery.
+Workspace-v2 surface attributes preserve the generic descriptor
+`{id,label,kind,units,codes}` and expose independent geometry `attribute` and
+paint `color_by` selectors; changing geometry resets paint, while explicit paint
+selection decouples them. Legacy `lane` maps to both selectors and remains a v1
+compatibility path. Attributes over identical topology share one normalized
+full/LOD mesh in memory and one content-addressed resource/block table on the
+wire. A shared Map carries each attribute value block once, and 2-D/3-D are
+camera modes over that resource: neither selector nor mode multiplies live or
+static identity. The complete table remains embedded in offline saved views
+without an attribute-by-colour Cartesian export.
 An exact affine structured fill uses `regular_grid` metadata plus row-major
 typed values/mask and never expands nodes or triangles. The renderer maps its
 index raster through `origin + i*step_i + j*step_j`, uses the inverse affine for
 inspection, and treats a false mask or NaN as a hole. Existing ScalarLayer and
 TriFill payloads remain compatibility paths.
-Affine 3-D surfaces likewise use typed `regular_surface` elevation/mask/value
-blocks. A provider may advertise ordered preview/full scene tiers; preview is
-rendered first, full builds transferable GPU-ready arrays in the existing decode
-worker, and the renderer swaps it without clearing preview state, moving the
-camera, or re-entering global Loading. Static export embeds full directly.
+Legacy affine 3-D surfaces continue to use typed `regular_surface`
+elevation/mask/value blocks. A shared v2 Map instead carries one affine Frame,
+mask, and ordered value blocks for both camera modes. `Frame` additively declares
+intrinsic rotation/y-flip and optional free-text CRS/world units; absent fields
+retain the historic axis-aligned behavior and are never guessed. A provider may
+advertise ordered preview/full tiers; preview is rendered first, full builds
+transferable GPU-ready arrays in the existing decode worker, and the renderer
+swaps it without clearing preview state, moving the camera, or re-entering global
+Loading. Static export embeds the full tier once when it is advertised.
 Map resources may also carry additive contextual well overlays keyed by stable
 surface/fill and base-well item identities. Selection is local to the already
 materialized bundle: the active fill atomically chooses the producer-declared
 trajectory for draw and fit, while base wellhead/style/visibility remain
-unchanged. petekTools does not compute intersections, measured depth, clipping,
-or depth conversion; missing and invalid records degrade locally to base paths.
+unchanged. Producers may add an MD-ordered `intersections` list; the viewer uses
+the greatest-MD pick among visible contexts while singular `intersection`
+remains the compatibility fallback. petekTools does not compute intersections,
+measured depth, clipping, or depth conversion; missing and invalid records
+degrade locally to base paths.
 Its optional project-workspace shell is equally generic: an insertion-ordered
 tree, or a producer's `view_catalog()` / `view_resource()` duck, supplies stable
 render-item IDs and typed resources. petekTools never traverses a project,
 interprets an asset role, or computes a section; managed libraries own those
 catalog and resource adapters.
+Project-backed v2 producers supply persisted display title, free-text CRS, and
+primary project unit plus durable per-attribute metadata; older/unknown values
+remain absent. Continuous colormap state is the pair `(colormap,
+colormap_reversed)`, with reverse defaulting false and categorical code tables
+never degraded to a continuous ramp.
 The shell treats navigation and rendering state explicitly: small actionable
 branches disclose without materialization, user expansion never fetches, lazy
 views report loading/empty/malformed/runtime states locally, and deferred/LOD
