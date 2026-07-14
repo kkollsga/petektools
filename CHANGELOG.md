@@ -6,6 +6,8 @@ All notable changes to petekTools are recorded here. Format follows
 
 ## [Unreleased]
 
+## [0.2.15] - 2026-07-14
+
 ### Added
 - **One-resource Map 2-D/3-D runtime.** Workspace-v2 shared surfaces now switch
   camera modes inside the Map viewport without another fetch, decode, or source
@@ -76,6 +78,21 @@ All notable changes to petekTools are recorded here. Format follows
   attribute without Cartesian static-export growth. Workspace v1, legacy
   `lane`, singular `intersection`, and separate `scene3d` payloads remain
   explicit compatibility paths.
+
+### Compatibility
+- Rust and Python kernel changes are additive: axis-aligned `Lattice::regular`,
+  existing resampling calls, and legacy viewer entry points retain their public
+  signatures and defaults. Rotation/y-flip are opt-in through the new frame
+  methods and optional metadata.
+- Workspace v1 catalogs, `lane=` providers, singular well intersections,
+  separate scene3d resources, and existing saved payloads remain supported.
+  Producers adopting shared workspace v2 should return one selector-free Map
+  envelope per item/detail containing all declared attribute blocks; geometry,
+  paint, and 2-D/3-D switching are then client-local.
+- Compact affine Map output now follows the declared node-centred frame exactly.
+  Screenshots that depended on the former four-node averaging or inconsistent
+  rotated-edge handling will change, but source values and payload compatibility
+  are preserved.
 
 ### Fixed
 - **Rotated Map frame parity.** ScalarLayer, shared affine fills, contacts,

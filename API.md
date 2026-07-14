@@ -746,7 +746,7 @@ pub fn study_area_outline(extent: &BBox, corner_radius: f64, arc_steps: usize) -
 A thin PyO3 wheel (built by maturin) over the front-door above. Mixed layout
 (mirrors petekio): `pyproject.toml` at the repo root, the cdylib in `py/`
 (`petektools._petektools`, `publish = false`), the importable package in
-`python/petektools/`. abi3-py39 → one wheel for CPython 3.9+; pyo3 0.29. The
+`python/petektools/`. abi3-py310 → one wheel for CPython 3.10+; pyo3 0.29. The
 wheel is **not** part of the published Rust crate (workspace member + `exclude`).
 
 **Conventions.** Every vector argument accepts a `list` **or** a numpy array
