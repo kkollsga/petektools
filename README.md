@@ -48,13 +48,15 @@ The canonical docs for the whole petek family live on the **petekSuite site**
   arrays without pulling in any static-model semantics.
 - **Shared 1-D interpolation.** `interp1d` covers log-style resampling with
   nearest/step/linear methods and a natural cubic spline implemented in Rust.
-- **Binding-friendly.** Owned inputs, no public lifetimes on kernels; PyO3
-  bindings are a planned thin layer over this same surface.
+- **One Rust/Python surface.** Owned inputs and no public kernel lifetimes keep
+  the native API binding-friendly; the shipped abi3 PyO3 wheel is a thin layer
+  over that same implementation and includes the standalone bundle viewer.
 
 ## Install
 
 ```sh
 cargo add petektools
+pip install petektools
 ```
 
 ## Quick start

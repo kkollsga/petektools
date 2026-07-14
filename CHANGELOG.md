@@ -6,6 +6,8 @@ All notable changes to petekTools are recorded here. Format follows
 
 ## [Unreleased]
 
+## [0.2.14] - 2026-07-14
+
 ### Added
 - **Contextual Map well overlays.** Workspace Map resources may carry
   producer-declared trajectories keyed by stable surface/fill and base-well
@@ -89,8 +91,9 @@ All notable changes to petekTools are recorded here. Format follows
   selection states and fetch-free persistent manual expansion. All buttons use
   one accessible hover/focus tooltip channel; Map and 3-D data remain
   click-to-toggle inspection. Late renderer success callbacks are guarded from
-  overwriting a newer workspace loading/empty/malformed state. Dense 198²/500² gesture gates additionally pin the
-  settled camera, >12 wheel ticks, >1 viewport pan, and cached A→B→A return.
+  overwriting a newer workspace loading/empty/malformed state. Dense 198²/500²
+  gesture gates additionally pin the settled camera, >12 wheel ticks, >1
+  viewport pan, and cached A→B→A return.
 - **Large multi-attribute surfaces now share and load lazily.** Automatic
   primary/attribute fills retain one normalized full+LOD mesh, pack/hash that
   geometry once, and reference one content-addressed block. The browser decodes
