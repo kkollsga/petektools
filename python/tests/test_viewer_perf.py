@@ -44,6 +44,9 @@ _WORKSPACE_STATE_JS = Path(__file__).parent / "viewer_perf" / "workspace_state_b
 _WORKSPACE_TREE_DESIGN_JS = Path(__file__).parent / "viewer_perf" / "workspace_tree_design_bench.mjs"
 _INSPECTOR_LEGEND_JS = Path(__file__).parent / "viewer_perf" / "inspector_legend_bench.mjs"
 _PAINT_RACE_JS = Path(__file__).parent / "viewer_perf" / "paint_race_bench.js"
+_WORKSPACE_SHARED_MAP_JS = (
+    Path(__file__).parent / "viewer_perf" / "workspace_shared_map_bench.js"
+)
 _INSPECTOR_STATE_JS = Path(__file__).parent / "viewer_perf" / "inspector_state_bench.js"
 _WORKSPACE_WELL_OVERLAY_JS = (
     Path(__file__).parent / "viewer_perf" / "workspace_well_overlay_bench.mjs"
@@ -97,6 +100,34 @@ def test_hidden_point_slices_and_exact_section_horizon_geometry():
     assert result["extent"] == {"x0": 0.5, "y0": 0, "x1": 1, "y1": 0}
     assert result["winner"] == 0
     assert result["innerOnly"] is False and result["outer"] is True
+
+
+@pytest.mark.skipif(_NODE is None, reason="node not installed")
+def test_shared_only_workspace_map_composes_and_renders_with_source_frames():
+    viewer = (
+        Path(__file__).parents[1]
+        / "petektools"
+        / "viewer"
+        / "assets"
+        / "viewer"
+    )
+    out = subprocess.run(
+        [
+            _NODE,
+            str(_WORKSPACE_SHARED_MAP_JS),
+            str(viewer / "05-paint-state.js"),
+            str(viewer / "15-workspace.js"),
+            str(viewer / "20-map.js"),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert out.returncode == 0, out.stdout + out.stderr
+    result = json.loads(out.stdout.strip().splitlines()[-1])
+    assert result["activeOrigin"] == 100
+    assert result["cursorValue"] == 3
+    assert result["category"] == 1
 
 
 def _overlay_map(name, fills, overlays):

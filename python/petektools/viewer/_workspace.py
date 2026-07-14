@@ -1093,7 +1093,7 @@ def _validate_payload_block_refs(value: Any, blocks: Mapping[str, Any]) -> None:
             _validate_payload_block_refs(child, blocks)
 
 
-def _validate_frame(value: Any) -> tuple[int, int]:
+def _validate_frame(value: Any) -> tuple[int, int, dict[str, Any]]:
     if not isinstance(value, Mapping):
         raise TypeError("workspace shared surface_grid frame must be a mapping")
     required = {"origin_x", "origin_y", "spacing_x", "spacing_y", "ncol", "nrow"}
@@ -1135,7 +1135,12 @@ def _validate_frame(value: Any) -> tuple[int, int]:
             raise ValueError(
                 f"workspace shared frame {key} must be null or trimmed text"
             )
-    return value["ncol"], value["nrow"]
+    normalized = copy.deepcopy(dict(value))
+    normalized.setdefault("rotation_deg", 0.0)
+    normalized.setdefault("yflip", False)
+    normalized.setdefault("crs", None)
+    normalized.setdefault("units", None)
+    return value["ncol"], value["nrow"], normalized
 
 
 def _validate_shared_grid(
@@ -1149,6 +1154,8 @@ def _validate_shared_grid(
     map_bundle = payload.get("map")
     if not isinstance(map_bundle, Mapping):
         raise ValueError("workspace shared Map response requires payload.map")
+    map_bundle = copy.deepcopy(dict(map_bundle))
+    payload["map"] = map_bundle
     if map_bundle.get("blocks") is not None:
         raise ValueError(
             "workspace shared Map must not repeat blocks under payload.map"
@@ -1158,6 +1165,8 @@ def _validate_shared_grid(
     grid = map_bundle.get("surface_grid")
     if not isinstance(grid, Mapping):
         raise ValueError("workspace shared Map requires payload.map.surface_grid")
+    grid = copy.deepcopy(dict(grid))
+    map_bundle["surface_grid"] = grid
     required = {
         "schema_version",
         "item_id",
@@ -1171,7 +1180,8 @@ def _validate_shared_grid(
         raise ValueError("workspace shared surface_grid has missing or unknown fields")
     if grid["schema_version"] != 1 or grid["item_id"] != item.id:
         raise ValueError("workspace shared surface_grid identity/version mismatch")
-    ncol, nrow = _validate_frame(grid["frame"])
+    ncol, nrow, frame = _validate_frame(grid["frame"])
+    grid["frame"] = frame
     count = ncol * nrow
     positive = grid.get("positive", "down")
     if positive not in ("down", "up"):
@@ -1351,16 +1361,24 @@ def _resource_envelope(
     if existing:
         result = supplied
     else:
-        result = {
-            "schema_version": 2 if v2 else 1,
-            "kind": "workspace_resource",
-            "item_id": item.id,
-            "view": view,
-            "payload": supplied,
-        }
-        if not v2:
+        if v2:
+            result = {
+                "schema_version": 2,
+                "kind": "workspace_resource",
+                "item_id": item.id,
+                "view": view,
+                "payload": supplied,
+            }
+        else:
             # Workspace v1 always serialized the lane member, including null.
-            result["lane"] = lane
+            result = {
+                "schema_version": 1,
+                "kind": "workspace_resource",
+                "item_id": item.id,
+                "view": view,
+                "lane": lane,
+                "payload": supplied,
+            }
         if attribute is not None:
             result["attribute"] = attribute
             result["color_by"] = color_by
@@ -1726,18 +1744,18 @@ class WorkspaceSession:
                 if self._inflight.get(key) is flight:
                     del self._inflight[key]
                 flight.error = exc
-                self._diagnostics.append(
+                diagnostic = {"item_id": item_id, "view": view, "lane": lane}
+                if attribute is not None or color_by is not None:
+                    diagnostic["attribute"] = attribute
+                    diagnostic["color_by"] = color_by
+                diagnostic.update(
                     {
-                        "item_id": item_id,
-                        "view": view,
-                        "lane": lane,
-                        "attribute": attribute,
-                        "color_by": color_by,
                         "detail": detail,
                         "error": type(exc).__name__,
                         "message": str(exc),
                     }
                 )
+                self._diagnostics.append(diagnostic)
                 flight.event.set()
             raise
 

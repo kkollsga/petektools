@@ -174,6 +174,16 @@ class Provider:
         return {"map": {"item_id": item_id, "lane": lane}, "schema_version": 4}
 
 
+def test_workspace_v1_resource_keeps_literal_serialized_member_order():
+    resource = WorkspaceSession(Provider()).resource("surface:top", "map")
+    assert json.dumps(resource) == (
+        '{"schema_version": 1, "kind": "workspace_resource", '
+        '"item_id": "surface:top", "view": "map", "lane": null, '
+        '"payload": {"map": {"item_id": "surface:top", "lane": null}, '
+        '"schema_version": 4}}'
+    )
+
+
 class LaneProvider:
     def __init__(self):
         self.calls = []
@@ -630,7 +640,14 @@ def test_resource_failure_is_diagnostic_and_retryable():
     session = WorkspaceSession(provider)
     with pytest.raises(RuntimeError, match="synthetic failure"):
         session.resource("surface:top", "map")
-    assert session.diagnostics[-1]["error"] == "RuntimeError"
+    assert session.diagnostics[-1] == {
+        "item_id": "surface:top",
+        "view": "map",
+        "lane": None,
+        "detail": None,
+        "error": "RuntimeError",
+        "message": "synthetic failure",
+    }
     assert session.resource("surface:top", "map")["payload"] == {"map": {}}
     assert provider.resource_calls == 2
 
@@ -1184,6 +1201,32 @@ def test_workspace_v2_shared_malformed_resource_is_local_and_retryable():
         session.resource("surface:top", "map", detail="full")
     assert len(provider.calls) == 2
     assert len(session.diagnostics) == 2
+
+
+def test_workspace_v2_shared_frame_inserts_all_frozen_defaults():
+    class DefaultedFrameProvider(SharedWorkspaceProvider):
+        def view_resource(self, **kwargs):
+            resource = super().view_resource(**kwargs)
+            frame = resource["payload"]["map"]["surface_grid"]["frame"]
+            for field in ("rotation_deg", "yflip", "crs", "units"):
+                del frame[field]
+            return resource
+
+    frame = WorkspaceSession(DefaultedFrameProvider()).resource(
+        "surface:top", "map", detail="full"
+    )["payload"]["map"]["surface_grid"]["frame"]
+    assert frame == {
+        "origin_x": 1.0,
+        "origin_y": 2.0,
+        "spacing_x": 25.0,
+        "spacing_y": 25.0,
+        "ncol": 2,
+        "nrow": 2,
+        "rotation_deg": 0.0,
+        "yflip": False,
+        "crs": None,
+        "units": None,
+    }
 
 
 def test_workspace_v2_server_rejects_shared_selectors_before_provider_call():

@@ -408,7 +408,8 @@
     (grid.attributes || []).forEach(function (entry) { data[entry.id] = entry; });
     var geometry = data[attributeId], paint = data[colorId];
     if (!geometry || !paint || !paint.values) return null;
-    var f = grid.frame || {}, angle = (Number(f.rotation_deg) || 0) * Math.PI / 180;
+    var f = grid.frame || {}, sourceFrame = workspaceMapSourceFrame(m);
+    var angle = (Number(f.rotation_deg) || 0) * Math.PI / 180;
     var sign = f.yflip ? -1 : 1, c = Math.cos(angle), s = Math.sin(angle);
     var mask = grid.mask;
     if (!mask) {
@@ -426,6 +427,7 @@
       categorical: descriptor.kind === "categorical",
       categorical_codes: descriptor.kind === "categorical" ? descriptor.codes : null,
       item_id: id,
+      __workspaceFrame: sourceFrame,
       __workspaceGeometry: geometry.values,
       regular_grid: {
         dimensions: [f.ncol, f.nrow], origin: [f.origin_x, f.origin_y],
@@ -447,8 +449,8 @@
     };
     var wells = [], pointOffset = 0;
     entries.forEach(function (entry) {
-      var id = entry.id, m = entry.payload.map;
-      if (!map.frame && m.frame) map.frame = m.frame;
+      var id = entry.id, m = entry.payload.map, sourceFrame = workspaceMapSourceFrame(m);
+      if (!map.frame && sourceFrame) map.frame = sourceFrame;
       if (!map.point_color && m.point_color) map.point_color = m.point_color;
       if (!map.colormap && m.colormap) map.colormap = m.colormap;
       pointParts.push(m.points); gridParts.push(m.grid_lines); gridLodParts.push(m.grid_lines_lod);
@@ -461,6 +463,7 @@
         // reference to the producing map so inactive attribute lanes retain
         // the existing content-addressed lazy decoder and deduplication path.
         fill.__workspaceMap = m;
+        fill.__workspaceFrame = sourceFrame;
         map.fills.push(fill);
       });
       (m.contours || []).forEach(function (v) { map.contours.push(cloneStamped(v, id)); });
@@ -470,8 +473,13 @@
       (m.well_overlays || []).forEach(function (v) {
         map.well_overlays.push(v); map.__wellOverlaySources.push(id);
       });
-      ["horizons", "zone_averages", "k_slices", "contacts"].forEach(function (name) {
+      ["horizons", "zone_averages", "k_slices"].forEach(function (name) {
         (m[name] || []).forEach(function (v) { map[name].push(cloneStamped(v, id)); });
+      });
+      (m.contacts || []).forEach(function (v) {
+        var contact = cloneStamped(v, id);
+        contact.__workspaceFrame = sourceFrame;
+        map.contacts.push(contact);
       });
       (m.layers || []).forEach(function (v) {
         var layer = cloneStamped(v, id);
@@ -486,6 +494,7 @@
     var lod = virtualConcat(gridLodParts); if (lod.length) map.grid_lines_lod = lod;
     App.payload.map = map; App.payload.wells = wells;
     refreshWorkspaceMapState();
+    activateWorkspaceMapFrame(map, (map.fills || [])[S.mapFillIdx]);
     repaintWorkspaceView("map");
   }
 

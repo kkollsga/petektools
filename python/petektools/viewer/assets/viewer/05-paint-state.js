@@ -66,3 +66,23 @@
     });
     return outer || interior;
   }
+
+  // Workspace Map resources may use the v1 map.frame representation or the
+  // v2 shared surface_grid.frame representation. Keep that seam in one pure
+  // helper so composition and its executable Node proof use the same rule.
+  function workspaceMapSourceFrame(map) {
+    if (!map) return null;
+    return (map.surface_grid && map.surface_grid.frame) || map.frame || null;
+  }
+
+  function activateWorkspaceMapFrame(map, fill) {
+    if (map && fill && fill.__workspaceFrame) map.frame = fill.__workspaceFrame;
+    return map && map.frame || null;
+  }
+
+  // A categorical raster cell must preserve a source code. The upper-left
+  // sample is the deterministic nearest-neighbour choice at the cell centre;
+  // unlike averaging it cannot synthesize a category absent from the data.
+  function categoricalCellCode(va, vb, vc, vd) {
+    return va;
+  }

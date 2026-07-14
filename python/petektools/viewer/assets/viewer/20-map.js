@@ -383,7 +383,9 @@
     if (!fill) return;
     // Re-selecting the still-visible lane cancels a pending different choice.
     // Its worker reply may populate the digest cache but must not activate it.
-    if (index === S.mapFillIdx) { _mapFillWanted = index; return; }
+    if (index === S.mapFillIdx) {
+      _mapFillWanted = index; activateWorkspaceMapFrame(m, fill); return;
+    }
     if (index === _mapFillWanted) return;
     _mapFillWanted = index;
     var needs = valueDigests(fill), cache = blockCache(), lazy = false;
@@ -394,6 +396,7 @@
       fillMap2dValues(fill, cache);
       if (_mapFillWanted !== index) { updateBlockStatus(decodeMap); return; }
       S.mapFillIdx = index;
+      activateWorkspaceMapFrame(m, fill);
       updateBlockStatus(decodeMap); renderMap(); if (typeof buildPanel === "function") buildPanel();
     });
   }
@@ -657,7 +660,7 @@
       S.showOutline, S.lodActive, token("--muted"), token("--text-secondary")].join("|");
     return [displayId(m.contacts), (S.contactVis || []).join(","), S.lodActive,
       document.documentElement.getAttribute("data-theme") || "",
-      mapFrame().spacing_x, mapFrame().spacing_y].join("|");
+      displayId(mapFrame())].join("|");
   }
   function paintUnderlays(ctx, sc, ox, oy) {
     var m = App.payload.map;
@@ -683,9 +686,10 @@
     }
   }
   function paintContacts(ctx, sc, ox, oy) {
-    var f = mapFrame();
     (App.payload.map.contacts || []).forEach(function (c, ci) {
       if (!S.contactVis[ci]) return;
+      var f = c.__workspaceFrame || mapFrame();
+      if (!f) return;
       perfCount("contactMaskBuilds");
       var col = idColor("ct:" + c.kind), ss = Math.max(2, sc * Math.min(f.spacing_x, f.spacing_y));
       var region = new Path2D(), minx = Infinity, miny = Infinity, maxx = -Infinity, maxy = -Infinity, any = false;
@@ -1225,7 +1229,7 @@
       if (!isFinite(va) || !isFinite(vb) || !isFinite(vc) || !isFinite(vd)) continue;
       var p = (j * wc + i) * 4;
       if (fill.categorical) {
-        var category = Math.round((va + vb + vc + vd) * .25), color = categoricalRgb(category);
+        var category = categoricalCellCode(va, vb, vc, vd), color = categoricalRgb(category);
         out[p] = color[0]; out[p + 1] = color[1]; out[p + 2] = color[2]; out[p + 3] = 255;
       } else {
         var t = ((va + vb + vc + vd) * .25 - lo) / span;
