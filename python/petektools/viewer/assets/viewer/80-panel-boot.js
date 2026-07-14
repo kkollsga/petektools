@@ -68,8 +68,7 @@
   function buildSectionPanel(body) {
     if (S.sections.length) {
       var b = S.sections[Math.min(S.sectionIdx, S.sections.length - 1)];
-      var zoneData = !!(b && b.zones && b.zones.length &&
-        (b.columns || []).some(function (c) { return c.zone_ids && c.zone_ids.length; }));
+      var zoneData = sectionHasZoneData(b);
       var g = group("Section");
       g.appendChild(selectRow("Trace", S.sectionLabels.length ? S.sectionLabels.map(pretty) : S.sections.map(function (_, i) { return "Section " + (i + 1); }), S.sectionIdx, function (i) { S.sectionIdx = i; renderSection(); buildPanel(); }));
       // Color-by: property colormap vs zone categorical. Shown ONLY when the

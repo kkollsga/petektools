@@ -393,6 +393,12 @@
       .concat((m.k_slices || []).map(function (l) { return tagLayer(l, "property"); }));
     S.mapLayerIdx = Math.min(S.mapLayerIdx || 0, Math.max(0, S.mapLayers.length - 1));
     S.mapFillIdx = Math.min(S.mapFillIdx || 0, Math.max(0, (m.fills || []).length - 1));
+    var pointSegments = (m.layers || []).filter(function (entry) {
+      return entry.kind === "points" && entry.start != null && entry.n != null;
+    });
+    S.pointLayerVis = (pointSegments.length ? pointSegments : ((m.points || []).length ? [null] : []))
+      .map(function (_, i) { return S.pointLayerVis && S.pointLayerVis[i] !== undefined ? S.pointLayerVis[i] : true; });
+    S.showPoints = S.pointLayerVis.some(function (visible) { return visible; });
     if (!S.mapGridDefaultApplied && App.payload.map) {
       S.showGridLines = !(m.fills && m.fills.length) || (m.layers || []).some(function (layer) {
         return layer.kind === "lines" && layer.standalone === true;

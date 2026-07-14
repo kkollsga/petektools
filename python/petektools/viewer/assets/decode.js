@@ -230,7 +230,8 @@
       _keep = { triCell: triCell, cellValues: d.cellValues }; // retained for recolour
       var tc = triCell.slice(), cv = d.cellValues.slice(), zi = d.zoneIds.slice();
       postMessage({
-        cmd: "decoded", pos: pos.buffer, col: col.buffer,
+        cmd: "decoded", requestId: m.requestId, paintKey: m.paintKey,
+        pos: pos.buffer, col: col.buffer,
         triCell: tc.buffer, cellValues: cv.buffer, zoneIds: zi.buffer,
         center: center, depthRange: depthRange(d.positions),
         vertexCount: d.vertexCount, triangleCount: triCell.length,
@@ -239,7 +240,7 @@
       }, [pos.buffer, col.buffer, tc.buffer, cv.buffer, zi.buffer]);
     } else if (m.cmd === "recolor") {
       var c2 = bakeColors(_keep.triCell, _keep.cellValues, m.vmin, m.vmax, m.stops);
-      postMessage({ cmd: "recolored", col: c2.buffer }, [c2.buffer]);
+      postMessage({ cmd: "recolored", requestId: m.requestId, paintKey: m.paintKey, col: c2.buffer }, [c2.buffer]);
     } else if (m.cmd === "decode2d") {
       // Decode a 2-D map's block table off the main thread; post the decoded
       // buffers back as transferables (zero-copy) keyed by digest, plus the

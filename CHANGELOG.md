@@ -32,6 +32,13 @@ All notable changes to petekTools are recorded here. Format follows
   support lands in the subsequent implementation phases.
 
 ### Fixed
+- **Inspector state and asynchronous paint alignment.** Scalar paint omission
+  now remains inheritance rather than a false pin; point segments retain their
+  own range, paint, and visibility; aggregate section keys mirror aggregate
+  renderer state; and categorical availability uses the renderer's exact data
+  predicate. Blank exact-range endpoints are rejected, undeclared section units
+  stay absent, and request-keyed Volume/3-D completions cannot attach stale
+  colours under a newer material or cache identity.
 - **Truthful workspace visibility controls.** Project rows, groups, isolate
   actions, and the visibility footer are interactive only in Map, 3-D, and Wells,
   the views with complete composition paths. Intersection, Volume, and Charts

@@ -56,7 +56,7 @@
         buildScene3d(sc);
         if (App.tab === "scene3d") buildPanel(); // counts + fit-z now known
       } else if (s3dBuilt._colormapKey !== S.colormap + "|" + !!S.colormapReversed) {
-        s3dBuilt._colormapKey = S.colormap + "|" + !!S.colormapReversed; recolorScene3d(sc);
+        recolorScene3d(sc);
       }
       applyScene3dVisibility();
       restyleScene3dLines();
@@ -389,10 +389,10 @@
   }
 
   function queueRegularSurface(m, built, center, refining, staging) {
-    var id = ++_s3dRegularRequestId, stops = colormapStops(
-      m.colormap || S.colormap,
-      m.colormap != null || m.colormap_reversed != null ? !!m.colormap_reversed : !!S.colormapReversed);
-    var request = { m: m, built: built, refining: !!refining, staging: staging, detail: built._detail };
+    var paintKey = s3dMeshPaintKey(m), paintParts = paintKey.split("|");
+    var id = ++_s3dRegularRequestId, stops = colormapStops(paintParts[0], paintParts[1] === "true");
+    var request = { requestId: id, m: m, built: built, refining: !!refining, staging: staging,
+      detail: built._detail, center: center, paintKey: paintKey };
     _s3dRegularPending[id] = request; built._regularPending++;
     var msg = { cmd: "buildRegularSurface", requestId: id, surface: m.regular_surface,
       center: center, range: m.range, stops: stops };
@@ -408,6 +408,13 @@
         setScene3dStatus("error", { reason: String((e && e.message) || e) });
       }
     }, 0);
+  }
+
+  function s3dMeshPaintKey(mesh) {
+    var name = canonicalColormap(mesh.colormap || S.colormap);
+    var reversed = mesh.colormap != null || mesh.colormap_reversed != null
+      ? !!mesh.colormap_reversed : !!S.colormapReversed;
+    return name + "|" + reversed;
   }
 
   function regularSurfaceObject(m, data) {
@@ -432,8 +439,16 @@
   function onRegularSurfaceBuilt(data) {
     var pending = _s3dRegularPending[data.requestId]; if (!pending) return;
     delete _s3dRegularPending[data.requestId];
-    var built = pending.built, entry = regularSurfaceObject(pending.m, data);
-    built._regularPending--; built._maxAttachMs = Math.max(built._maxAttachMs || 0, entry.attachMs);
+    var built = pending.built; built._regularPending--;
+    if (s3dBuilt !== built) return;
+    var completion = paintCompletionState(data.requestId, pending.requestId,
+      pending.paintKey, s3dMeshPaintKey(pending.m));
+    if (completion === "stale-request") return;
+    if (completion === "stale-paint") {
+      queueRegularSurface(pending.m, built, pending.center, pending.refining, pending.staging); return;
+    }
+    var entry = regularSurfaceObject(pending.m, data); entry.paintKey = pending.paintKey;
+    built._maxAttachMs = Math.max(built._maxAttachMs || 0, entry.attachMs);
     if (pending.refining) {
       pending.staging.objects.push(entry); pending.staging.triangles += entry.triangleCount;
       pending.staging.remaining--;
@@ -469,6 +484,13 @@
 
   function finishRegularRefinement(staging) {
     requestAnimationFrame(function () {
+      var stalePaint = staging.objects.some(function (entry) { return entry.paintKey !== s3dMeshPaintKey(entry.m); });
+      if (stalePaint || s3dBuilt !== staging.built) {
+        staging.objects.forEach(function (entry) { entry.geo.dispose(); entry.mesh.material.dispose(); });
+        _s3dPendingFor = null;
+        if (s3dBuilt === staging.built) refineRegularScene3d(staging.sc);
+        return;
+      }
       var built = staging.built, oldRegular = built.meshObjs.filter(function (o) { return !!o.m.regular_surface; });
       var oldTriangles = oldRegular.reduce(function (n, o) { return n + (o.triangleCount || 0); }, 0);
       staging.objects.forEach(function (o) { s3d.group.add(o.mesh); });
@@ -564,6 +586,7 @@
       bakeMeshColors(o.m, o.geo.attributes.color.array);
       o.geo.attributes.color.needsUpdate = true;
     });
+    if (!regularMeshes.length) s3dBuilt._colormapKey = S.colormap + "|" + !!S.colormapReversed;
   }
 
   function polylinesToSegments(lines, map3, colorCss) {

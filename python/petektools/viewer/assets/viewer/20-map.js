@@ -881,12 +881,12 @@
       if (ly.kind === "points" && ly.start != null && ly.n != null) segs.push(ly);
     });
     if (!segs.length) segs.push({ start: 0, n: ptN(m.points) }); // legacy: one segment
-    return segs.map(function (ly) {
+    return segs.map(function (ly, i) {
       var colored = ly.colored !== false;
       var range = colored ? (ly.range || (pc && pc.range) || null) : null;
       return { start: ly.start || 0, n: ly.n, range: range,
-        cmap: paintColormap(ly), reversed: paintReversed(ly) };
-    });
+        cmap: paintColormap(ly), reversed: paintReversed(ly), visible: !S.pointLayerVis || S.pointLayerVis[i] !== false };
+    }).filter(function (segment) { return segment.visible; });
   }
   // Build the binned Path2D set under an affine transform sx = x*sc + oxx.
   // cull=true skips points outside the [0..cw, 0..ch] rect (immediate mode).

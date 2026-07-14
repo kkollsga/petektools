@@ -43,6 +43,7 @@ _WORKSPACE_LANE_JS = Path(__file__).parent / "viewer_perf" / "workspace_lane_ben
 _WORKSPACE_STATE_JS = Path(__file__).parent / "viewer_perf" / "workspace_state_bench.mjs"
 _WORKSPACE_TREE_DESIGN_JS = Path(__file__).parent / "viewer_perf" / "workspace_tree_design_bench.mjs"
 _INSPECTOR_LEGEND_JS = Path(__file__).parent / "viewer_perf" / "inspector_legend_bench.mjs"
+_PAINT_RACE_JS = Path(__file__).parent / "viewer_perf" / "paint_race_bench.js"
 _WORKSPACE_WELL_OVERLAY_JS = (
     Path(__file__).parent / "viewer_perf" / "workspace_well_overlay_bench.mjs"
 )
@@ -67,6 +68,20 @@ def _playwright_available() -> bool:
 
 
 _HAVE_PW = _playwright_available()
+
+
+@pytest.mark.skipif(_NODE is None, reason="node not installed")
+def test_async_paint_flip_discards_stale_pixels_and_requeues():
+    policy = Path(__file__).parents[1] / "petektools" / "viewer" / "assets" / "viewer" / "05-paint-state.js"
+    out = subprocess.run(
+        [_NODE, str(_PAINT_RACE_JS), str(policy)],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert out.returncode == 0, out.stdout + out.stderr
+    result = json.loads(out.stdout.strip().splitlines()[-1])
+    for state in result.values():
+        assert state["materialKey"] == state["pixelKey"] == "inferno|true"
+        assert state["requeues"] == 1
 
 
 def _overlay_map(name, fills, overlays):
@@ -543,9 +558,18 @@ def test_inspector_legend_single_truth_and_range_transactions_dom(tmp_path):
         "map": {
             "frame": {"origin_x": 0.0, "origin_y": 0.0, "spacing_x": 1.0,
                       "spacing_y": 1.0, "ncol": 2, "nrow": 2},
-            "outline": [[[0, 0], [1, 0], [1, 1], [0, 1]]],
-            "grid_lines": [], "points": [], "fills": [], "contours": [],
-            "point_color": None, "layers": [], "contacts": [
+            "outline": [], "grid_lines": [[[0, 0], [1, 1]]],
+            "points": [[0.0, 0.0, 0.0], [0.2, 0.2, 1.0], [0.8, 0.8, 10.0], [1.0, 1.0, 20.0]],
+            "fills": [], "contours": [{"name": "Iso A", "lines": [[[0, 1], [1, 0]]]}],
+            "point_color": {"by": "z", "range": [0.0, 20.0]}, "layers": [
+                {"kind": "points", "name": "Cloud A", "start": 0, "n": 2,
+                 "range": [0.0, 1.0], "colormap": "magma"},
+                {"kind": "points", "name": "Cloud B", "start": 2, "n": 2,
+                 "range": [10.0, 20.0], "colormap": "inferno", "colormap_reversed": True},
+                {"kind": "lines", "name": "Structural Grid"},
+                {"kind": "lines", "name": "Survey Grid"},
+                {"kind": "contours", "name": "Iso A"},
+            ], "contacts": [
                 {"kind": "owc", "depth_m": 1050.0},
             ],
             "horizons": [{"name": "Porosity", "display_name": "Porosity",
@@ -558,6 +582,11 @@ def test_inspector_legend_single_truth_and_range_transactions_dom(tmp_path):
             "value_range": {"min": 0.0, "max": 1.0}, "columns": columns,
             "zones": [{"name": "Sand", "color": "#d9a441"}, {"name": "Shale", "color": "#73859b"}],
             "contacts": [],
+        }, {
+            "property": "facies", "top_name": "Top", "base_name": "Base",
+            "value_range": {"min": 0.0, "max": 1.0},
+            "columns": [{**column, "zone_ids": []} for column in columns],
+            "zones": [{"name": "Metadata only"}], "contacts": [],
         }],
         "wells": wells,
     }

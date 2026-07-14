@@ -1,6 +1,7 @@
   // ================================================================== VOLUME
   var three = null; // { renderer, scene, camera, controls, mesh, geo }
   var vol3 = null;  // decoded v3 shell: { pos, col, triCell, cellValues, zoneIds, ... }
+  var _volumeDecodeRequestId = 0, _volumeRecolorRequestId = 0;
   // Render budget: a shell past this many triangles AUTO-DEGRADES to a decimated
   // preview (1-in-stride triangles) — never a refusal, never an OOM. Overridable
   // via window.PETEK_TRI_BUDGET (the Playwright harness lowers it to exercise the
@@ -185,7 +186,7 @@
       _worker = new Worker(url);
       _worker.onmessage = function (e) {
         if (e.data.cmd === "decoded") onV3Decoded(e.data);
-        else if (e.data.cmd === "recolored") applyRecolor(e.data.col);
+        else if (e.data.cmd === "recolored") applyRecolor(e.data.col, e.data.requestId, e.data.paintKey);
         else if (e.data.cmd === "decoded2d") onMap2dDecoded(e.data); // 2-D map blocks
         else if (e.data.cmd === "regularSurfaceBuilt") onRegularSurfaceBuilt(e.data);
       };
@@ -251,7 +252,7 @@
     // mesh now needs a coarser stride, fall through to a re-decode.
     if (vol3 && vol3._for === v && !vol3._decoding && (vol3._stride || 1) >= stride) {
       var cmapKey = S.colormap + "|" + !!S.colormapReversed;
-      if (vol3._colormapKey !== cmapKey) { vol3._colormapKey = cmapKey; recolorVolumeV3(); }
+      if (vol3._colormapKey !== cmapKey && vol3._pendingPaintKey !== cmapKey) recolorVolumeV3();
       drawVolumeLegend();
       updateVolBadge();
       if (vol3._degraded) showDegradeBanner(vol3._degraded); else hideBanner();
@@ -302,19 +303,22 @@
 
   function decodeVolumeV3(v, stride) {
     stride = stride && stride > 1 ? stride : 1;
-    vol3 = { _for: v, _decoding: true, _stride: stride };
+    var requestId = ++_volumeDecodeRequestId;
+    var paintKey = S.colormap + "|" + !!S.colormapReversed;
+    vol3 = { _for: v, _decoding: true, _stride: stride, _requestId: requestId, _paintKey: paintKey };
     startDecodeWatchdog(v);
     // Test seam: force a stalled decode (never post / never sync) so ONLY the
     // watchdog can rescue the UI — proves the no-hang guarantee deterministically.
     if (typeof window !== "undefined" && window.PETEK_FORCE_DECODE_STALL) return;
     var stops = colormapStops(S.colormap, S.colormapReversed);
     var r = v.value_range || { min: 0, max: 1 };
-    var msg = { cmd: "decode", env: v, vmin: r.min, vmax: r.max, stops: stops, stride: stride };
+    var msg = { cmd: "decode", requestId: requestId, paintKey: paintKey,
+      env: v, vmin: r.min, vmax: r.max, stops: stops, stride: stride };
     var kick = function (bin) {
       if (bin) msg.bin = bin;
       var w = ensureWorker();
       if (w) w.postMessage(msg, bin ? [bin] : []);
-      else decodeVolumeV3Sync(v, r, stops, bin, stride);
+      else decodeVolumeV3Sync(v, r, stops, bin, stride, requestId, paintKey);
     };
     if (v.encoding === "sidecar") {
       fetch("./model.bin")
@@ -325,10 +329,10 @@
       kick(null);
     }
   }
-  function decodeVolumeV3Sync(v, r, stops, bin, stride) {
+  function decodeVolumeV3Sync(v, r, stops, bin, stride, requestId, paintKey) {
     try {
       var res = window.PETEK_DECODE.decodeSync(v, bin ? new Uint8Array(bin) : null, r.min, r.max, stops, stride);
-      res._for = v; onV3Decoded(res);
+      res._for = v; res.requestId = requestId; res.paintKey = paintKey; onV3Decoded(res);
     } catch (e) {
       clearDecodeWatchdog();
       vol3 = null; hideEmpty();
@@ -338,6 +342,16 @@
   }
   // Normalise a worker `decoded` message OR a decodeSync result into vol3.
   function onV3Decoded(res) {
+    var pending = vol3;
+    if (!pending || !pending._decoding) return;
+    var completion = paintCompletionState(res.requestId, pending._requestId, res.paintKey,
+      S.colormap + "|" + !!S.colormapReversed);
+    if (completion === "stale-request") return;
+    res._for = pending._for;
+    if (completion === "stale-paint") {
+      var staleFor = pending._for, staleStride = pending._stride;
+      clearDecodeWatchdog(); vol3 = null; decodeVolumeV3(staleFor, staleStride); return;
+    }
     clearDecodeWatchdog();
     // EMPTY MESH: the decode succeeded but produced zero triangles (an upstream
     // producer bug — cells declared, no geometry emitted). Refuse LOUDLY in-tab
@@ -362,7 +376,7 @@
     var full = res.fullTriangleCount != null ? res.fullTriangleCount : res.triangleCount;
     vol3 = {
       _for: res._for || App.payload.volume, _decoding: false,
-      _colormapKey: S.colormap + "|" + !!S.colormapReversed,
+      _colormapKey: res.paintKey,
       _stride: stride,
       _degraded: stride > 1 ? { stride: stride, full: full, kept: res.triangleCount, budget: triBudget() } : null,
       pos: toF32(res.pos), col: toF32(res.col), triCell: toU32(res.triCell),
@@ -415,14 +429,23 @@
 
   function recolorVolumeV3() {
     if (!vol3 || vol3._decoding) return;
+    var requestId = ++_volumeRecolorRequestId;
+    var paintKey = S.colormap + "|" + !!S.colormapReversed;
+    vol3._pendingPaintKey = paintKey; vol3._recolorRequestId = requestId;
     var stops = colormapStops(S.colormap, S.colormapReversed);
     var v = App.payload.volume, r = v.value_range || { min: 0, max: 1 };
-    if (_worker) _worker.postMessage({ cmd: "recolor", vmin: r.min, vmax: r.max, stops: stops });
-    else { vol3.col = window.PETEK_DECODE.bakeColors(vol3.triCell, vol3.cellValues, r.min, r.max, stops); applyRecolor(vol3.col.buffer); }
+    if (_worker) _worker.postMessage({ cmd: "recolor", requestId: requestId, paintKey: paintKey,
+      vmin: r.min, vmax: r.max, stops: stops });
+    else {
+      var colors = window.PETEK_DECODE.bakeColors(vol3.triCell, vol3.cellValues, r.min, r.max, stops);
+      applyRecolor(colors.buffer, requestId, paintKey);
+    }
   }
-  function applyRecolor(buf) {
-    if (!vol3) return;
+  function applyRecolor(buf, requestId, paintKey) {
+    if (!vol3 || paintCompletionState(requestId, vol3._recolorRequestId, paintKey,
+      S.colormap + "|" + !!S.colormapReversed) !== "accept") return;
     vol3.col = new Float32Array(buf);
+    vol3._colormapKey = paintKey; vol3._pendingPaintKey = null;
     three.geo.setAttribute("color", new three.THREE.BufferAttribute(vol3.col, 3));
     three.geo.attributes.color.needsUpdate = true;
     three.render();

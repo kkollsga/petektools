@@ -117,6 +117,7 @@
       seed(); edit.hidden = true; scale.hidden = false;
     }
     function commit() {
+      if (lo.value.trim() === "" || hi.value.trim() === "") { cancel(); return; }
       var a = Number(lo.value), b = Number(hi.value);
       if (!isFinite(a) || !isFinite(b) || a === b) { cancel(); return; }
       if (a > b) { var swap = a; a = b; b = swap; }
@@ -170,6 +171,16 @@
     };
   }
   function setArrayRange(item, key, lo, hi) { item[key] = [lo, hi]; }
+  function mapAggregateDescriptorLabel(map, kind, fallback) {
+    var names = mapLegendLayers(map).filter(function (entry) { return entry.kind === kind && entry.name; })
+      .map(function (entry) { return pretty(entry.name); });
+    return names.length ? fallback + " · " + names.join(" · ") : fallback;
+  }
+  function setPointLayerVisible(index, visible) {
+    S.pointLayerVis[index] = visible;
+    S.showPoints = S.pointLayerVis.some(function (entry) { return entry; });
+    renderMap(); buildPanel();
+  }
 
   function buildMapInspectorLegend(groupEl) {
     var m = App.payload.map, layer = S.mapLayers[S.mapLayerIdx];
@@ -188,26 +199,35 @@
       setRange: function (lo, hi) { setArrayRange(fill, "range", lo, hi); },
     }));
     var pc = m.point_color;
-    var pointLayer = mapLegendLayers(m).filter(function (entry) { return entry.kind === "points" && entry.colored !== false; })[0];
-    var pointRange = pointLayer && pointLayer.range || (pc && pc.range);
-    if ((m.points || []).length && pointRange) {
-      var pointOwner = pointLayer && pointLayer.range ? pointLayer : pc;
-      groupEl.appendChild(inspectorContinuousRow({
-        label: (pointLayer && pointLayer.name ? pretty(pointLayer.name) : "Points") + " · " + ((pc && pc.by) || "z"),
-        item: pointOwner, visible: function () { return S.showPoints; },
-        setVisible: function (v) { S.showPoints = v; renderMap(); },
-        range: arrayRangeRef(pointRange, { min: 0, max: 1 }),
-        setRange: function (lo, hi) { setArrayRange(pointOwner, "range", lo, hi); pointRange = pointOwner.range; },
+    var pointLayers = mapLegendLayers(m).filter(function (entry) {
+      return entry.kind === "points" && entry.start != null && entry.n != null;
+    });
+    if (!pointLayers.length && (m.points || []).length) pointLayers = [{ start: 0, n: m.points.length, _legacy: true }];
+    pointLayers.forEach(function (pointLayer, i) {
+      var pointRange = pointLayer.colored === false ? null : (pointLayer.range || (pc && pc.range));
+      var label = (pointLayer.name ? pretty(pointLayer.name) : "Points") + (pointRange ? " · " + ((pc && pc.by) || "z") : "");
+      var visible = function () { return S.pointLayerVis[i] !== false; };
+      var setVisible = function (value) { setPointLayerVisible(i, value); };
+      if (pointRange) groupEl.appendChild(inspectorContinuousRow({
+        label: label, item: pointLayer._legacy ? null : pointLayer,
+        visible: visible, setVisible: setVisible,
+        range: function () {
+          var source = pointLayer.range || (pc && pc.range) || pointRange;
+          return { min: Number(source[0]), max: Number(source[1]) };
+        },
+        setRange: function (lo, hi) {
+          if (pointLayer._legacy) pc.range = [lo, hi];
+          else pointLayer.range = [lo, hi];
+        },
       }));
-    } else if ((m.points || []).length) {
-      groupEl.appendChild(inspectorSimpleRow({ label: "Points", kind: "points", color: token("--accent"),
-        visible: function () { return S.showPoints; }, setVisible: function (v) { S.showPoints = v; renderMap(); } }));
-    }
-    groupEl.appendChild(inspectorSimpleRow({ label: "Outline", kind: "line", swatch: "line", color: token("--text-secondary"),
+      else groupEl.appendChild(inspectorSimpleRow({ label: label, kind: "points", color: token("--accent"),
+        visible: visible, setVisible: setVisible }));
+    });
+    if ((m.outline || []).length) groupEl.appendChild(inspectorSimpleRow({ label: "Outline", kind: "line", swatch: "line", color: token("--text-secondary"),
       visible: function () { return S.showOutline; }, setVisible: function (v) { S.showOutline = v; renderMap(); } }));
-    if ((m.grid_lines || []).length) groupEl.appendChild(inspectorSimpleRow({ label: "Grid lines", kind: "line", swatch: "line", color: token("--muted"),
+    if ((m.grid_lines || []).length) groupEl.appendChild(inspectorSimpleRow({ label: mapAggregateDescriptorLabel(m, "lines", "Grid lines"), kind: "line", swatch: "line", color: token("--muted"),
       visible: function () { return S.showGridLines; }, setVisible: function (v) { S.showGridLines = v; renderMap(); } }));
-    if ((m.contours || []).length) groupEl.appendChild(inspectorSimpleRow({ label: "Contours", kind: "line", swatch: "line", color: token("--text-secondary"),
+    if ((m.contours || []).length) groupEl.appendChild(inspectorSimpleRow({ label: mapAggregateDescriptorLabel(m, "contours", "Contours"), kind: "line", swatch: "line", color: token("--text-secondary"),
       visible: function () { return S.showContours; }, setVisible: function (v) { S.showContours = v; renderMap(); } }));
     var entities = [];
     (m.contacts || []).forEach(function (contact, i) { entities.push(inspectorSimpleRow({
@@ -222,7 +242,7 @@
   }
   function buildSectionInspectorLegend(groupEl) {
     var b = S.sections[S.sectionIdx]; if (!b) return;
-    var zoneMode = S.sectionColorBy === "zone" && b.zones && b.zones.length;
+    var zoneMode = S.sectionColorBy === "zone" && sectionHasZoneData(b);
     if (zoneMode) groupEl.appendChild(inspectorCategoricalRow({
       label: "Zones", visible: function () { return S.showSectionFill; },
       setVisible: function (v) { S.showSectionFill = v; renderSection(); },
@@ -231,17 +251,15 @@
     else {
       var range = S.sectionRanges[S.sectionIdx] || { min: 0, max: 1 };
       groupEl.appendChild(inspectorContinuousRow({
-        label: pretty(b.property || "value"), units: b.units || "fraction",
+        label: pretty(b.property || "value"), units: b.units,
         visible: function () { return S.showSectionFill; }, setVisible: function (v) { S.showSectionFill = v; renderSection(); },
         range: function () { return S.sectionRanges[S.sectionIdx] || range; },
         setRange: function (lo, hi) { S.sectionRanges[S.sectionIdx] = { min: lo, max: hi }; },
       }));
     }
-    var entities = [
-      inspectorSimpleRow({ label: pretty(b.top_name || "Top horizon"), swatch: "line", color: idColor("hz:" + b.top_name), visible: function () { return S.showHorizons; }, setVisible: function (v) { S.showHorizons = v; renderSection(); } }),
-      inspectorSimpleRow({ label: pretty(b.base_name || "Base horizon"), swatch: "line", color: idColor("hz:" + b.base_name), visible: function () { return S.showHorizons; }, setVisible: function (v) { S.showHorizons = v; renderSection(); } }),
-    ];
-    (b.contacts || []).forEach(function (contact) { entities.push(inspectorSimpleRow({ label: pretty(contact.kind), swatch: "line", color: idColor("ct:" + contact.kind), visible: function () { return S.showContacts; }, setVisible: function (v) { S.showContacts = v; renderSection(); } })); });
+    var entities = [];
+    if (sectionHasHorizonGeometry(b)) entities.push(inspectorSimpleRow({ label: "Horizons", swatch: "line", color: token("--text-secondary"), visible: function () { return S.showHorizons; }, setVisible: function (v) { S.showHorizons = v; renderSection(); } }));
+    if (sectionHasContactGeometry(b)) entities.push(inspectorSimpleRow({ label: "Contacts", swatch: "line", color: token("--muted"), visible: function () { return S.showContacts; }, setVisible: function (v) { S.showContacts = v; renderSection(); } }));
     if ((b.columns || []).some(function (column) { return column.path_z != null; })) entities.push(inspectorSimpleRow({ label: "Bore path", swatch: "line", color: token("--c1"), visible: function () { return S.showPathZ; }, setVisible: function (v) { S.showPathZ = v; renderSection(); } }));
     appendCappedEntities(groupEl, entities, "section"); exposeInspectorLegendState();
   }
@@ -250,5 +268,6 @@
     window.__PETEK_COLORMAP_STATE = {
       names: COLORMAP_NAMES.slice(), name: S.colormap, reversed: !!S.colormapReversed,
       lutKeys: Object.keys(_lutCache || {}), entityCap: INSPECTOR_ENTITY_CAP,
+      pointVisibility: (S.pointLayerVis || []).slice(),
     };
   }

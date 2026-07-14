@@ -290,6 +290,11 @@
     });
     S.mapGridDefaultApplied = !!p.map;
     S.showPoints = true;
+    var pointSegments = (m.layers || []).filter(function (entry) {
+      return entry.kind === "points" && entry.start != null && entry.n != null;
+    });
+    S.pointLayerVis = (pointSegments.length ? pointSegments : ((m.points || []).length ? [null] : []))
+      .map(function () { return true; });
     // value-coloured trimesh fills + contour iso-lines (2-D QA payloads):
     // one active fill at a time (selectable), each toggleable like the other
     // map layers. Both default visible — asking for them means wanting them.
@@ -374,9 +379,11 @@
     });
   }
   function tagLayer(l, kind) {
-    return { name: l.name, display: disp(l, l.name), units: l.units, values: l.values,
-      range: l.range, kind: kind, colormap: canonicalColormap(l.colormap),
-      colormap_reversed: !!l.colormap_reversed };
+    var tagged = { name: l.name, display: disp(l, l.name), units: l.units,
+      values: l.values, range: l.range, kind: kind };
+    if (Object.prototype.hasOwnProperty.call(l, "colormap")) tagged.colormap = canonicalColormap(l.colormap);
+    if (Object.prototype.hasOwnProperty.call(l, "colormap_reversed")) tagged.colormap_reversed = !!l.colormap_reversed;
+    return tagged;
   }
   function deriveDims() {
     var f = App.payload.map ? App.payload.map.frame : null;

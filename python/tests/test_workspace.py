@@ -854,10 +854,14 @@ def test_map_and_section_share_one_inspector_legend_truth():
     assert "colormap_reversed" in inspector
     assert 'S.colormap + "|" + !!S.colormapReversed' in source
     assert "paintReversed(fill)" in source
+    assert 'hasOwnProperty.call(l, "colormap")' in source
+    assert 'hasOwnProperty.call(l, "colormap_reversed")' in source
+    assert "colormap_reversed: !!l.colormap_reversed" not in source
     assert 'event.key === "Escape"' in inspector
     assert 'event.key === "Enter"' in inspector
     assert "if (a > b)" in inspector
     assert "!isFinite(a) || !isFinite(b) || a === b" in inspector
+    assert 'lo.value.trim() === "" || hi.value.trim() === ""' in inspector
     assert "document.addEventListener(\"pointerdown\", outside, true)" in inspector
     assert "INSPECTOR_ENTITY_CAP = 6" in inspector
     assert 'dataset.legendKind = "categorical"' in inspector
@@ -872,6 +876,29 @@ def test_map_and_section_share_one_inspector_legend_truth():
     assert "colormapRow()" in panel[panel.index("function buildVolumePanel"):]
     assert "function drawVolumeLegend()" in source
     assert "function drawChartLegend(ch)" in source
+    assert "S.pointLayerVis" in source
+    assert "pointLayers.forEach" in inspector
+    assert "pointLayer._legacy ? null : pointLayer" in inspector
+    assert "mapAggregateDescriptorLabel" in inspector
+    assert 'label: "Horizons"' in inspector and 'label: "Contacts"' in inspector
+    assert "sectionHasZoneData(b)" in inspector and "sectionHasZoneData(b)" in panel
+    assert 'units: b.units' in inspector and 'b.units || "fraction"' not in inspector
+    assert "(m.outline || []).length" in inspector
+
+
+def test_async_viewer_paint_completions_are_request_keyed():
+    source = _bundle.viewer_js()
+    decode = (ASSETS / "decode.js").read_text()
+
+    assert 'requestId: m.requestId, paintKey: m.paintKey' in decode
+    assert '_volumeDecodeRequestId' in source and '_volumeRecolorRequestId' in source
+    assert "function paintCompletionState(" in source
+    assert 'completion === "stale-request"' in source
+    assert 'completion === "stale-paint"' in source
+    assert 'paintCompletionState(requestId, vol3._recolorRequestId' in source
+    assert 'pending.paintKey, s3dMeshPaintKey(pending.m)' in source
+    assert 'entry.paintKey !== s3dMeshPaintKey(entry.m)' in source
+    assert 'built._colormapKey = S.colormap + "|" + !!S.colormapReversed' in source
 
     # Persistence is deliberately UI-only: no manifest, visibility, lane, or
     # producer data is serialized into browser storage.

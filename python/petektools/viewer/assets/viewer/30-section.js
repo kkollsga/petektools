@@ -1,4 +1,22 @@
   // ================================================================== SECTION
+  function sectionHasZoneData(bundle) {
+    return !!(bundle && bundle.zones && bundle.zones.length
+      && (bundle.columns || []).some(function (column) { return column.zone_ids && column.zone_ids.length; }));
+  }
+  function sectionHasHorizonGeometry(bundle) {
+    if (!bundle) return false;
+    var outer = (bundle.columns || []).some(function (column) {
+      return (column.layer_tops || []).some(Number.isFinite)
+        || (column.layer_bases || []).some(Number.isFinite);
+    });
+    var interior = (bundle.horizon_traces || []).some(function (trace) {
+      return (trace.depths || []).some(Number.isFinite);
+    });
+    return outer || interior;
+  }
+  function sectionHasContactGeometry(bundle) {
+    return !!(bundle && (bundle.contacts || []).some(function (contact) { return Number.isFinite(contact.depth_m); }));
+  }
   function renderSection() {
     var cv = document.getElementById("section-canvas");
     if (!S.sections.length) { showEmpty("No sections. Draw a fence or click a well on the Map tab."); return; }
@@ -75,7 +93,7 @@
     // (no `zones` or no `zone_ids`) → the select hides and we stay on the property
     // colormap (graceful fallback, no error).
     var zones = b.zones || [];
-    var hasZoneData = zones.length > 0 && cols.some(function (c) { return c.zone_ids && c.zone_ids.length; });
+    var hasZoneData = sectionHasZoneData(b);
     var zoneMode = hasZoneData && S.sectionColorBy === "zone";
 
     // The screen x-extent of column ci (midpoints to its `step`-strided
