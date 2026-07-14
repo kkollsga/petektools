@@ -485,7 +485,12 @@ def test_workspace_tree_2000_leaf_interaction_budget(tmp_path):
     )
     assert out.returncode == 0, out.stdout + out.stderr
     result = json.loads(out.stdout.strip().splitlines()[-1])
-    assert result["renderedRows"] <= 40
+    for probe in (result["desktopBottom"], result["narrowBottom"]):
+        assert probe["rowHeight"] == 28
+        assert probe["boundedRows"]
+        assert probe["uniformRows"]
+        assert probe["lastRendered"] and probe["lastVisible"]
+        assert abs(probe["blankTailPx"]) <= 2
     assert result["treeBuildP95Ms"] < 16.7
     assert result["groupToggleP95Ms"] < 16.7
 

@@ -726,6 +726,18 @@ def test_2000_leaf_provider_catalog_with_disabled_assets_stays_metadata_only():
     assert elapsed_ms < 500.0
 
 
+def test_workspace_virtual_tree_uses_css_row_token_and_measured_viewport():
+    html = (ASSETS / "index.html").read_text()
+    source = _bundle.viewer_js()
+
+    assert "--row-h: 28px" in html
+    assert "height: var(--row-h); min-height: var(--row-h)" in html
+    assert 'getPropertyValue("--row-h")' in source
+    assert "Math.ceil(tree.clientHeight / rowHeight)" in source
+    assert "rowHeight = 25" not in source
+    assert "viewportRows = 13" not in source
+
+
 def test_workspace_shell_has_separate_semantic_regions_and_bounded_preferences():
     html = (ASSETS / "index.html").read_text()
     source = _bundle.viewer_js()

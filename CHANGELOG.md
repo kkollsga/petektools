@@ -17,6 +17,12 @@ All notable changes to petekTools are recorded here. Format follows
   explicit compatibility paths. This entry defines the contract only; runtime
   support lands in the subsequent implementation phases.
 
+### Fixed
+- **Workspace tree virtualization.** Project rows now share one 28 px CSS/JS
+  geometry token, and the virtual window derives its row count from the rendered
+  tree height instead of fixed 25 px/13-row assumptions. Large catalogs reach
+  their final row without spacer drift or blank tails across viewport heights.
+
 ## [0.2.14] - 2026-07-14
 
 ### Added

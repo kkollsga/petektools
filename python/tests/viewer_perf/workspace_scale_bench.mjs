@@ -17,6 +17,34 @@ page.on("console", (m) => { if (m.type() === "error") errors.push(m.text()); });
 page.on("pageerror", (e) => errors.push(String(e)));
 await page.goto(pathToFileURL(file).href);
 
+const inspectBottom = async () => page.evaluate(async () => {
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const tree = document.querySelector(".workspace-tree");
+  tree.scrollTop = tree.scrollHeight;
+  tree.dispatchEvent(new Event("scroll"));
+  await sleep(40);
+  const rows = Array.from(tree.querySelectorAll(".workspace-row"));
+  const last = rows.find((row) => /Surface 1999/.test(row.textContent || ""));
+  const treeRect = tree.getBoundingClientRect();
+  const lastRect = last ? last.getBoundingClientRect() : null;
+  const rowHeight = parseFloat(getComputedStyle(tree).getPropertyValue("--row-h"));
+  const spacer = tree.querySelector(".workspace-tree-spacer");
+  return {
+    viewportHeight: tree.clientHeight,
+    rowHeight,
+    renderedRows: rows.length,
+    boundedRows: rows.length <= Math.ceil(tree.clientHeight / rowHeight) + 16,
+    uniformRows: rows.every((row) => Math.abs(row.getBoundingClientRect().height - rowHeight) < 0.1),
+    spacerHeight: spacer ? spacer.getBoundingClientRect().height : 0,
+    expectedSpacerHeight: 2001 * rowHeight, // one group + 2,000 leaves
+    scrollTop: tree.scrollTop,
+    maxScrollTop: tree.scrollHeight - tree.clientHeight,
+    lastRendered: !!last,
+    lastVisible: !!(lastRect && lastRect.bottom > treeRect.top && lastRect.top < treeRect.bottom),
+    blankTailPx: lastRect ? treeRect.bottom - lastRect.bottom : null,
+  };
+});
+
 const result = await page.evaluate(async () => {
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   await sleep(100);
@@ -45,6 +73,10 @@ const result = await page.evaluate(async () => {
     allVisible: Object.values(state.visible).every((visible) => visible.map),
   };
 });
+result.desktopBottom = await inspectBottom();
+await page.setViewportSize({ width: 900, height: 420 });
+await page.waitForTimeout(50);
+result.narrowBottom = await inspectBottom();
 result.consoleErrors = errors;
 await browser.close();
 
@@ -52,7 +84,15 @@ const fail = (message) => { console.log(JSON.stringify({ ...result, failure: mes
 if (errors.length) fail("console errors");
 if (result.itemCount !== 2000) fail("expected 2,000 items");
 if (!result.allVisible) fail("group toggle did not update all leaves");
-if (result.renderedRows > 40) fail("tree DOM was not virtualized");
+for (const [name, probe] of Object.entries({ desktop: result.desktopBottom, narrow: result.narrowBottom })) {
+  if (probe.rowHeight !== 28) fail(`${name}: CSS row token was not 28px`);
+  if (!probe.boundedRows) fail(`${name}: tree DOM exceeded measured viewport + overscan`);
+  if (!probe.uniformRows) fail(`${name}: rendered rows drift from the CSS token`);
+  if (Math.abs(probe.spacerHeight - probe.expectedSpacerHeight) > 0.1) fail(`${name}: spacer height drift`);
+  if (Math.abs(probe.scrollTop - probe.maxScrollTop) > 1) fail(`${name}: tree did not reach max scroll`);
+  if (!probe.lastRendered || !probe.lastVisible) fail(`${name}: last row was not reachable`);
+  if (Math.abs(probe.blankTailPx) > 2) fail(`${name}: blank tail below final row`);
+}
 if (result.treeBuildP95Ms >= 16.7) fail("tree search exceeded one frame");
 if (result.groupToggleP95Ms >= 16.7) fail("group toggle exceeded one frame");
 console.log(JSON.stringify(result));

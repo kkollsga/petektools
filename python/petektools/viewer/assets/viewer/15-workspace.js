@@ -507,6 +507,9 @@
     });
     groupEl.appendChild(search);
     var tree = el("div", "workspace-tree");
+    // The virtual window is sized from this rendered viewport. Attach before
+    // reading clientHeight/computed tokens; a detached tree reports zero.
+    groupEl.appendChild(tree); body.appendChild(groupEl);
     var flat = [];
     function compactChain(node) {
       var chain = [node], tail = node;
@@ -626,21 +629,38 @@
       // The canonical flat list remains complete; only the scroll window owns
       // DOM rows, so 2,000+ leaves do not turn each panel rebuild into layout
       // work proportional to the project size.
-      var rowHeight = 25, overscan = 8, viewportRows = 13;
+      var rowHeight = parseFloat(getComputedStyle(tree).getPropertyValue("--row-h"));
+      if (!(rowHeight > 0) || !isFinite(rowHeight)) {
+        // CSS owns the row geometry. This probe is only a defensive fallback
+        // for an embedding page that strips the token; it introduces no second
+        // hard-coded row-height source.
+        var probe = el("div", "workspace-row");
+        probe.style.cssText = "position:absolute;visibility:hidden";
+        tree.appendChild(probe); rowHeight = probe.getBoundingClientRect().height;
+        tree.removeChild(probe);
+      }
+      if (!(rowHeight > 0) || !isFinite(rowHeight)) rowHeight = 1;
+      var overscan = 8;
       tree.classList.add("workspace-tree-virtual");
       var spacer = el("div", "workspace-tree-spacer");
       spacer.style.height = (flat.length * rowHeight) + "px";
       var layer = el("div", "workspace-tree-window");
       tree.appendChild(spacer); tree.appendChild(layer);
       function renderWindow() {
+        var viewportRows = Math.max(1, Math.ceil(tree.clientHeight / rowHeight));
         var first = Math.max(0, Math.floor(tree.scrollTop / rowHeight) - overscan);
         var last = Math.min(flat.length, first + viewportRows + overscan * 2);
         layer.innerHTML = ""; layer.style.transform = "translateY(" + (first * rowHeight) + "px)";
         for (var i = first; i < last; i++) draw(flat[i], layer);
       }
-      tree.addEventListener("scroll", renderWindow); renderWindow();
+      tree.addEventListener("scroll", renderWindow, { passive: true });
+      if (typeof ResizeObserver !== "undefined") {
+        W.treeResizeObserver = new ResizeObserver(renderWindow);
+        W.treeResizeObserver.observe(tree);
+      }
+      renderWindow();
     }
-    groupEl.appendChild(tree); body.appendChild(groupEl); exposeWorkspaceState();
+    exposeWorkspaceState();
     W.treeBuildMs.push(performance.now() - started); exposeWorkspaceState();
   }
 
@@ -648,6 +668,7 @@
     if (!W) return;
     var body = document.getElementById("navigator-body");
     if (!body) return;
+    if (W.treeResizeObserver) { W.treeResizeObserver.disconnect(); W.treeResizeObserver = null; }
     body.innerHTML = "";
     buildWorkspaceTree(body);
   }

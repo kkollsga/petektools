@@ -16,6 +16,7 @@
   /* --- design tokens (dataviz reference palette; light + dark, SELECTED) --- */
   .viz-root {
     --surface-1: #fcfcfb;      --plane: #f9f9f7;
+    --row-h: 28px;
     --text-primary: #0b0b0b;   --text-secondary: #52514e;  --muted: #898781;
     --grid: #e1e0d9;           --baseline: #c3c2b7;
     --border: rgba(11,11,11,0.10);
@@ -139,12 +140,13 @@
   .workspace-tree-window { position: absolute; inset: 0 0 auto 0; }
   .workspace-row {
     display: flex; align-items: center; gap: 6px; white-space: nowrap;
+    height: var(--row-h); min-height: var(--row-h);
     padding-left: calc(var(--tree-depth, 0) * 12px);
     background-image: repeating-linear-gradient(90deg, transparent 0 11px, color-mix(in srgb, var(--border) 72%, transparent) 11px 12px);
     background-size: calc(var(--tree-depth, 0) * 12px) 100%; background-repeat: no-repeat;
   }
-  .workspace-group { min-height: 22px; padding-block: 0; }
-  .workspace-object { min-height: 32px; padding-right: 3px; }
+  .workspace-group { padding-block: 0; }
+  .workspace-object { padding-right: 3px; }
   .workspace-object:hover, .workspace-object:focus-within { background-color: color-mix(in srgb, var(--accent) 7%, transparent); }
   .workspace-selected { background-color: color-mix(in srgb, var(--accent) 12%, transparent); }
   .workspace-loading { opacity: .78; }
